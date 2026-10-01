@@ -2308,11 +2308,15 @@ fn unix_socket_listener_owner(path: &Path, timeout: Duration) -> Result<u32> {
     let expected_path = path.to_string_lossy();
     let expected_listen = format!("unix://{expected_path}");
     loop {
+        let bound = bound_socket_path(path).unwrap_or_else(|| path.to_path_buf());
+        let bound_path = bound.to_string_lossy();
         let table = fs::read_to_string("/proc/net/unix")?;
         let inode = table.lines().skip(1).find_map(|line| {
             let fields = line.split_whitespace().collect::<Vec<_>>();
-            (fields.len() >= 8 && fields[7..].join(" ") == expected_path)
-                .then(|| fields[6].to_owned())
+            let listed = fields.get(7..).map(|rest| rest.join(" "));
+            listed
+                .filter(|listed| *listed == expected_path || *listed == bound_path)
+                .map(|_| fields[6].to_owned())
         });
         if let Some(inode) = inode {
             let descriptor = PathBuf::from(format!("socket:[{inode}]"));
@@ -2368,9 +2372,10 @@ fn unix_socket_listener_owner(path: &Path, timeout: Duration) -> Result<u32> {
     let expected_path = path.to_string_lossy();
     let expected_listen = format!("unix://{expected_path}");
     loop {
+        let bound = bound_socket_path(path).unwrap_or_else(|| path.to_path_buf());
         let output = Command::new("/usr/sbin/lsof")
             .args(["-n", "-a", "-U", "-F0pn", "--"])
-            .arg(path)
+            .arg(&bound)
             .env("LC_ALL", "C")
             .output()
             .context("failed to inspect the macOS Unix socket owner with /usr/sbin/lsof")?;
@@ -2390,7 +2395,8 @@ fn unix_socket_listener_owner(path: &Path, timeout: Duration) -> Result<u32> {
                     }
                     Some((b'n', value))
                         if value == expected_path.as_bytes()
-                            || value == path.as_os_str().as_bytes() =>
+                            || value == path.as_os_str().as_bytes()
+                            || value == bound.as_os_str().as_bytes() =>
                     {
                         if let Some(pid) = current_pid {
                             candidates.insert(pid);
@@ -2438,6 +2444,33 @@ fn unix_socket_listener_owner(_: &Path, _: Duration) -> Result<u32> {
     bail!("Unix socket listener ownership verification is unavailable on this platform")
 }
 
+/// Codex 0.159+ binds its listener inside a private per-user daemon directory
+/// and leaves a symlink at the requested path, so the requested path is either
+/// the socket itself or a current-user symlink to a socket in a user-only
+/// directory. Returns the path the listener is actually bound to.
+#[cfg(unix)]
+fn bound_socket_path(path: &Path) -> Option<PathBuf> {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
+
+    let uid = effective_uid().ok()?;
+    let entry = fs::symlink_metadata(path).ok()?;
+    if entry.file_type().is_socket() {
+        return Some(path.to_path_buf());
+    }
+    if !entry.file_type().is_symlink() || entry.uid() != uid {
+        return None;
+    }
+    let target = fs::canonicalize(path).ok()?;
+    let socket = fs::symlink_metadata(&target).ok()?;
+    let directory = fs::symlink_metadata(target.parent()?).ok()?;
+    let private = socket.file_type().is_socket()
+        && socket.uid() == uid
+        && directory.is_dir()
+        && directory.uid() == uid
+        && directory.permissions().mode() & 0o077 == 0;
+    private.then_some(target)
+}
+
 fn wait_for_socket(path: &Path, timeout: Duration) -> Result<()> {
     #[cfg(not(unix))]
     {
@@ -2446,15 +2479,11 @@ fn wait_for_socket(path: &Path, timeout: Duration) -> Result<()> {
     }
     #[cfg(unix)]
     {
-        use std::os::unix::fs::FileTypeExt;
         use std::os::unix::net::UnixStream;
 
         let deadline = Instant::now() + timeout;
         loop {
-            let is_socket = fs::symlink_metadata(path)
-                .map(|metadata| metadata.file_type().is_socket())
-                .unwrap_or(false);
-            if is_socket && UnixStream::connect(path).is_ok() {
+            if bound_socket_path(path).is_some() && UnixStream::connect(path).is_ok() {
                 return Ok(());
             }
             if Instant::now() >= deadline {
@@ -2674,6 +2703,32 @@ mod tests {
             ("on-request", "workspace-write")
         );
         assert_eq!(codex_security_params(true), ("never", "danger-full-access"));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn symlinked_listener_counts_only_inside_a_private_directory() {
+        let root = tempdir().unwrap();
+        let daemon = root.path().join("daemon");
+        fs::create_dir(&daemon).unwrap();
+        fs::set_permissions(&daemon, fs::Permissions::from_mode(0o700)).unwrap();
+        let socket = daemon.join("s");
+        let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let link = root.path().join("app-server.sock");
+        std::os::unix::fs::symlink(&socket, &link).unwrap();
+
+        let resolved = bound_socket_path(&link).expect("private symlinked socket");
+        assert_eq!(resolved, fs::canonicalize(&socket).unwrap());
+        assert_eq!(bound_socket_path(&socket), Some(socket.clone()));
+
+        fs::set_permissions(&daemon, fs::Permissions::from_mode(0o770)).unwrap();
+        assert_eq!(bound_socket_path(&link), None);
+
+        let file = root.path().join("plain");
+        fs::write(&file, b"").unwrap();
+        let file_link = root.path().join("file.sock");
+        std::os::unix::fs::symlink(&file, &file_link).unwrap();
+        assert_eq!(bound_socket_path(&file_link), None);
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
