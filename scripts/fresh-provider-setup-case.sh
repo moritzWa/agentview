@@ -1,0 +1,255 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+provider="${1:?provider is required}"
+# Avoid an unrelated npm vulnerability-audit request hanging native installers
+# in restricted test networks. Package downloads and lifecycle scripts still run.
+export NPM_CONFIG_AUDIT=false
+export NPM_CONFIG_FUND=false
+# This test has already consented with setup --yes; allow upstream npx to
+# install dependencies without waiting for a second package-install prompt.
+export NPM_CONFIG_YES=true
+export XDG_CONFIG_HOME="${HOME}/.config"
+export XDG_CACHE_HOME="${HOME}/.cache"
+export XDG_STATE_HOME="${HOME}/.local/state"
+export PATH="${HOME}/.local/bin:${HOME}/.grok/bin:${HOME}/.opencode/bin:/usr/local/bin:/usr/bin:/bin"
+export MUSE_INSTALL_DIR="${HOME}/.local/bin"
+export MUSE_NO_MODIFY_PATH=1
+export KIMI_INSTALL_DIR="${HOME}/.local"
+export KIMI_NO_MODIFY_PATH=1
+export KIMI_CODE_HOME="${HOME}/.kimi-code"
+export QWEN_NO_MODIFY_PATH=1
+mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HOME"
+
+log="/tmp/${provider}-setup.log"
+setup_timeout=300
+# Hermes installs Python, native build dependencies, and its Node workspace
+# before the login handoff; a cold install needs a larger bounded budget.
+[[ "$provider" != hermes ]] || setup_timeout=900
+set +e
+timeout "${AGENTVIEW_SETUP_TIMEOUT:-$setup_timeout}" script -qefc "/usr/local/bin/agentview setup '${provider}' --yes" "$log" \
+  >"/tmp/${provider}-setup.console" 2>&1
+status=$?
+set -e
+
+# Interactive OAuth may wait for a browser or device confirmation. Installation
+# must still have completed, and the native login process must have reached a
+# real PTY before that bounded timeout.
+case "$status" in
+  0|124|137|143) ;;
+  *)
+    printf 'setup exited unexpectedly for %s (status %s)\n' "$provider" "$status" >&2
+    tail -n 80 "$log" >&2
+    exit 1
+    ;;
+esac
+
+case "$provider" in
+  claude) executable="$(command -v claude)" ;;
+  codex) executable="$(command -v codex)" ;;
+  pi) executable="$(command -v pi)" ;;
+  opencode) executable="$(command -v opencode)" ;;
+  cursor) executable="$(command -v cursor-agent)" ;;
+  copilot) executable="$(command -v copilot)" ;;
+  antigravity) executable="$(command -v agy)" ;;
+  mistral-vibe) executable="$(command -v vibe)" ;;
+  muse) executable="$(command -v muse)" ;;
+  qwen) executable="$(command -v qwen)" ;;
+  kimi) executable="$(command -v kimi)" ;;
+  omp) executable="$(command -v omp)" ;;
+  grok) executable="$(command -v grok)" ;;
+  kilo) executable="$(command -v kilo)" ;;
+  openhands) executable="$(command -v openhands)" ;;
+  hermes) executable="$(command -v hermes || true)" ;;
+  mastracode) executable="$(command -v mastracode)" ;;
+  devin) executable="$(command -v devin)" ;;
+  *) printf 'unknown provider: %s\n' "$provider" >&2; exit 2 ;;
+esac
+
+[[ -x "$executable" ]] || {
+  printf 'setup did not install %s\n' "$provider" >&2
+  tail -n 80 "$log" >&2
+  exit 1
+}
+
+grep -Eiq 'install|download|auth|login|browser|device|setup|welcome|provider' "$log" || {
+  printf 'setup never reached an observable install/login state for %s\n' "$provider" >&2
+  tail -n 80 "$log" >&2
+  exit 1
+}
+
+if [[ "$provider" == mastracode ]]; then
+  # This CLI's --version is not a version probe: it starts its interactive UI.
+  version="$(npm list --global mastracode --depth=0 --json | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>console.log(JSON.parse(s).dependencies.mastracode.version))')"
+else
+  version="$(timeout 30 "$executable" --version 2>&1 | grep -m1 -E '[0-9]+\.[0-9]+' || true)"
+fi
+[[ -n "$version" ]] || {
+  printf 'installed %s executable did not report a version\n' "$provider" >&2
+  exit 1
+}
+
+help_output="/tmp/${provider}-help.log"
+timeout 20 "$executable" --help >"$help_output" 2>&1 || {
+  printf 'installed %s executable did not expose help\n' "$provider" >&2
+  exit 1
+}
+
+case "$provider" in
+  omp)
+    grep -Eq -- '--resume|Resume' "$help_output" || {
+      printf 'Oh My Pi help omitted native resume\n' >&2
+      exit 1
+    }
+    timeout 30 "$executable" models list --no-extensions --json >"/tmp/${provider}-models.json" 2>&1 || {
+      printf 'Oh My Pi auth-free model catalog failed\n' >&2
+      exit 1
+    }
+    node -e 'const value=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); if (!Array.isArray(value.models) || value.models.some((row) => typeof row.selector !== "string")) process.exit(1)' \
+      "/tmp/${provider}-models.json" || {
+        printf 'Oh My Pi model catalog was not a selector array\n' >&2
+        exit 1
+      }
+    ;;
+  grok)
+    grep -Eq -- '--resume|Resume' "$help_output" || {
+      printf 'Grok help omitted native resume\n' >&2
+      exit 1
+    }
+    ;;
+  kilo)
+    grep -Eq -- '--session|session' "$help_output" || {
+      printf 'Kilo Code help omitted native sessions\n' >&2
+      exit 1
+    }
+    timeout 30 "$executable" db \
+      'SELECT id, title, directory, time_created AS created, time_updated AS updated FROM session ORDER BY time_updated DESC LIMIT 1' \
+      --format json \
+      >"/tmp/${provider}-sessions.json" 2>&1 || {
+        printf 'Kilo Code auth-free session inventory failed\n' >&2
+        exit 1
+      }
+    node -e 'const value=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); if (!Array.isArray(value)) process.exit(1)' \
+      "/tmp/${provider}-sessions.json" || {
+        printf 'Kilo Code session inventory was not JSON\n' >&2
+        exit 1
+      }
+    ;;
+  openhands)
+    grep -Eq -- '--resume|Resume' "$help_output" || {
+      printf 'OpenHands help omitted native resume\n' >&2
+      exit 1
+    }
+    grep -Eq -- '--task|Task' "$help_output" || {
+      printf 'OpenHands help omitted task launch\n' >&2
+      exit 1
+    }
+    ;;
+  mistral-vibe)
+    app_server="$(command -v vibe-app-server)"
+    [[ -x "$app_server" ]] || {
+      printf 'Mistral Vibe installer omitted vibe-app-server\n' >&2
+      exit 1
+    }
+    # Exercise the same documented JSON-RPC surfaces as the adapter, using a
+    # fresh process per request and no credential files. Node is part of the
+    # pinned setup image; the provider process itself remains the system under
+    # test.
+    timeout 30 node - "$app_server" <<'NODE'
+const { spawn } = require('node:child_process');
+const { once } = require('node:events');
+const readline = require('node:readline');
+
+async function request(binary, method, params, validate) {
+  const child = spawn(binary, [], { stdio: ['pipe', 'pipe', 'pipe'] });
+  let stderr = '';
+  child.stderr.on('data', (chunk) => { stderr += chunk; });
+  const found = new Promise((resolve, reject) => {
+    const lines = readline.createInterface({ input: child.stdout });
+    lines.on('line', (line) => {
+      let message;
+      try { message = JSON.parse(line); } catch (error) { reject(error); return; }
+      if (message.id === 2) {
+        if (message.error) reject(new Error(JSON.stringify(message.error)));
+        else {
+          try { validate(message.result); resolve(); } catch (error) { reject(error); }
+        }
+      }
+    });
+  });
+  for (const message of [
+    { jsonrpc: '2.0', id: 1, method: 'initialize', params: { clientInfo: { name: 'agentview-fresh-test', version: '0', entrypoint: 'programmatic' }, capabilities: {} } },
+    { jsonrpc: '2.0', method: 'initialized', params: {} },
+    { jsonrpc: '2.0', id: 2, method, params },
+  ]) child.stdin.write(`${JSON.stringify(message)}\n`);
+  child.stdin.end();
+  await Promise.race([
+    found,
+    new Promise((_, reject) => {
+      const timer = setTimeout(() => reject(new Error(`timed out: ${stderr}`)), 15000);
+      timer.unref();
+    }),
+  ]);
+  if (child.exitCode === null) {
+    await Promise.race([
+      once(child, 'exit'),
+      new Promise((_, reject) => {
+        const timer = setTimeout(() => reject(new Error('app-server did not exit after stdin EOF')), 5000);
+        timer.unref();
+      }),
+    ]);
+  }
+  if (child.exitCode !== 0) throw new Error(`app-server exited ${child.exitCode}: ${stderr}`);
+}
+
+(async () => {
+  const binary = process.argv[2];
+  await request(binary, 'session/list', { limit: 1 }, (result) => {
+    if (!result || !Array.isArray(result.items)) throw new Error('session/list omitted items');
+  });
+  await request(binary, 'config/read', { cwd: process.env.HOME }, (result) => {
+    if (!result || !result.config || !Array.isArray(result.config.models)) {
+      throw new Error('config/read omitted config.models');
+    }
+  });
+})().catch((error) => { console.error(error); process.exit(1); });
+NODE
+    ;;
+  muse)
+    timeout 30 "$executable" exec --provider echo 'agentview isolated probe' \
+      >"/tmp/${provider}-auth-free.log" 2>&1 || {
+        printf 'Muse auth-free echo provider probe failed\n' >&2
+        tail -n 40 "/tmp/${provider}-auth-free.log" >&2
+        exit 1
+      }
+    grep -Fq 'agentview isolated probe' "/tmp/${provider}-auth-free.log" || {
+      printf 'Muse auth-free echo provider omitted its probe text\n' >&2
+      exit 1
+    }
+    ;;
+  kimi)
+    timeout 30 "$executable" provider list --json \
+      >"/tmp/${provider}-auth-free.log" 2>&1 || {
+        printf 'Kimi auth-free provider catalog probe failed\n' >&2
+        tail -n 40 "/tmp/${provider}-auth-free.log" >&2
+        exit 1
+    }
+    ;;
+  qwen)
+    timeout 30 "$executable" sessions list --json --limit 1 \
+      >"/tmp/${provider}-history.log" 2>&1 || {
+        printf 'Qwen auth-free history JSONL probe failed\n' >&2
+        tail -n 40 "/tmp/${provider}-history.log" >&2
+        exit 1
+      }
+    timeout 30 "$executable" sessions ps --json \
+      >"/tmp/${provider}-live.log" 2>&1 || {
+        printf 'Qwen auth-free live-session JSONL probe failed\n' >&2
+        tail -n 40 "/tmp/${provider}-live.log" >&2
+        exit 1
+      }
+    ;;
+esac
+
+printf '%-12s installed=%s login_handoff=pty version=%s\n' "$provider" "$executable" "$version"

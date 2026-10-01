@@ -1,0 +1,346 @@
+#![cfg(unix)]
+
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
+#[cfg(target_os = "linux")]
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
+
+#[derive(Clone, Copy)]
+enum InstallerKind {
+    Script(&'static str),
+    Npm(&'static str),
+}
+
+#[derive(Clone, Copy)]
+struct SetupCase {
+    harness: &'static str,
+    binary_flag: &'static str,
+    installer: InstallerKind,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    login_args: &'static str,
+}
+
+const SETUP_CASES: &[SetupCase] = &[
+    SetupCase { harness: "hermes", binary_flag: "--hermes-bin", installer: InstallerKind::Script("https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh"), login_args: "setup" },
+    SetupCase { harness: "mastracode", binary_flag: "--mastracode-bin", installer: InstallerKind::Npm("mastracode"), login_args: "" },
+    SetupCase { harness: "devin", binary_flag: "--devin-bin", installer: InstallerKind::Script("https://cli.devin.ai/install.sh"), login_args: "auth login" },
+    SetupCase {
+        harness: "claude",
+        binary_flag: "--claude-bin",
+        installer: InstallerKind::Script("https://claude.ai/install.sh"),
+        login_args: "auth login",
+    },
+    SetupCase {
+        harness: "codex",
+        binary_flag: "--codex-bin",
+        installer: InstallerKind::Npm("@openai/codex"),
+        login_args: "login",
+    },
+    SetupCase {
+        harness: "pi",
+        binary_flag: "--pi-bin",
+        installer: InstallerKind::Npm("@mariozechner/pi-coding-agent"),
+        login_args: "--no-session",
+    },
+    SetupCase {
+        harness: "opencode",
+        binary_flag: "--opencode-bin",
+        installer: InstallerKind::Script("https://opencode.ai/install"),
+        login_args: "auth login",
+    },
+    SetupCase {
+        harness: "cursor",
+        binary_flag: "--cursor-bin",
+        installer: InstallerKind::Script("https://cursor.com/install"),
+        login_args: "login",
+    },
+    SetupCase {
+        harness: "copilot",
+        binary_flag: "--copilot-bin",
+        installer: InstallerKind::Script("https://gh.io/copilot-install"),
+        login_args: "login",
+    },
+    SetupCase {
+        harness: "antigravity",
+        binary_flag: "--antigravity-bin",
+        installer: InstallerKind::Script("https://antigravity.google/cli/install.sh"),
+        login_args: "",
+    },
+    SetupCase {
+        harness: "mistral-vibe",
+        binary_flag: "--mistral-vibe-bin",
+        installer: InstallerKind::Script("https://mistral.ai/vibe/install.sh"),
+        login_args: "--setup",
+    },
+    SetupCase {
+        harness: "muse",
+        binary_flag: "--muse-bin",
+        installer: InstallerKind::Script("https://dev.meta.ai/install.sh"),
+        login_args: "login",
+    },
+    SetupCase {
+        harness: "qwen",
+        binary_flag: "--qwen-bin",
+        installer: InstallerKind::Script(
+            "https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen-standalone.sh",
+        ),
+        login_args: "",
+    },
+    SetupCase {
+        harness: "kimi",
+        binary_flag: "--kimi-bin",
+        installer: InstallerKind::Script("https://code.kimi.com/kimi-code/install.sh"),
+        login_args: "login",
+    },
+    SetupCase {
+        harness: "omp",
+        binary_flag: "--omp-bin",
+        installer: InstallerKind::Script("https://omp.sh/install"),
+        login_args: "--no-session",
+    },
+    SetupCase {
+        harness: "grok",
+        binary_flag: "--grok-bin",
+        installer: InstallerKind::Script("https://x.ai/cli/install.sh"),
+        login_args: "login",
+    },
+    SetupCase {
+        harness: "kilo",
+        binary_flag: "--kilo-bin",
+        installer: InstallerKind::Npm("@kilocode/cli"),
+        login_args: "auth login",
+    },
+    SetupCase {
+        harness: "openhands",
+        binary_flag: "--openhands-bin",
+        installer: InstallerKind::Script("https://install.openhands.dev/install.sh"),
+        login_args: "login",
+    },
+];
+
+fn write_executable(path: &Path, body: &str) {
+    fs::write(path, body).expect("write fake executable");
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+        .expect("make fake executable runnable");
+}
+
+fn isolated_path(bin: &Path) -> String {
+    format!("{}:/usr/bin:/bin", bin.display())
+}
+
+fn configure(command: &mut Command, root: &Path, bin: &Path, executable: &Path) {
+    command
+        .env("HOME", root)
+        .env("PATH", isolated_path(bin))
+        .env("AGENTVIEW_FAKE_EXECUTABLE", executable)
+        .stdin(Stdio::null());
+}
+
+#[test]
+fn every_missing_harness_requires_consent_then_runs_only_its_official_installer() {
+    for case in SETUP_CASES {
+        let directory = tempfile::tempdir().expect("create isolated setup home");
+        let bin = directory.path().join("bin");
+        fs::create_dir(&bin).expect("create isolated PATH");
+        let executable = directory.path().join(format!("{}-bin", case.harness));
+        let curl_log = directory.path().join("curl.log");
+        let npm_log = directory.path().join("npm.log");
+
+        write_executable(
+            &bin.join("curl"),
+            r##"#!/bin/sh
+printf '%s\n' "$*" > "$AGENTVIEW_SETUP_CURL_LOG"
+output=''
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = '--output' ]; then
+    shift
+    output=$1
+  fi
+  shift
+done
+[ -n "$output" ] || exit 81
+printf '%s\n' '#!/bin/sh' 'mkdir -p "$(dirname "$AGENTVIEW_FAKE_EXECUTABLE")"' 'printf "#!/bin/sh\\nexit 0\\n" > "$AGENTVIEW_FAKE_EXECUTABLE"' 'chmod 700 "$AGENTVIEW_FAKE_EXECUTABLE"' > "$output"
+printf '%s\n' 'download progress 100%' >&2
+"##,
+        );
+        write_executable(
+            &bin.join("bash"),
+            r##"#!/bin/sh
+[ -f "$1" ] || exit 82
+printf '%s\n' "$*" > "$HOME/installer-args.log"
+/bin/bash "$@"
+printf '%s\n' 'provider install progress 100%'
+"##,
+        );
+        write_executable(
+            &bin.join("npm"),
+            r##"#!/bin/sh
+printf '%s\n' "$*" > "$AGENTVIEW_SETUP_NPM_LOG"
+mkdir -p "$(dirname "$AGENTVIEW_FAKE_EXECUTABLE")"
+printf '#!/bin/sh\nexit 0\n' > "$AGENTVIEW_FAKE_EXECUTABLE"
+chmod 700 "$AGENTVIEW_FAKE_EXECUTABLE"
+printf '%s\n' 'npm install progress 100%'
+"##,
+        );
+
+        let configure_case = |command: &mut Command| {
+            configure(command, directory.path(), &bin, &executable);
+            command
+                .env("AGENTVIEW_SETUP_CURL_LOG", &curl_log)
+                .env("AGENTVIEW_SETUP_NPM_LOG", &npm_log);
+        };
+
+        let mut unconfirmed = Command::new(env!("CARGO_BIN_EXE_agentview"));
+        configure_case(&mut unconfirmed);
+        let output = unconfirmed
+            .args([case.binary_flag, executable.to_str().unwrap()])
+            .args(["setup", case.harness])
+            .output()
+            .expect("run unconfirmed setup");
+        assert!(
+            !output.status.success(),
+            "{} changed state without consent",
+            case.harness
+        );
+        assert!(String::from_utf8_lossy(&output.stderr).contains("rerun with --yes"));
+        assert!(!curl_log.exists() && !npm_log.exists());
+
+        let mut confirmed = Command::new(env!("CARGO_BIN_EXE_agentview"));
+        configure_case(&mut confirmed);
+        let output = confirmed
+            .args([case.binary_flag, executable.to_str().unwrap()])
+            .args(["setup", case.harness, "--yes"])
+            .output()
+            .expect("run confirmed setup");
+        assert!(
+            output.status.success(),
+            "{} setup failed: {}",
+            case.harness,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("installation completed"), "{stdout}");
+        assert!(
+            stdout.contains("Complete authentication interactively"),
+            "{stdout}"
+        );
+        assert!(executable.is_file());
+
+        match case.installer {
+            InstallerKind::Script(url) => {
+                let log = fs::read_to_string(&curl_log).expect("script installer curl log");
+                assert!(
+                    log.contains(url),
+                    "{} used the wrong URL: {log}",
+                    case.harness
+                );
+                assert!(!npm_log.exists());
+                let args = fs::read_to_string(directory.path().join("installer-args.log")).unwrap();
+                assert_eq!(args.contains("--skip-setup"), case.harness == "hermes");
+            }
+            InstallerKind::Npm(package) => {
+                let log = fs::read_to_string(&npm_log).expect("npm installer log");
+                assert_eq!(log.trim(), format!("install --global {package}"));
+                assert!(!curl_log.exists());
+            }
+        }
+    }
+}
+
+#[test]
+fn failed_downloads_and_installers_never_report_success_or_start_login() {
+    for case in SETUP_CASES {
+        for phase in ["download", "install"] {
+            let directory = tempfile::tempdir().unwrap();
+            let bin = directory.path().join("bin");
+            fs::create_dir(&bin).unwrap();
+            let executable = directory.path().join("missing-provider");
+            write_executable(
+                &bin.join("curl"),
+                if phase == "download" {
+                    "#!/bin/sh\nexit 22\n"
+                } else {
+                    "#!/bin/sh\nwhile [ $# -gt 0 ]; do if [ \"$1\" = --output ]; then shift; printf '#!/bin/sh\\nexit 23\\n' > \"$1\"; exit 0; fi; shift; done; exit 24\n"
+                },
+            );
+            write_executable(&bin.join("npm"), "#!/bin/sh\nexit 23\n");
+            write_executable(&bin.join("bash"), "#!/bin/sh\nexec /bin/bash \"$@\"\n");
+            let mut command = Command::new(env!("CARGO_BIN_EXE_agentview"));
+            configure(&mut command, directory.path(), &bin, &executable);
+            let output = command
+                .args([
+                    case.binary_flag,
+                    executable.to_str().unwrap(),
+                    "setup",
+                    case.harness,
+                    "--yes",
+                ])
+                .output()
+                .unwrap();
+            assert!(!output.status.success(), "{} {phase}", case.harness);
+            assert!(!String::from_utf8_lossy(&output.stdout).contains("installation completed"));
+            let error = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                error.contains("installer") || error.contains("download"),
+                "{error}"
+            );
+            assert!(!executable.exists());
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn every_installed_harness_hands_the_exact_native_login_command_to_a_real_pty() {
+    for case in SETUP_CASES {
+        let directory = tempfile::tempdir().expect("create isolated setup home");
+        let bin = directory.path().join("bin");
+        fs::create_dir(&bin).expect("create isolated PATH");
+        let executable = directory.path().join(format!("{}-bin", case.harness));
+        let login_log = directory.path().join("login.log");
+
+        write_executable(
+            &executable,
+            r##"#!/bin/sh
+printf '%s\n' "$*" > "$AGENTVIEW_SETUP_LOGIN_LOG"
+printf '%s\n' 'native login opened'
+"##,
+        );
+
+        let cli = PathBuf::from(env!("CARGO_BIN_EXE_agentview"));
+        let shell_command = format!(
+            "exec '{}' '{}' '{}' setup '{}' --yes",
+            cli.display(),
+            case.binary_flag,
+            executable.display(),
+            case.harness
+        );
+        let output = Command::new("script")
+            .args(["-qefc", &shell_command, "/dev/null"])
+            .env("HOME", directory.path())
+            .env("PATH", isolated_path(&bin))
+            .env("AGENTVIEW_SETUP_LOGIN_LOG", &login_log)
+            .output()
+            .expect("run setup inside a real PTY");
+
+        assert!(
+            output.status.success(),
+            "{} login handoff failed: {}",
+            case.harness,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            fs::read_to_string(&login_log)
+                .expect("native login argv")
+                .trim(),
+            case.login_args,
+            "{} used the wrong native login arguments",
+            case.harness
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("native login opened"), "{stdout}");
+        assert!(stdout.contains("setup completed"), "{stdout}");
+    }
+}

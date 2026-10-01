@@ -1,0 +1,622 @@
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::fmt;
+use std::io::{self, BufRead, BufReader, Read, Write};
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
+
+#[cfg(unix)]
+use std::os::unix::net::UnixStream;
+
+use anyhow::{anyhow, bail, Context, Result};
+use serde::Deserialize;
+use serde_json::{json, Value};
+#[cfg(unix)]
+use tungstenite::{client, Message, WebSocket};
+
+// Matches tungstenite's default WebSocket message cap; a single thread with
+// pasted files or screenshots routinely exceeds a few MiB.
+const MAX_RPC_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
+
+/// A response to one of our requests was larger than the safety limit.
+///
+/// The connection stays usable; only that request fails, so callers can ask
+/// for a smaller shape of the same data.
+#[derive(Debug)]
+pub(crate) struct OversizedResponse {
+    method: String,
+}
+
+impl fmt::Display for OversizedResponse {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "App Server {} response exceeded the {}-byte safety limit",
+            self.method, MAX_RPC_MESSAGE_BYTES
+        )
+    }
+}
+
+impl std::error::Error for OversizedResponse {}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum AppServerInvocation {
+    Process { program: String, args: Vec<String> },
+    UnixWebSocket { socket_path: std::path::PathBuf },
+}
+
+impl AppServerInvocation {
+    pub fn direct(executable: impl Into<String>) -> Self {
+        Self::Process {
+            program: executable.into(),
+            args: vec!["app-server".into(), "--listen".into(), "stdio://".into()],
+        }
+    }
+
+    pub fn docker(container_id: impl Into<String>) -> Self {
+        Self::Process {
+            program: "docker".into(),
+            args: vec![
+                "exec".into(),
+                "-i".into(),
+                container_id.into(),
+                "codex".into(),
+                "app-server".into(),
+                "--listen".into(),
+                "stdio://".into(),
+            ],
+        }
+    }
+
+    #[cfg(all(test, unix))]
+    pub fn proxy(executable: impl Into<String>, socket_path: &std::path::Path) -> Self {
+        Self::Process {
+            program: executable.into(),
+            args: vec![
+                "app-server".into(),
+                "proxy".into(),
+                "--sock".into(),
+                socket_path.to_string_lossy().into_owned(),
+            ],
+        }
+    }
+
+    pub fn unix_websocket(socket_path: impl Into<std::path::PathBuf>) -> Self {
+        Self::UnixWebSocket {
+            socket_path: socket_path.into(),
+        }
+    }
+}
+
+enum OutputLine {
+    Line(String),
+    Error(String),
+}
+
+/// One initialized App Server connection.
+///
+/// Requests are serialized by the caller, but responses are still correlated
+/// by id because App Server may interleave notifications and server requests.
+struct ProcessTransport {
+    child: Child,
+    stdin: ChildStdin,
+    lines: Receiver<OutputLine>,
+    stdout_reader: Option<JoinHandle<()>>,
+    stderr_reader: Option<JoinHandle<Vec<u8>>>,
+}
+
+enum ClientTransport {
+    Process(ProcessTransport),
+    #[cfg(unix)]
+    UnixWebSocket(Box<WebSocket<UnixStream>>),
+}
+
+pub(crate) struct AppServerClient {
+    transport: ClientTransport,
+    pending_responses: BTreeMap<u64, Value>,
+    oversized_responses: BTreeSet<u64>,
+    events: VecDeque<Value>,
+    next_id: u64,
+}
+
+impl AppServerClient {
+    pub fn connect(invocation: &AppServerInvocation) -> Result<Self> {
+        let transport = match invocation {
+            AppServerInvocation::Process { program, args } => {
+                ClientTransport::Process(Self::connect_process(program, args)?)
+            }
+            AppServerInvocation::UnixWebSocket { socket_path } => {
+                #[cfg(unix)]
+                {
+                    let stream = UnixStream::connect(socket_path).with_context(|| {
+                        format!(
+                            "failed to connect to App Server socket {}",
+                            socket_path.display()
+                        )
+                    })?;
+                    let (socket, _) = client("ws://localhost/", stream)
+                        .context("App Server Unix WebSocket handshake failed")?;
+                    ClientTransport::UnixWebSocket(Box::new(socket))
+                }
+                #[cfg(not(unix))]
+                {
+                    let _ = socket_path;
+                    bail!("App Server Unix sockets are unavailable on this platform")
+                }
+            }
+        };
+
+        let mut client = Self {
+            transport,
+            pending_responses: BTreeMap::new(),
+            oversized_responses: BTreeSet::new(),
+            events: VecDeque::new(),
+            next_id: 1,
+        };
+        client.request(
+            "initialize",
+            json!({
+                "clientInfo": {
+                    "name": "agentview",
+                    "title": "agentview",
+                    "version": env!("CARGO_PKG_VERSION")
+                }
+            }),
+        )?;
+        client.notify("initialized", json!({}))?;
+        Ok(client)
+    }
+
+    fn connect_process(program: &str, args: &[String]) -> Result<ProcessTransport> {
+        let mut command = Command::new(program);
+        command
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
+        let mut child = spawn_retrying_text_busy(&mut command).with_context(|| {
+            format!(
+                "failed to start App Server transport {} {}",
+                program,
+                args.join(" ")
+            )
+        })?;
+        let stdin = child
+            .stdin
+            .take()
+            .context("failed to capture App Server stdin")?;
+        let stdout = child
+            .stdout
+            .take()
+            .context("failed to capture App Server stdout")?;
+        let stderr = child
+            .stderr
+            .take()
+            .context("failed to capture App Server stderr")?;
+        let (sender, lines) = mpsc::channel();
+        let stdout_reader = thread::spawn(move || {
+            for line in BufReader::new(stdout).lines() {
+                let message = match line {
+                    Ok(line) => OutputLine::Line(line),
+                    Err(error) => OutputLine::Error(error.to_string()),
+                };
+                if sender.send(message).is_err() {
+                    break;
+                }
+            }
+        });
+        let stderr_reader = thread::spawn(move || {
+            let mut stderr = stderr.take(128 * 1024);
+            let mut bytes = Vec::new();
+            let _ = stderr.read_to_end(&mut bytes);
+            bytes
+        });
+
+        Ok(ProcessTransport {
+            child,
+            stdin,
+            lines,
+            stdout_reader: Some(stdout_reader),
+            stderr_reader: Some(stderr_reader),
+        })
+    }
+
+    pub fn request(&mut self, method: &str, params: Value) -> Result<Value> {
+        self.request_with_timeout(method, params, Duration::from_secs(15))
+    }
+
+    pub fn request_with_timeout(
+        &mut self,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+    ) -> Result<Value> {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.send(json!({"method": method, "id": id, "params": params}))?;
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(response) = self.pending_responses.remove(&id) {
+                return response_result(method, response);
+            }
+            if self.oversized_responses.remove(&id) {
+                return Err(OversizedResponse {
+                    method: method.to_owned(),
+                }
+                .into());
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                bail!("timed out waiting for App Server {method}");
+            }
+            let line = self.receive(remaining).with_context(|| {
+                format!("App Server closed or timed out while waiting for {method}")
+            })?;
+            self.accept_line(line)?;
+        }
+    }
+
+    pub fn notify(&mut self, method: &str, params: Value) -> Result<()> {
+        self.send(json!({"method": method, "params": params}))
+    }
+
+    /// Answer a server-initiated request while preserving its opaque ID.
+    pub fn respond(&mut self, id: Value, result: Value) -> Result<()> {
+        if !id.is_string() && id.as_i64().is_none() {
+            bail!("App Server request ID must be a string or signed integer");
+        }
+        self.send(json!({"id": id, "result": result}))
+    }
+
+    pub fn drain_events(&mut self) -> Result<Vec<Value>> {
+        let mut received = Vec::new();
+        match &mut self.transport {
+            ClientTransport::Process(process) => loop {
+                match process.lines.try_recv() {
+                    Ok(line) => received.push(line),
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        bail!("App Server transport closed")
+                    }
+                }
+            },
+            #[cfg(unix)]
+            ClientTransport::UnixWebSocket(socket) => {
+                socket.get_mut().set_nonblocking(true)?;
+                loop {
+                    match socket.read() {
+                        Ok(Message::Text(text)) => received.push(OutputLine::Line(text)),
+                        Ok(Message::Binary(bytes)) => received.push(OutputLine::Line(
+                            String::from_utf8(bytes)
+                                .context("App Server sent non-UTF-8 WebSocket data")?,
+                        )),
+                        Ok(Message::Ping(bytes)) => socket.send(Message::Pong(bytes))?,
+                        Ok(Message::Pong(_)) | Ok(Message::Frame(_)) => {}
+                        Ok(Message::Close(_)) => bail!("App Server WebSocket closed"),
+                        Err(tungstenite::Error::Io(error))
+                            if error.kind() == std::io::ErrorKind::WouldBlock =>
+                        {
+                            break
+                        }
+                        Err(error) => {
+                            return Err(error).context("App Server WebSocket read failed")
+                        }
+                    }
+                }
+                socket.get_mut().set_nonblocking(false)?;
+            }
+        }
+        for line in received {
+            self.accept_line(line)?;
+        }
+        Ok(self.events.drain(..).collect())
+    }
+
+    fn receive(&mut self, timeout: Duration) -> Result<OutputLine> {
+        match &mut self.transport {
+            ClientTransport::Process(process) => process
+                .lines
+                .recv_timeout(timeout)
+                .map_err(|error| anyhow!("App Server process transport failed: {error}")),
+            #[cfg(unix)]
+            ClientTransport::UnixWebSocket(socket) => {
+                socket.get_mut().set_read_timeout(Some(timeout))?;
+                loop {
+                    match socket.read() {
+                        Ok(Message::Text(text)) => return Ok(OutputLine::Line(text)),
+                        Ok(Message::Binary(bytes)) => {
+                            return Ok(OutputLine::Line(
+                                String::from_utf8(bytes)
+                                    .context("App Server sent non-UTF-8 WebSocket data")?,
+                            ))
+                        }
+                        Ok(Message::Ping(bytes)) => socket.send(Message::Pong(bytes))?,
+                        Ok(Message::Pong(_)) | Ok(Message::Frame(_)) => {}
+                        Ok(Message::Close(_)) => bail!("App Server WebSocket closed"),
+                        Err(error) => {
+                            return Err(error).context("App Server WebSocket read failed")
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn accept_line(&mut self, line: OutputLine) -> Result<()> {
+        let line = match line {
+            OutputLine::Line(line) => line,
+            OutputLine::Error(error) => bail!("App Server stdout error: {error}"),
+        };
+        if line.len() > MAX_RPC_MESSAGE_BYTES {
+            #[derive(Deserialize)]
+            struct Envelope {
+                id: Option<Value>,
+                method: Option<String>,
+            }
+            if let Ok(Envelope { id, method: None }) = serde_json::from_str::<Envelope>(&line) {
+                if let Some(id) = id.as_ref().and_then(Value::as_u64) {
+                    self.oversized_responses.insert(id);
+                    return Ok(());
+                }
+            }
+            bail!(
+                "App Server message exceeded the {}-byte safety limit",
+                MAX_RPC_MESSAGE_BYTES
+            );
+        }
+        let message: Value = serde_json::from_str(&line)
+            .with_context(|| format!("invalid App Server JSONL: {line}"))?;
+        let is_server_message = message.get("method").is_some();
+        if !is_server_message {
+            if let Some(id) = message.get("id").and_then(Value::as_u64) {
+                self.pending_responses.insert(id, message);
+                return Ok(());
+            }
+        }
+        self.events.push_back(message);
+        Ok(())
+    }
+
+    fn send(&mut self, message: Value) -> Result<()> {
+        match &mut self.transport {
+            ClientTransport::Process(process) => {
+                serde_json::to_writer(&mut process.stdin, &message)?;
+                process.stdin.write_all(b"\n")?;
+                process.stdin.flush()?;
+            }
+            #[cfg(unix)]
+            ClientTransport::UnixWebSocket(socket) => {
+                socket.send(Message::Text(serde_json::to_string(&message)?))?;
+            }
+        }
+        Ok(())
+    }
+}
+
+fn spawn_retrying_text_busy(command: &mut Command) -> io::Result<Child> {
+    #[cfg(unix)]
+    {
+        const RETRIES: usize = 8;
+        const RETRY_DELAY: Duration = Duration::from_millis(25);
+        for attempt in 0..=RETRIES {
+            match command.spawn() {
+                Ok(child) => return Ok(child),
+                Err(error) if error.raw_os_error() == Some(libc::ETXTBSY) && attempt < RETRIES => {
+                    thread::sleep(RETRY_DELAY);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        unreachable!("the bounded App Server spawn loop always returns")
+    }
+    #[cfg(not(unix))]
+    {
+        command.spawn()
+    }
+}
+
+fn response_result(method: &str, message: Value) -> Result<Value> {
+    if let Some(error) = message.get("error") {
+        bail!("App Server {method} failed: {error}");
+    }
+    message
+        .get("result")
+        .cloned()
+        .context("App Server response omitted result")
+}
+
+impl Drop for AppServerClient {
+    fn drop(&mut self) {
+        match &mut self.transport {
+            ClientTransport::Process(process) => {
+                terminate_process_transport(process);
+                if let Some(reader) = process.stdout_reader.take() {
+                    let _ = reader.join();
+                }
+                if let Some(reader) = process.stderr_reader.take() {
+                    let _ = reader.join();
+                }
+            }
+            #[cfg(unix)]
+            ClientTransport::UnixWebSocket(socket) => {
+                let _ = socket.close(None);
+            }
+        }
+    }
+}
+
+fn terminate_process_transport(process: &mut ProcessTransport) {
+    #[cfg(unix)]
+    {
+        let process_group = process.child.id() as i32;
+        // connect_process created this exact child as a new process-group
+        // leader. Signal the group so npm/shell wrappers cannot leave the
+        // native App Server holding our stdout/stderr pipes forever.
+        let _ = unsafe { libc::kill(-process_group, libc::SIGTERM) };
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let _ = process.child.try_wait();
+            let group_exists = unsafe { libc::kill(-process_group, 0) } == 0
+                || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
+            if !group_exists {
+                break;
+            }
+            if Instant::now() >= deadline {
+                let _ = unsafe { libc::kill(-process_group, libc::SIGKILL) };
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        let _ = process.child.wait();
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = process.child.kill();
+        let _ = process.child.wait();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn exchanges_json_rpc_over_a_unix_websocket() {
+        use std::os::unix::net::UnixListener;
+
+        let directory = tempfile::tempdir().unwrap();
+        let socket_path = directory.path().join("app-server.sock");
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut socket = tungstenite::accept(stream).unwrap();
+
+            let initialize: Value =
+                serde_json::from_str(&socket.read().unwrap().into_text().unwrap()).unwrap();
+            assert_eq!(initialize["method"], "initialize");
+            let initialize_id = initialize["id"].as_u64().unwrap();
+            socket
+                .send(Message::Text(
+                    json!({"id": initialize_id, "result": {}}).to_string(),
+                ))
+                .unwrap();
+
+            let initialized: Value =
+                serde_json::from_str(&socket.read().unwrap().into_text().unwrap()).unwrap();
+            assert_eq!(initialized["method"], "initialized");
+            assert!(initialized.get("id").is_none());
+
+            let request: Value =
+                serde_json::from_str(&socket.read().unwrap().into_text().unwrap()).unwrap();
+            assert_eq!(request["method"], "thread/list");
+            let request_id = request["id"].as_u64().unwrap();
+            socket
+                .send(Message::Text(
+                    json!({
+                        "id": "approval-1",
+                        "method": "item/commandExecution/requestApproval",
+                        "params": {
+                            "threadId": "thread-1",
+                            "turnId": "turn-1",
+                            "itemId": "item-1",
+                            "startedAtMs": 1,
+                            "command": "cargo test"
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap();
+            socket
+                .send(Message::Text(
+                    json!({
+                        "id": -7,
+                        "method": "item/fileChange/requestApproval",
+                        "params": {
+                            "threadId": "thread-1",
+                            "turnId": "turn-1",
+                            "itemId": "item-2",
+                            "startedAtMs": 2
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap();
+            socket
+                .send(Message::Text(
+                    json!({"id": request_id, "result": {"data": []}}).to_string(),
+                ))
+                .unwrap();
+
+            let approval: Value =
+                serde_json::from_str(&socket.read().unwrap().into_text().unwrap()).unwrap();
+            assert_eq!(
+                approval,
+                json!({
+                    "id": "approval-1",
+                    "result": {"decision": "accept"}
+                })
+            );
+            let denial: Value =
+                serde_json::from_str(&socket.read().unwrap().into_text().unwrap()).unwrap();
+            assert_eq!(
+                denial,
+                json!({
+                    "id": -7,
+                    "result": {"decision": "decline"}
+                })
+            );
+        });
+
+        let mut client =
+            AppServerClient::connect(&AppServerInvocation::unix_websocket(socket_path)).unwrap();
+        assert_eq!(
+            client.request("thread/list", json!({})).unwrap(),
+            json!({"data": []})
+        );
+        let events = client.drain_events().unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0]["id"], "approval-1");
+        assert_eq!(events[1]["id"], -7);
+        client
+            .respond(json!("approval-1"), json!({"decision": "accept"}))
+            .unwrap();
+        client
+            .respond(json!(-7), json!({"decision": "decline"}))
+            .unwrap();
+        drop(client);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn classifies_server_requests_as_events_even_when_the_id_is_numeric() {
+        let message = json!({
+            "id": 1,
+            "method": "item/commandExecution/requestApproval",
+            "params": {"threadId": "thread-1"}
+        });
+        assert!(message.get("method").is_some());
+        assert!(message.get("result").is_none());
+    }
+
+    #[test]
+    fn extracts_success_and_error_responses() {
+        assert_eq!(
+            response_result("thread/list", json!({"id": 1, "result": {"data": []}})).unwrap(),
+            json!({"data": []})
+        );
+        assert!(response_result(
+            "thread/list",
+            json!({"id": 1, "error": {"code": -32601, "message": "missing"}})
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("missing"));
+    }
+}

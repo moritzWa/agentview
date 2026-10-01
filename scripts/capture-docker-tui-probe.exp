@@ -1,0 +1,55 @@
+#!/usr/bin/expect -f
+
+# Drive the shipped binary inside a fresh, read-only, credential-free Docker
+# PTY. This is a layout/input/restoration probe, not a provider-authenticated
+# website recording.
+if {$argc != 4} {
+    puts stderr "usage: capture-docker-tui-probe.exp BINARY FIXTURE IMAGE CONTAINER"
+    exit 2
+}
+
+set timeout 25
+fconfigure stdout -buffering none
+set binary [lindex $argv 0]
+set fixture [lindex $argv 1]
+set image [lindex $argv 2]
+set container [lindex $argv 3]
+
+log_user 0
+spawn docker run --rm -it \
+    --name $container \
+    --network none \
+    --read-only \
+    --user 65534:65534 \
+    --cap-drop ALL \
+    --security-opt no-new-privileges:true \
+    --pids-limit 128 \
+    --tmpfs /tmp:rw,nosuid,nodev,size=64m \
+    --env HOME=/tmp/home \
+    --env XDG_STATE_HOME=/tmp/state \
+    --volume $binary:/usr/local/bin/agentview:ro \
+    --volume $fixture:/fixtures/sessions.json:ro \
+    --entrypoint /usr/local/bin/agentview \
+    $image \
+    --fixture /fixtures/sessions.json \
+    --all \
+    --include-interactive \
+    --refresh-ms 10000
+log_user 1
+
+expect -re "release-reviewer"
+after 700
+send -- "\033\[B"
+after 250
+send -- "\033\[B"
+after 600
+send -- "?"
+expect -re "shortcuts"
+after 900
+send -- "?"
+after 400
+send -- "\033"
+expect eof
+
+set result [wait]
+exit [lindex $result 3]

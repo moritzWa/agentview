@@ -1,0 +1,16 @@
+/target/
+/.native-corpus/
+/dist/
+/dist-v*/
+/.idea/
+/.vscode/
+*.swp
+*.swo
+__pycache__/
+*.pyc
+.DS_Store
+
+# Runtime state and local exploration artifacts.
+/.agentview/
+/tmp/
+

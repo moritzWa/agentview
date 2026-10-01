@@ -1,0 +1,76 @@
+{
+  "codingHarnesses": [
+    {
+      "id": "claude",
+      "name": "Claude Code"
+    },
+    {
+      "id": "codex",
+      "name": "OpenAI Codex"
+    },
+    {
+      "id": "pi",
+      "name": "Pi"
+    },
+    {
+      "id": "opencode",
+      "name": "OpenCode"
+    },
+    {
+      "id": "cursor",
+      "name": "Cursor"
+    },
+    {
+      "id": "copilot",
+      "name": "GitHub Copilot"
+    },
+    {
+      "id": "antigravity",
+      "name": "Antigravity"
+    },
+    {
+      "id": "mistral-vibe",
+      "name": "Mistral Vibe"
+    },
+    {
+      "id": "muse",
+      "name": "Muse Code"
+    },
+    {
+      "id": "qwen",
+      "name": "Qwen Code"
+    },
+    {
+      "id": "kimi",
+      "name": "Kimi Code"
+    },
+    {
+      "id": "omp",
+      "name": "Oh My Pi"
+    },
+    {
+      "id": "grok",
+      "name": "Grok"
+    },
+    {
+      "id": "kilo",
+      "name": "Kilo Code"
+    },
+    {
+      "id": "openhands",
+      "name": "OpenHands"
+    },
+    {
+      "id": "hermes",
+      "name": "Hermes Agent"
+    },
+    {
+      "id": "mastracode",
+      "name": "MastraCode"
+    },
+    {
+      "id": "devin",
+      "name": "Devin"
+    }
+  ]
+}

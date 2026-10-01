@@ -1,0 +1,41 @@
+[package]
+name = "agentview"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "Open terminal dashboard for supervising multiple coding-agent CLIs"
+license = "MIT"
+repository = "https://github.com/moritzWa/agentview"
+readme = "README.md"
+keywords = ["agents", "agentview", "tui", "terminal", "dashboard"]
+categories = ["command-line-utilities", "development-tools"]
+
+[[bin]]
+name = "agentview"
+path = "src/main.rs"
+
+[dependencies]
+# Exact versions keep the project buildable with the documented Rust 1.75 MSRV.
+anyhow = "=1.0.86"
+clap = { version = "=4.5.4", features = ["derive"] }
+crossterm = { version = "=0.27.0", features = ["bracketed-paste"] }
+getrandom = "=0.2.17"
+libc = "=0.2.189"
+ratatui = "=0.26.3"
+serde = { version = "=1.0.203", features = ["derive"] }
+serde_json = "=1.0.117"
+rusqlite = { version = "=0.31.0", features = ["bundled", "hooks"] }
+tungstenite = { version = "=0.21.0", default-features = false, features = ["handshake"] }
+# Keep the transitive URL parser compatible with the project's Rust 1.75 MSRV.
+# Newer url 2.5.x releases pull in edition-2024 IDNA crates.
+url = "=2.4.1"
+# Ratatui's compatible range otherwise resolves to a release requiring Rust 1.85.
+unicode-segmentation = "=1.12.0"
+vt100 = "=0.15.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.52.0", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+
+[dev-dependencies]
+pretty_assertions = "=1.4.0"
+tempfile = "=3.10.1"
