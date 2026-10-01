@@ -125,10 +125,10 @@ fn product_readme_and_catalog_share_one_exact_harness_inventory() {
     )));
     assert!(
         readme.contains(&format!(
-            "{} coding\nharnesses plus Terminal",
+            "Works with {} coding\nharnesses",
             Provider::CODING_HARNESS_COUNT
         )),
-        "README must state the exact coding-harness and Terminal counts"
+        "README tagline must state the exact coding-harness count"
     );
 
     let feature_rows = catalog_names
