@@ -2,9 +2,9 @@
 
 <h1><img src="docs/assets/logo.svg" alt="agentview logo" width="40" height="40"> agentview</h1>
 
-**Every coding agent you have running, in one terminal view.**<br>
-See what's working, what needs you, and jump straight into it, across 18 coding
-harnesses plus Terminal.
+**All your coding agents. One terminal.**<br>
+See which one needs you. Jump in, jump back out. Works with 18 coding
+harnesses and plain shell jobs.
 
 [![Tests](https://img.shields.io/badge/tests-verified-2ea44f.svg)](docs/testing.md)
 [![Release](https://img.shields.io/badge/release-v0.1.0-7c5cff.svg)](https://github.com/moritzWa/agentview/releases/latest)
@@ -52,10 +52,9 @@ changes. Force one with `--theme light` or `--theme dark`.
 
 ## Why agentview?
 
-Running several coding agents at once turns into a pile of terminal tabs, and
-the one that is stuck waiting for you is always in the tab you are not looking
-at. agentview puts every session from every harness in one list, sorted by what
-needs you.
+Five agents means five terminal tabs. The one waiting on you is always in the
+tab you aren't looking at. agentview lists every session from every harness in
+one place, with the ones that need you on top.
 
 agentview brings Claude Code, Codex, Pi, OpenCode, Cursor, GitHub Copilot,
 Antigravity, Mistral Vibe, Muse Code, Qwen Code, Kimi Code, Oh My Pi, Grok,
@@ -67,8 +66,7 @@ opens that harness's native interface.
   completed, or unknown, with the harness shown on every row.
 - **Return without killing the task.** Open a native session, then move back to
   the dashboard while its work continues.
-- **Arrange the list your way.** Pin sessions to the top, reorder them, and
-  hide the ones you are done with.
+- **Arrange the list.** Pin, reorder, hide.
 - **Stay fast as the list grows.** Discovery runs concurrently and the TUI only
   renders the page that fits the terminal.
 - **Use controls agentview can prove.** Stop, reply, archive, and delete are offered
