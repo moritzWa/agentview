@@ -445,7 +445,6 @@ task inside a fresh container remains a separate opt-in credentialed test.
 | Post-launch refresh/selection without blocking input | Slow-launch worker regression plus exact provider/session hint tests | Verified deterministically |
 | Canonical synthetic fixture at wide, narrow, and tiny sizes in fresh Docker PTYs | Reproducible procedure in `tui-validation.md` | Verified manually |
 | Windows x64 dashboard, JSON startup, state persistence, packaging, checksum installer, and update-safe executable replacement | Native Windows Server runner plus supplementary Docker cross-compilation of every test target | Verified on Windows |
-| Public website real-terminal stories, privacy, responsive layout, player controls, reduced motion, and accessibility | 18 parsed cast/action pairs, 270 extracted audit frames, and desktop/Mac-laptop/phone Playwright and Axe gates | Verified |
 | Codex request replay and exact response ownership | Disposable mock App Server | Verified |
 | Pi durable RPC launch/reconnect/reply/request/stop/delete/native handoff/model ownership | Disposable mock RPC plus isolated real non-model protocol/TUI/catalog probes | Verified on Linux |
 | OpenCode authenticated loopback launch/reconnect/inspect/reply/interrupt/model ownership | Disposable managed-server fixture with exact model payload plus isolated real credential-empty server probe | Verified on Linux |

@@ -50,14 +50,14 @@ impl Palette {
             dim: Color::Rgb(145, 145, 145),
             selected_bg: Color::Rgb(58, 60, 61),
             selected_fg: Color::White,
-            accent: Color::Rgb(89, 194, 201),
+            accent: Color::Rgb(172, 156, 255),
             attention: Color::Rgb(232, 191, 72),
             complete: Color::Rgb(101, 187, 120),
         }
     }
 
-    /// Neutral white with the greys and blue of VS Code's default light theme,
-    /// so the dashboard matches a light editor instead of tinting warm. Every
+    /// Neutral white with the greys of VS Code's default light theme, so the
+    /// dashboard matches a light editor instead of tinting warm. Every
     /// foreground keeps WCAG AA contrast (4.5:1) on both backgrounds, since
     /// dim, accent, and state spans also sit on the selected row.
     pub const fn light() -> Self {
@@ -67,7 +67,7 @@ impl Palette {
             dim: Color::Rgb(102, 102, 102),
             selected_bg: Color::Rgb(232, 232, 232),
             selected_fg: Color::Rgb(30, 30, 30),
-            accent: Color::Rgb(0, 95, 184),
+            accent: Color::Rgb(91, 63, 217),
             attention: Color::Rgb(135, 90, 0),
             complete: Color::Rgb(36, 112, 36),
         }

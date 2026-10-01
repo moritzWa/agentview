@@ -114,7 +114,7 @@ fn render_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let lines = if area.height <= 2 {
         vec![
             Line::from(vec![
-                Span::styled("◇ ", Style::default().fg(palette().accent)),
+                Span::styled("● ", Style::default().fg(palette().accent)),
                 Span::styled(title, Style::default().add_modifier(Modifier::BOLD)),
                 Span::styled(
                     if app.yolo { "  ⚠ YOLO" } else { "" },
@@ -128,17 +128,22 @@ fn render_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
             )),
         ]
     } else if area.width >= 70 {
+        let pill = Style::default().bg(Color::Rgb(124, 92, 255));
         vec![
             Line::from(vec![
-                Span::styled("  ◇◇  ", Style::default().fg(palette().accent)),
+                Span::styled(" ● ", Style::default().fg(palette().complete)),
+                Span::styled("━━━ ", Style::default().fg(palette().fg)),
                 Span::styled(title, Style::default().add_modifier(Modifier::BOLD)),
             ]),
             Line::from(vec![
-                Span::styled(" ◇  ◇ ", Style::default().fg(palette().accent)),
+                Span::styled(" ● ", pill.fg(Color::Rgb(252, 211, 77))),
+                Span::styled("━━ ", pill.fg(Color::White)),
+                Span::raw(" "),
                 Span::styled(format!("{providers} · {cwd}"), Style::default().fg(palette().dim)),
             ]),
             Line::from(vec![
-                Span::styled("  ◇◇  ", Style::default().fg(palette().accent)),
+                Span::styled(" ● ", Style::default().fg(palette().dim)),
+                Span::styled("━   ", Style::default().fg(palette().dim)),
                 Span::styled(
                     format!(
                         "{awaiting} awaiting input · {working} working · {completed_status} · {mode} view"

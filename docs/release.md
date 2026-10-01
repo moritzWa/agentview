@@ -58,11 +58,10 @@ installations cannot rely on developer-mode symlinks.
 
 ## Publication policy
 
-GitHub Actions runs read-only quality, test, portability, provider-setup, and
-website gates, but it does not publish releases or the website. Release
+GitHub Actions runs read-only quality, test, portability, and provider-setup
+gates, but it does not publish releases. Release
 artifacts are built, smoke-tested, checksum-verified, and uploaded manually by
-the maintainer from the exact reviewed commit. Pages is exported, tested, and
-pushed manually with [`scripts/publish-site.sh`](../scripts/publish-site.sh).
+the maintainer from the exact reviewed commit.
 
 The README deliberately uses repository-owned status badges. Its **Tests**
 badge links to the complete evidence record in

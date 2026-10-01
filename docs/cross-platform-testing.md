@@ -56,22 +56,9 @@ keyboard route, populated-session fixture, and visual acceptance criteria.
 Hermes and MastraCode have additional credential-free **actual native CLI**
 probes, including three conversation turns and exact resume after agentview restarts.
 See [their integration guide](exploration/shared-sqlite-harnesses.md#tests)
-for the commands. All three new SQLite readers, including Devin, also run
-against Session Migrate's pinned sanitized native-client corpus in CI. Their
+for the commands. Their
 fixture tests run in the ordinary platform matrix; Hermes/MastraCode queued
 native prompt input remains Unix-only.
-
-For website changes, also run:
-
-```console
-cd website
-npm ci --no-audit
-npm audit --omit=dev --audit-level=high
-npm run lint
-npm test
-npm run test:visual
-npm run export
-```
 
 ### Pinned Linux toolchain in Docker
 
@@ -103,8 +90,7 @@ perform these checks:
   architecture;
 - native Windows x64: locked tests, MSVC release build, startup without `HOME`,
   PowerShell installer tests, packaging, and artifact upload;
-- Rust 1.75 and stable: locked tests and release builds; and
-- website: audit, lint, unit tests, visual browser tests, and static export.
+- Rust 1.75 and stable: locked tests and release builds.
 
 Verify the run rather than relying on a branch badge:
 

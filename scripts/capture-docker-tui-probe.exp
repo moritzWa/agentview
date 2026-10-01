@@ -2,7 +2,7 @@
 
 # Drive the shipped binary inside a fresh, read-only, credential-free Docker
 # PTY. This is a layout/input/restoration probe, not a provider-authenticated
-# website recording.
+# recording.
 if {$argc != 4} {
     puts stderr "usage: capture-docker-tui-probe.exp BINARY FIXTURE IMAGE CONTAINER"
     exit 2

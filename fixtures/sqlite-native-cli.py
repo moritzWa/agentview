@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Credential-free CLI contract double. Never used by website recordings."""
+"""Credential-free CLI contract double."""
 import json
 import os
 from pathlib import Path
