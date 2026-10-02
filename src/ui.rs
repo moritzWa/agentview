@@ -539,7 +539,8 @@ fn render_composer(frame: &mut Frame<'_>, app: &App, area: Rect) {
         let yolo = if app.yolo { " · ⚠ YOLO" } else { "" };
         block = block.title(Span::styled(
             format!(
-                " new task · harness {} · {option_label} {launch_option}{yolo} ",
+                " {} · harness {} · {option_label} {launch_option}{yolo} ",
+                launch_directory_name(app),
                 app.launch_provider.label(),
             ),
             if app.yolo {
@@ -1106,6 +1107,7 @@ fn help_actions(app: &App) -> Vec<String> {
         .push("ctrl+g or /restore to search hidden and older sessions and bring one back".into());
     actions.push("/filter text to filter sessions".into());
     actions.push("ctrl+j for newline".into());
+    actions.push("ctrl+v pastes a clipboard image into a task or reply".into());
     actions.push("tab for new task/harness picker".into());
     actions.push("/harness [name] switches harness".into());
     actions.push("ctrl+o picks the folder for a new session".into());
@@ -1962,6 +1964,18 @@ fn header_directory(app: &App) -> String {
         .unwrap_or_else(|| "unknown directory".into())
 }
 
+fn launch_directory_name(app: &App) -> String {
+    app.launch_directory()
+        .or_else(|| std::env::current_dir().ok())
+        .map(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string())
+        })
+        .map(|name| sanitize_inline(&name))
+        .unwrap_or_else(|| "unknown directory".into())
+}
+
 fn abbreviate_path(path: &std::path::Path) -> String {
     std::env::var_os("HOME")
         .map(std::path::PathBuf::from)
@@ -2717,7 +2731,11 @@ mod tests {
         terminal.draw(|frame| render(frame, &app)).unwrap();
         let rendered = buffer_text(terminal.backend().buffer());
 
-        assert!(rendered.contains("new task · harness Claude · model opus"));
+        assert!(rendered.contains(&format!(
+            "{} · harness Claude · model opus",
+            launch_directory_name(&app)
+        )));
+        assert!(!rendered.contains("new task"));
         assert!(rendered.contains("tab harness"));
         assert!(rendered.contains("shift+tab model"));
     }
@@ -2748,7 +2766,10 @@ mod tests {
         terminal.draw(|frame| render(frame, &app)).unwrap();
         let rendered = buffer_text(terminal.backend().buffer());
 
-        assert!(rendered.contains("new task · harness Terminal · shell default"));
+        assert!(rendered.contains(&format!(
+            "{} · harness Terminal · shell default",
+            launch_directory_name(&app)
+        )));
         assert!(rendered.contains("choose Terminal shell · 3 results"));
         assert!(rendered.contains("Default shell"));
         assert!(rendered.contains(install_label));

@@ -560,6 +560,14 @@ pub fn run_dashboard(
                     other => other,
                 };
                 match event {
+                    // Cmd+V with only an image on the clipboard pastes
+                    // nothing, so an empty paste looks for the image.
+                    Event::Paste(text) if text.is_empty() => {
+                        if app.request_image_paste() == AppAction::PasteImage {
+                            paste_clipboard_image(&mut app);
+                        }
+                        needs_draw = true;
+                    }
                     Event::Paste(text) => {
                         app.paste_input(&text);
                         needs_draw = true;
@@ -1445,6 +1453,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> AppAction {
                 app.delete_to_line_start();
                 AppAction::None
             }
+            KeyCode::Char('v') => app.request_image_paste(),
             _ => AppAction::None,
         };
     }
@@ -1856,6 +1865,10 @@ fn dispatch_action<T: DashboardTerminal, C: DashboardControl>(
             load_models: Some(provider),
             ..ActionEffect::default()
         },
+        AppAction::PasteImage => {
+            paste_clipboard_image(app);
+            ActionEffect::default()
+        }
         AppAction::Authenticate { provider } => {
             if let Err(error) = terminal.suspend_dashboard() {
                 app.set_notice(format!("failed to suspend dashboard: {error:#}"));
@@ -1987,6 +2000,16 @@ fn dispatch_action<T: DashboardTerminal, C: DashboardControl>(
     }
 }
 
+fn paste_clipboard_image(app: &mut App) {
+    match crate::clipboard::default_image_dir()
+        .and_then(|dir| crate::clipboard::save_clipboard_image(&dir))
+    {
+        Ok(Some(path)) => app.attach_image(path),
+        Ok(None) => app.set_notice("the clipboard has no image"),
+        Err(error) => app.set_notice(format!("image paste failed: {error:#}")),
+    }
+}
+
 #[cfg(test)]
 fn handle_action<T: DashboardTerminal, C: DashboardControl>(
     terminal: &mut T,
@@ -2016,6 +2039,7 @@ fn handle_action_legacy<T: DashboardTerminal, C: DashboardControl>(
         | AppAction::SetPin { .. }
         | AppAction::SetSortKeys { .. }
         | AppAction::BrowseHidden
+        | AppAction::PasteImage
         | AppAction::Unhide { .. }
         | AppAction::Restore { .. } => false,
         AppAction::Refresh => {
