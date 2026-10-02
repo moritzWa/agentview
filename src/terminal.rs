@@ -1477,6 +1477,9 @@ fn handle_key(app: &mut App, key: KeyEvent) -> AppAction {
         app.push_input('\n');
         return AppAction::None;
     }
+    if key.code == KeyCode::Enter && app.take_backslash_line_break() {
+        return AppAction::None;
+    }
     if app.input_cursor_movable() {
         let by_word = key.modifiers.contains(KeyModifiers::ALT);
         let by_line = key.modifiers.contains(KeyModifiers::SUPER);
@@ -3365,6 +3368,56 @@ mod tests {
             handle_key(&mut app, key(KeyCode::Enter)),
             AppAction::Launch { ref prompt, .. } if prompt == "a\nb\nc\nd"
         ));
+    }
+
+    #[test]
+    fn backslash_then_enter_adds_a_line_wherever_the_cursor_is() {
+        let mut app = app();
+        app.start_new_session(None);
+        app.input = "hello world".into();
+        handle_key(&mut app, key(KeyCode::Home));
+        handle_key(&mut app, key(KeyCode::Char('\\')));
+        assert_eq!(handle_key(&mut app, key(KeyCode::Enter)), AppAction::None);
+        assert_eq!(app.input, "\nhello world");
+        assert_eq!(app.input_cursor(), 1);
+
+        handle_key(&mut app, key(KeyCode::End));
+        handle_key(&mut app, key(KeyCode::Char('\\')));
+        assert_eq!(handle_key(&mut app, key(KeyCode::Enter)), AppAction::None);
+        assert_eq!(app.input, "\nhello world\n");
+        assert_eq!(app.overlay, Overlay::Composer(ComposerMode::NewSession));
+
+        app.input = "a\\b".into();
+        assert!(matches!(
+            handle_key(&mut app, key(KeyCode::Enter)),
+            AppAction::Launch { ref prompt, .. } if prompt == "a\\b"
+        ));
+    }
+
+    #[test]
+    fn a_karabiner_backslash_return_burst_adds_a_line_instead_of_launching() {
+        let mut app = app();
+        app.start_new_session(Some('a'));
+        let mut burst = InputBurst::default();
+        let start = Instant::now();
+        for (offset, key, more_input) in [
+            (0, key(KeyCode::Char('\\')), true),
+            (1, key(KeyCode::Enter), false),
+        ] {
+            match burst.classify(
+                key,
+                start + Duration::from_millis(offset),
+                more_input,
+                false,
+            ) {
+                BurstInput::Pasted(character) => app.paste_input(&character.to_string()),
+                BurstInput::Key(key) => {
+                    assert_eq!(handle_key(&mut app, key), AppAction::None);
+                }
+            }
+        }
+        assert_eq!(app.input, "a\n");
+        assert_eq!(app.overlay, Overlay::Composer(ComposerMode::NewSession));
     }
 
     #[test]

@@ -76,7 +76,7 @@ own interface.
 | Open the selected session | `Enter` or `→` |
 | Return to agentview | `Shift+←`, or `←` twice at an empty prompt |
 | Rename / filter | `Ctrl+R` / `Ctrl+F` |
-| New line in a task | `Shift+Enter` or `Ctrl+J` |
+| New line in a task | `Shift+Enter`, `Ctrl+J`, or `\` then `Enter` |
 | Show every shortcut | `?` |
 
 The [CLI and keyboard guide](docs/cli.md) covers models, login, paging, bulk
