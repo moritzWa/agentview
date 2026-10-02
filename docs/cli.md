@@ -574,7 +574,14 @@ killed process does not read as working. A background subagent (OpenCode's
 `task` tool with `background: true`, its closest equivalent of a monitor) keeps
 its parent working until the subagent's turn ends. An idle prompt on the
 dashboard's own screen yields to that, and to a turn another process is running
-for the same session. A permission prompt in another
+for the same session. A plugin can keep a session working after its turn
+ends, for example while a monitor waits on CI to start the next turn, by
+writing `{"pid": PID, "reason": "…", "expires_ms": MS}` to
+`~/.local/state/agentview/holds/opencode/SESSION_ID/NAME.json`
+(`$XDG_STATE_HOME/agentview/holds/…` when set) and deleting it when the work
+ends. The row shows `background: REASON` while that process lives and the
+expiry has not passed, unless a permission or question prompt needs the user.
+A permission prompt in another
 terminal is not recorded by OpenCode and reads as working there. Sessions no
 live process runs are completed history. A process started with `--session ID`
 holds exactly that session. Any other holds one session in its working

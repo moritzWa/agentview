@@ -215,6 +215,9 @@ impl ProviderController for OpenCodeController {
             overlay_managed(session, owned);
             grant_managed_capabilities(session, owned);
         }
+        apply_holds(snapshot.sessions.iter_mut().filter(|session| {
+            session.provider == Provider::OpenCode && session.runtime == Runtime::Host
+        }));
     }
 
     fn launch(&self, request: &LaunchRequest) -> Result<ControlOutcome> {
@@ -682,6 +685,9 @@ impl SessionSource for OpenCodeSource {
                 }
             }
         }
+        if self.runtime == Runtime::Host {
+            apply_holds(sessions.values_mut());
+        }
         Ok(SourceDiscovery {
             sessions: sessions.into_values().collect(),
             warnings,
@@ -912,6 +918,36 @@ fn apply_live_state(
     session.state = state;
     session.raw_state = Some(raw_state.into());
     session.pid = Some(pid);
+}
+
+fn apply_holds<'a>(sessions: impl Iterator<Item = &'a mut AgentSession>) {
+    let Some(root) = crate::holds::default_holds_dir() else {
+        return;
+    };
+    for session in sessions {
+        if let Some(reason) =
+            crate::holds::live_hold(&root, "opencode", &session.provider_session_id)
+        {
+            apply_hold(session, &reason);
+        }
+    }
+}
+
+/// A plugin's background work, such as a CI monitor that will start the next
+/// turn, keeps an idle or closed session working. A question or permission
+/// prompt still needs the user first.
+fn apply_hold(session: &mut AgentSession, reason: &str) {
+    if session.state == SessionState::NeedsInput
+        && session.raw_state.as_deref() != Some("waiting at prompt")
+    {
+        return;
+    }
+    session.state = SessionState::Working;
+    session.raw_state = Some(if reason.is_empty() {
+        "background work".into()
+    } else {
+        format!("background: {reason}")
+    });
 }
 
 fn session_query(scope: &Scope) -> String {
@@ -1197,6 +1233,30 @@ mod tests {
             assert_eq!(request, &self.expected);
             Ok(self.output.lock().unwrap().take().unwrap())
         }
+    }
+
+    #[test]
+    fn a_background_hold_keeps_a_closed_or_idle_session_working_but_not_a_prompt() {
+        let input = r#"[{"id": "ses_1", "title": "t", "updated": 2, "created": 1,
+          "projectId": "global", "directory": "/work"}]"#;
+        let mut session = parse_opencode_session_list(input, Runtime::Host)
+            .unwrap()
+            .remove(0);
+        assert_eq!(session.state, SessionState::Completed);
+        apply_hold(&mut session, "CI on PR 8");
+        assert_eq!(session.state, SessionState::Working);
+        assert_eq!(session.raw_state.as_deref(), Some("background: CI on PR 8"));
+
+        session.state = SessionState::NeedsInput;
+        session.raw_state = Some("waiting at prompt".into());
+        apply_hold(&mut session, "");
+        assert_eq!(session.state, SessionState::Working);
+        assert_eq!(session.raw_state.as_deref(), Some("background work"));
+
+        session.state = SessionState::NeedsInput;
+        session.raw_state = Some("permission requested".into());
+        apply_hold(&mut session, "CI on PR 8");
+        assert_eq!(session.state, SessionState::NeedsInput);
     }
 
     #[test]
