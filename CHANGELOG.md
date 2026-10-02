@@ -8,6 +8,13 @@ and released versions are intended to follow Semantic Versioning.
 
 ## [Unreleased]
 
+### Changed
+
+- Ctrl+X no longer opens a confirmation dialog to delete or hide a session or
+  group. The first press shows `ctrl+x again to delete` (or `to hide`) on the
+  row and the second press acts; any other key cancels. A stop still counts as
+  the first press, so stop-then-delete remains Ctrl+X twice.
+
 ## [0.1.0] - 2026-10-01
 
 ### Added

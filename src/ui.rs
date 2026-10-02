@@ -229,14 +229,18 @@ fn render_session_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
         }
         let collapsed = app.collapsed.contains(&group.key);
         let suffix = collapsed.then(|| format!(" {}", group.sessions.len()));
-        lines.push(styled_line(
-            vec![Span::raw(format!(
-                "{}{}",
-                sanitize_inline(&group.label),
-                suffix.unwrap_or_default()
-            ))],
-            is_selected,
-        ));
+        let mut spans = vec![Span::raw(format!(
+            "{}{}",
+            sanitize_inline(&group.label),
+            suffix.unwrap_or_default()
+        ))];
+        if let Some(verb) = is_selected.then(|| app.pending_removal_verb()).flatten() {
+            spans.push(Span::styled(
+                format!("  ctrl+x again to {verb}"),
+                Style::default().fg(palette().danger),
+            ));
+        }
+        lines.push(styled_line(spans, is_selected));
 
         if collapsed {
             continue;
@@ -256,6 +260,7 @@ fn render_session_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 show_provider,
                 is_selected,
                 app.live_animation_visible(),
+                is_selected.then(|| app.pending_removal_verb()).flatten(),
             ));
         }
         let hidden = app.hidden_session_count(group);
@@ -366,6 +371,7 @@ fn render_session_row(
     show_provider: bool,
     selected: bool,
     live_animation_visible: bool,
+    pending_removal: Option<&str>,
 ) -> Line<'static> {
     let symbol = state_symbol(session.state, live_animation_visible);
     let symbol_style = Style::default().fg(state_color(session.state));
@@ -432,6 +438,17 @@ fn render_session_row(
             Style::default().fg(palette().dim),
         ),
     ];
+    if let Some(verb) = pending_removal {
+        spans.push(Span::styled(
+            pad_to_width(
+                truncate(&format!("ctrl+x again to {verb}"), summary_width),
+                summary_width,
+            ),
+            Style::default().fg(palette().danger),
+        ));
+        spans.push(Span::styled(right, Style::default().fg(palette().dim)));
+        return styled_line(spans, selected);
+    }
     let label = truncate(state_label, summary_width);
     let label_width = display_width(&label);
     if label_width > 0 {
@@ -1766,17 +1783,6 @@ fn render_confirmation(frame: &mut Frame<'_>, _: &App, target: &ConfirmTarget, a
         ConfirmTarget::Archive { id } => {
             format!("Archive the exact session?\n\n{id}\n\nEnter confirms; escape keeps it.")
         }
-        ConfirmTarget::Hide { session_ids } => format!(
-            "Hide {} session{} only from agentview?{}\n\nProvider history and live processes are retained. Use `agentview sessions hidden` and `agentview sessions unhide SESSION_ID` to reverse this.\n\nEnter hides locally; escape keeps {} visible.",
-            session_ids.len(),
-            if session_ids.len() == 1 { "" } else { "s" },
-            if session_ids.len() == 1 { format!("\n\n{}", session_ids[0]) } else { String::new() },
-            if session_ids.len() == 1 { "it" } else { "them" }
-        ),
-        ConfirmTarget::Group { key, session_ids } => format!(
-            "Delete all {} sessions in {key}?\n\nEnter confirms; escape keeps them.",
-            session_ids.len()
-        ),
     };
     frame.render_widget(
         Paragraph::new(sanitize_multiline(&message))
@@ -2211,7 +2217,7 @@ mod tests {
         for (provider, expected) in providers {
             let mut item = session("recognizable-session", SessionState::Working);
             item.provider = provider;
-            let row = render_session_row(&item, ViewMode::Status, 120, true, false, true);
+            let row = render_session_row(&item, ViewMode::Status, 120, true, false, true, None);
             let text: String = row.spans.iter().map(|span| span.content.as_ref()).collect();
 
             assert!(
@@ -2229,7 +2235,7 @@ mod tests {
             SessionState::Working,
         );
         item.provider = Provider::Antigravity;
-        let row = render_session_row(&item, ViewMode::Status, 120, true, false, true);
+        let row = render_session_row(&item, ViewMode::Status, 120, true, false, true, None);
         let text: String = row.spans.iter().map(|span| span.content.as_ref()).collect();
 
         assert!(
@@ -2244,8 +2250,10 @@ mod tests {
         let mut item = session(name, SessionState::Working);
         item.provider = Provider::OpenCode;
 
-        let with_provider = render_session_row(&item, ViewMode::Status, 120, true, false, true);
-        let without_provider = render_session_row(&item, ViewMode::Status, 120, false, false, true);
+        let with_provider =
+            render_session_row(&item, ViewMode::Status, 120, true, false, true, None);
+        let without_provider =
+            render_session_row(&item, ViewMode::Status, 120, false, false, true, None);
         let with_text: String = with_provider
             .spans
             .iter()
@@ -2275,7 +2283,7 @@ mod tests {
         item.updated_at = Some(SystemTime::now() - Duration::from_secs(86_400));
 
         for width in [80, 120, 160] {
-            let row = render_session_row(&item, ViewMode::Status, width, true, false, true);
+            let row = render_session_row(&item, ViewMode::Status, width, true, false, true, None);
             let text: String = row.spans.iter().map(|span| span.content.as_ref()).collect();
 
             assert_eq!(display_width(&text), width as usize);
@@ -2293,13 +2301,14 @@ mod tests {
     #[test]
     fn working_marker_blinks_without_changing_other_session_states() {
         let working = session("worker", SessionState::Working);
-        let visible = render_session_row(&working, ViewMode::Status, 120, true, false, true);
-        let dimmed = render_session_row(&working, ViewMode::Status, 120, true, false, false);
+        let visible = render_session_row(&working, ViewMode::Status, 120, true, false, true, None);
+        let dimmed = render_session_row(&working, ViewMode::Status, 120, true, false, false, None);
         assert_eq!(visible.spans[0].content, " ✳ ");
         assert_eq!(dimmed.spans[0].content, " · ");
 
         let completed = session("done", SessionState::Completed);
-        let completed = render_session_row(&completed, ViewMode::Status, 120, true, false, false);
+        let completed =
+            render_session_row(&completed, ViewMode::Status, 120, true, false, false, None);
         assert_eq!(completed.spans[0].content, " • ");
     }
 
@@ -2311,7 +2320,7 @@ mod tests {
             (SessionState::Working, "Working", palette().fg),
         ] {
             let item = session("worker", state);
-            let row = render_session_row(&item, ViewMode::Directory, 120, true, false, true);
+            let row = render_session_row(&item, ViewMode::Directory, 120, true, false, true, None);
             let provider = row
                 .spans
                 .iter()

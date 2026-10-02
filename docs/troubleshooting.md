@@ -102,9 +102,8 @@ External provider history is excluded by default. If an unexpected row still
 appears without `--include-external`, it must correspond to an agentview ownership
 record; report the normalized ID and provider without deleting registry files.
 If an idle row was shown with `--include-external`, select it and press `ctrl+x`
-to remove it reversibly from agentview's view. For an active row without stop
-authority, confirm the **local hide** warning; provider history and the live
-process are retained.
+twice to remove it reversibly from agentview's view. The same works for an active row
+without stop authority; provider history and the live process are retained.
 
 For a scriptable equivalent, copy the exact normalized ID from Peek or
 `agentview --json --include-external --all`:

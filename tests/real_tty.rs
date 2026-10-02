@@ -486,6 +486,10 @@ fn all_supported_providers_coexist_in_one_real_terminal() {
     app.wait_for("managed Pi peek close", |screen| {
         !screen.contains("pi-refactor · Pi") && screen.contains("pi-refactor")
     });
+    app.send(CTRL_X);
+    app.wait_for("completed Pi Ctrl+X arms hide", |screen| {
+        screen.contains("ctrl+x again to hide")
+    });
     let hide_started = Instant::now();
     app.send(CTRL_X);
     app.wait_for("completed Pi Ctrl+X remains responsive", |screen| {
@@ -1231,11 +1235,14 @@ fn terminal_harness_backgrounds_resumes_stops_then_deletes_in_a_real_pty() {
     });
 
     app.send(b"\x18");
-    app.wait_for("Terminal stopped but retained", |screen| {
-        screen.contains("release shell")
-            && screen.contains("Completed")
-            && screen.contains("Terminal exited")
-    });
+    app.wait_for(
+        "Terminal stopped, retained, and armed for delete",
+        |screen| {
+            screen.contains("release shell")
+                && screen.contains("Completed")
+                && screen.contains("ctrl+x again to delete")
+        },
+    );
     app.send(b"\x18");
     app.wait_for("second Ctrl+X deletes Terminal row", |screen| {
         !screen.contains("release shell") && screen.contains("deleted 1 managed session")
@@ -2717,12 +2724,11 @@ fn fixture_fence_covers_launch_open_reply_interrupt_and_bulk_delete() {
     });
     app.send(UP);
     app.send(CTRL_X);
-    let bulk_confirm = app.wait_for("completed-group bulk-delete confirmation", |screen| {
-        screen.contains("Delete all 2 sessions in state:Completed?")
-            && screen.contains("Enter confirms; escape keeps them")
+    let bulk_confirm = app.wait_for("completed-group bulk-delete arming", |screen| {
+        screen.contains("ctrl+x again to delete all")
     });
     assert_lines_fit(&bulk_confirm, 105);
-    app.send(ENTER);
+    app.send(CTRL_X);
     app.wait_for("fixture-fenced bulk delete", |screen| {
         screen.contains("delete refused for api-migration-review:")
             && screen.contains("provider actions are disabled while reading a fixture")
@@ -2778,6 +2784,10 @@ fn real_tty_renders_actionable_request_and_confirmation_states() {
         screen.contains("schema-migration")
     });
 
+    app.send(CTRL_X);
+    app.wait_for("disabled-controller delete arming", |screen| {
+        screen.contains("ctrl+x again to delete")
+    });
     app.send(CTRL_X);
     app.wait_for("disabled-controller delete refusal", |screen| {
         screen.contains("delete refused for schema-migration:")

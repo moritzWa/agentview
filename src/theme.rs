@@ -40,6 +40,7 @@ pub struct Palette {
     pub accent: Color,
     pub attention: Color,
     pub complete: Color,
+    pub danger: Color,
 }
 
 impl Palette {
@@ -53,6 +54,7 @@ impl Palette {
             accent: Color::Rgb(172, 156, 255),
             attention: Color::Rgb(232, 191, 72),
             complete: Color::Rgb(101, 187, 120),
+            danger: Color::Rgb(224, 108, 117),
         }
     }
 
@@ -70,6 +72,7 @@ impl Palette {
             accent: Color::Rgb(91, 63, 217),
             attention: Color::Rgb(135, 90, 0),
             complete: Color::Rgb(36, 112, 36),
+            danger: Color::Rgb(175, 30, 45),
         }
     }
 
