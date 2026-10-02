@@ -215,6 +215,9 @@ impl ProviderController for OpenCodeController {
             overlay_managed(session, owned);
             grant_managed_capabilities(session, owned);
         }
+        apply_holds(snapshot.sessions.iter_mut().filter(|session| {
+            session.provider == Provider::OpenCode && session.runtime == Runtime::Host
+        }));
     }
 
     fn launch(&self, request: &LaunchRequest) -> Result<ControlOutcome> {
@@ -682,6 +685,9 @@ impl SessionSource for OpenCodeSource {
                 }
             }
         }
+        if self.runtime == Runtime::Host {
+            apply_holds(sessions.values_mut());
+        }
         Ok(SourceDiscovery {
             sessions: sessions.into_values().collect(),
             warnings,
@@ -773,7 +779,6 @@ impl OpenCodeSource {
                 .collect::<Vec<_>>();
             opencode_live::assign(holders, &candidates)
         };
-        let holds = crate::holds::default_holds_dir();
         records
             .into_iter()
             .map(|mut record| {
@@ -787,11 +792,6 @@ impl OpenCodeSource {
                         .or(holder.map(|holder| holder.started_ms))
                         .unwrap_or(0);
                     apply_live_state(&mut session, last.as_ref(), child, holder, since);
-                    if let Some(reason) = holds.as_deref().and_then(|root| {
-                        crate::holds::live_hold(root, "opencode", &session.provider_session_id)
-                    }) {
-                        apply_hold(&mut session, &reason);
-                    }
                 }
                 session
             })
@@ -918,6 +918,19 @@ fn apply_live_state(
     session.state = state;
     session.raw_state = Some(raw_state.into());
     session.pid = Some(pid);
+}
+
+fn apply_holds<'a>(sessions: impl Iterator<Item = &'a mut AgentSession>) {
+    let Some(root) = crate::holds::default_holds_dir() else {
+        return;
+    };
+    for session in sessions {
+        if let Some(reason) =
+            crate::holds::live_hold(&root, "opencode", &session.provider_session_id)
+        {
+            apply_hold(session, &reason);
+        }
+    }
 }
 
 /// A plugin's background work, such as a CI monitor that will start the next
