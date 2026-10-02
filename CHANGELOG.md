@@ -19,6 +19,13 @@ and released versions are intended to follow Semantic Versioning.
   such as Hyper report Shift+Enter as a plain Enter, so `\` then Return is the
   line break they can send.
 
+### Fixed
+
+- Pasting more than about a kilobyte into an opened session no longer drops
+  you back to the dashboard with the rest of the paste in the composer. Input
+  now waits until the session reads it, which also covers long tasks typed
+  into a new session at launch.
+
 ## [0.1.0] - 2026-10-01
 
 ### Added
