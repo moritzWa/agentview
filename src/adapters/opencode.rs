@@ -291,7 +291,10 @@ impl ProviderController for OpenCodeController {
 
     fn interrupt(&self, session: &AgentSession) -> Result<ControlOutcome> {
         let owned = self.require_owned(session)?;
-        if owned.state != SessionState::Working {
+        if !matches!(
+            owned.state,
+            SessionState::Working | SessionState::NeedsInput
+        ) {
             bail!("the managed OpenCode session is not currently working");
         }
         self.supervisor

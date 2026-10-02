@@ -8,6 +8,12 @@ and released versions are intended to follow Semantic Versioning.
 
 ## [Unreleased]
 
+### Fixed
+
+- A managed OpenCode session waiting on a permission or question prompt, its
+  own or a subagent's, now shows as needing input instead of working. OpenCode
+  reports such a turn as busy, so it used to sit at "Working" indefinitely.
+
 ### Changed
 
 - Ctrl+X no longer opens a confirmation dialog to delete or hide a session or

@@ -6,7 +6,6 @@
 //! ownership record.
 
 use std::collections::BTreeMap;
-#[cfg(target_os = "linux")]
 use std::collections::BTreeSet;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::fmt::Write as FmtWrite;
@@ -174,6 +173,7 @@ impl OpenCodeSupervisor {
         };
         let mut statuses_by_directory = BTreeMap::new();
         let mut sessions_by_directory = BTreeMap::new();
+        let mut awaiting_by_directory = BTreeMap::new();
         for owned in record.sessions.values() {
             if !statuses_by_directory.contains_key(&owned.cwd) {
                 let path = with_directory_query("/session/status", &owned.cwd);
@@ -182,6 +182,11 @@ impl OpenCodeSupervisor {
 
                 let path = with_directory_query("/session", &owned.cwd);
                 let sessions = self.request_json(&record, "GET", &path, None)?;
+                let pending = self.pending_prompts(&record, &owned.cwd);
+                awaiting_by_directory.insert(
+                    owned.cwd.clone(),
+                    sessions_awaiting_input(&pending, &sessions),
+                );
                 sessions_by_directory.insert(owned.cwd.clone(), sessions);
             }
         }
@@ -234,7 +239,15 @@ impl OpenCodeSupervisor {
                 let statuses = statuses_by_directory
                     .get(&owned.cwd)
                     .expect("status was fetched for each owned directory");
-                self.snapshot_with_state(&record, owned, state_from_statuses(statuses, &owned.id))
+                let awaiting = awaiting_by_directory
+                    .get(&owned.cwd)
+                    .expect("pending prompts were fetched for each owned directory");
+                let state = state_with_pending_prompts(
+                    state_from_statuses(statuses, &owned.id),
+                    awaiting,
+                    &owned.id,
+                );
+                self.snapshot_with_state(&record, owned, state)
             })
             .collect())
     }
@@ -575,6 +588,22 @@ impl OpenCodeSupervisor {
         Ok(state_from_statuses(&statuses, &owned.id))
     }
 
+    /// Permission and question requests waiting on the user in `cwd`. A server
+    /// that cannot list them reports none, so status alone decides the state.
+    fn pending_prompts(&self, record: &ServerRecord, cwd: &Path) -> Vec<Value> {
+        ["/permission", "/question"]
+            .into_iter()
+            .filter_map(|endpoint| {
+                let path = with_directory_query(endpoint, cwd);
+                match self.request_json(record, "GET", &path, None) {
+                    Ok(Value::Array(requests)) => Some(requests),
+                    _ => None,
+                }
+            })
+            .flatten()
+            .collect()
+    }
+
     fn request_json(
         &self,
         record: &ServerRecord,
@@ -662,6 +691,49 @@ fn state_from_statuses(statuses: &Value, session_id: &str) -> SessionState {
         Some("idle") | None => SessionState::Completed,
         Some(_) => SessionState::Unknown,
     }
+}
+
+/// OpenCode reports a turn blocked on a permission or question prompt as
+/// busy, so a pending prompt turns a working session into one that needs input.
+fn state_with_pending_prompts(
+    state: SessionState,
+    awaiting: &BTreeSet<String>,
+    session_id: &str,
+) -> SessionState {
+    if state == SessionState::Working && awaiting.contains(session_id) {
+        SessionState::NeedsInput
+    } else {
+        state
+    }
+}
+
+/// Sessions blocked on one of `pending`'s requests, plus every ancestor, since
+/// a subagent's prompt stalls the session that launched it.
+fn sessions_awaiting_input(pending: &[Value], sessions: &Value) -> BTreeSet<String> {
+    let parents = sessions
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|session| {
+            Some((
+                session.get("id")?.as_str()?,
+                session.get("parentID")?.as_str()?,
+            ))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut awaiting = BTreeSet::new();
+    for request in pending {
+        let Some(mut id) = request.get("sessionID").and_then(Value::as_str) else {
+            continue;
+        };
+        while awaiting.insert(id.to_owned()) {
+            match parents.get(id) {
+                Some(parent) => id = parent,
+                None => break,
+            }
+        }
+    }
+    awaiting
 }
 
 struct HttpResponse {
@@ -1609,6 +1681,55 @@ mod tests {
     fn encodes_basic_auth_and_url_components() {
         assert_eq!(base64_encode(b"opencode:secret"), "b3BlbmNvZGU6c2VjcmV0");
         assert_eq!(url_path_segment("ses_/ ?"), "ses_%2F%20%3F");
+    }
+
+    #[test]
+    fn pending_prompt_marks_a_busy_session_and_its_ancestors_as_needing_input() {
+        let sessions = json!([
+            {"id":"ses_root","title":"root"},
+            {"id":"ses_child","title":"child","parentID":"ses_root"},
+            {"id":"ses_grandchild","title":"grandchild","parentID":"ses_child"},
+            {"id":"ses_other","title":"other"}
+        ]);
+        let pending = [
+            json!({"id":"per_1","sessionID":"ses_grandchild","permission":"edit"}),
+            json!({"id":"que_1","questions":[]}),
+        ];
+        let awaiting = sessions_awaiting_input(&pending, &sessions);
+        assert_eq!(
+            awaiting.iter().map(String::as_str).collect::<Vec<_>>(),
+            ["ses_child", "ses_grandchild", "ses_root"]
+        );
+
+        let statuses = json!({"ses_root":{"type":"busy"},"ses_other":{"type":"busy"}});
+        let state =
+            |id| state_with_pending_prompts(state_from_statuses(&statuses, id), &awaiting, id);
+        assert_eq!(state("ses_root"), SessionState::NeedsInput);
+        assert_eq!(state("ses_other"), SessionState::Working);
+    }
+
+    #[test]
+    fn pending_prompt_on_an_idle_session_does_not_reopen_it() {
+        let awaiting = BTreeSet::from(["ses_idle".to_owned()]);
+        let statuses = json!({"ses_idle":{"type":"idle"}});
+        assert_eq!(
+            state_with_pending_prompts(
+                state_from_statuses(&statuses, "ses_idle"),
+                &awaiting,
+                "ses_idle"
+            ),
+            SessionState::Completed
+        );
+    }
+
+    #[test]
+    fn parent_cycles_in_session_list_terminate() {
+        let sessions = json!([
+            {"id":"ses_a","parentID":"ses_b"},
+            {"id":"ses_b","parentID":"ses_a"}
+        ]);
+        let pending = [json!({"sessionID":"ses_a"})];
+        assert_eq!(sessions_awaiting_input(&pending, &sessions).len(), 2);
     }
 
     #[test]
