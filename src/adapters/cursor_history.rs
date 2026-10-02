@@ -696,7 +696,18 @@ mod tests {
         }
     }
 
+    /// A Unix-style fixture path made absolute on this platform, since chats
+    /// with a relative cwd are skipped. Forward slashes need no JSON escaping.
+    fn absolute(path: &str) -> String {
+        if cfg!(windows) {
+            format!("C:{path}")
+        } else {
+            path.to_owned()
+        }
+    }
+
     fn write_chat(root: &Path, hash: &str, id: &str, title: &str, cwd: &str, updated: u64) {
+        let cwd = absolute(cwd);
         let dir = root.join(hash).join(id);
         fs::create_dir_all(&dir).unwrap();
         fs::write(
@@ -838,7 +849,7 @@ mod tests {
         assert_eq!(sessions.len(), 2);
         assert_eq!(sessions[0].id, format!("cursor:host:{CHAT_A}"));
         assert_eq!(sessions[0].name, "Agent Comparison");
-        assert_eq!(sessions[0].cwd, PathBuf::from("/Users/m"));
+        assert_eq!(sessions[0].cwd, PathBuf::from(absolute("/Users/m")));
         assert_eq!(sessions[0].summary, "newest prompt here");
         assert_eq!(sessions[0].state, SessionState::Completed);
         assert_eq!(sessions[0].kind, SessionKind::Interactive);
@@ -1099,7 +1110,7 @@ mod tests {
         let source = CursorHistorySource::host(temp.path().to_owned(), None);
         let session = source.discover(&request()).unwrap().remove(0);
         let text = inspect_cursor_history(temp.path(), &session).unwrap();
-        assert!(text.starts_with("Agent Comparison · /Users/m"));
+        assert!(text.starts_with(&format!("Agent Comparison · {}", absolute("/Users/m"))));
         let older = text.find("older prompt").unwrap();
         let newest = text.find("newest prompt here").unwrap();
         assert!(older < newest);

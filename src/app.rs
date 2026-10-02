@@ -2585,7 +2585,7 @@ fn directory_identity(path: &Path) -> Option<PathBuf> {
 }
 
 fn expand_typed_directory(input: &str, home: Option<&Path>) -> Option<PathBuf> {
-    if input.starts_with('/') {
+    if Path::new(input).is_absolute() {
         return Some(PathBuf::from(input));
     }
     let rest = input.strip_prefix('~')?;
