@@ -59,7 +59,8 @@ own interface.
   background. `Enter` opens the new row.
 - **Pin and reorder** with `Ctrl+T` and `Option+↑` / `↓`.
 - **Start in any folder** with `/cd` or `Ctrl+O`. Multi-line tasks and pastes
-  stay one draft, and `Ctrl+V` attaches a clipboard image as `[Image #1]`.
+  stay one draft. A long paste shows as `[Pasted ~12 lines]` and `Ctrl+V`
+  attaches a clipboard image as `[Image #1]`.
 - **Migrate a conversation** to another harness with `Ctrl+M`, via
   [session-migrate](https://session-migrate.github.io/).
 - **OpenCode sessions outlive the dashboard**, and Cursor chats show live state

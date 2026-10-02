@@ -2620,10 +2620,10 @@ fn pasted_clipboard_becomes_one_draft_instead_of_one_launch_per_line() {
     });
 
     app.send(b"\x1b[200~bracket-line-one\nbracket-line-two\r\nbracket-line-three\x1b[201~");
+    // A bracketed paste of three or more lines shows as a summary, as in
+    // OpenCode, and is expanded when the draft is submitted.
     let bracketed = app.wait_for("bracketed paste stays in the composer", |screen| {
-        screen.contains("bracket-line-one")
-            && screen.contains("bracket-line-two")
-            && screen.contains("bracket-line-three")
+        screen.contains("[Pasted ~3 lines]") && !screen.contains("bracket-line-one")
     });
     assert!(
         !bracketed.contains("launch failed"),
@@ -2634,7 +2634,7 @@ fn pasted_clipboard_becomes_one_draft_instead_of_one_launch_per_line() {
     std::thread::sleep(Duration::from_millis(200));
     app.send(ENTER);
     app.wait_for("typed enter submits the pasted draft", |screen| {
-        screen.contains("launch failed:") && !screen.contains("bracket-line-one")
+        screen.contains("launch failed:") && !screen.contains("[Pasted ~3 lines]")
     });
 
     app.exit_cleanly();

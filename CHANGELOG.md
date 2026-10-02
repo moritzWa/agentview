@@ -10,6 +10,9 @@ and released versions are intended to follow Semantic Versioning.
 
 ### Added
 
+- A long paste into the new-task composer or a reply shows as
+  `[Pasted ~N lines]`, as in OpenCode, and the full text is sent on submit.
+
 - `agentview opencode restart` restarts agentview's OpenCode server on the same
   port, so open OpenCode windows reconnect, and sends `continue` to every
   session whose turn the restart cut off.
