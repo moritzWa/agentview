@@ -89,6 +89,28 @@ struct PtyDrain {
 #[cfg(unix)]
 static DETACHED: OnceLock<Mutex<BTreeMap<String, DetachedSession>>> = OnceLock::new();
 
+/// Provisional launch keys renamed by [`rename_key`], mapped to their stable
+/// key. A dashboard row can still carry the provisional key until its next
+/// refresh, so lookups by that key must reach the renamed frontend.
+#[cfg(unix)]
+static RENAMED: OnceLock<Mutex<BTreeMap<String, String>>> = OnceLock::new();
+
+/// The registry key that currently holds `session_key`'s frontend, following
+/// renames. Returns `session_key` itself when it is held directly or unknown.
+#[cfg(unix)]
+fn current_key(session_key: &str) -> String {
+    let Some(renamed) = RENAMED.get() else {
+        return session_key.to_owned();
+    };
+    let Ok(renamed) = renamed.lock() else {
+        return session_key.to_owned();
+    };
+    renamed
+        .get(session_key)
+        .cloned()
+        .unwrap_or_else(|| session_key.to_owned())
+}
+
 /// Run or reattach one provider-native client. Non-TTY callers retain the
 /// ordinary inherited-stdio behavior used by scripts and unit-test fixtures.
 pub fn run(command: Command, session_key: &str) -> Result<NativeSessionExit> {
@@ -236,6 +258,7 @@ pub fn resume(session_key: &str) -> Result<NativeSessionExit> {
         if !terminal_is_interactive() {
             bail!("resuming a native session requires an interactive terminal");
         }
+        let session_key = &current_key(session_key);
         let detached =
             take_detached(session_key)?.context("the background terminal is no longer running")?;
         let (child, master, screen, warning) = detached.into_frontend()?;
@@ -271,6 +294,7 @@ pub fn detached_session_keys() -> Vec<String> {
 pub fn background_screen_contents(session_key: &str) -> Option<(u32, String)> {
     #[cfg(unix)]
     {
+        let session_key = &current_key(session_key);
         let mut registry = DETACHED.get()?.lock().ok()?;
         let session = registry.get_mut(session_key)?;
         let pid = session
@@ -299,6 +323,7 @@ pub fn background_screen_contents(session_key: &str) -> Option<(u32, String)> {
 pub fn is_backgrounded(session_key: &str) -> bool {
     #[cfg(unix)]
     {
+        let session_key = &current_key(session_key);
         let Some(registry) = DETACHED.get() else {
             return false;
         };
@@ -329,8 +354,8 @@ pub fn terminate(session_key: &str) -> Result<()> {
     validate_session_key(session_key)?;
     #[cfg(unix)]
     {
-        let mut detached =
-            take_detached(session_key)?.context("the background terminal is no longer running")?;
+        let mut detached = take_detached(&current_key(session_key))?
+            .context("the background terminal is no longer running")?;
         terminate_detached(&mut detached);
         Ok(())
     }
@@ -401,6 +426,14 @@ pub fn rename_key(from: &str, to: &str) -> Result<()> {
         }
         if let Some(session) = registry.remove(from) {
             registry.insert(to.to_owned(), session);
+            let mut renamed = RENAMED
+                .get_or_init(|| Mutex::new(BTreeMap::new()))
+                .lock()
+                .map_err(|_| anyhow!("provider-native session rename lock was poisoned"))?;
+            for target in renamed.values_mut().filter(|target| *target == from) {
+                *target = to.to_owned();
+            }
+            renamed.insert(from.to_owned(), to.to_owned());
         }
     }
     Ok(())
@@ -418,6 +451,7 @@ fn run_pty(
     initial_input: Option<ScreenTriggeredInput>,
     warning: Option<String>,
 ) -> Result<NativeSessionExit> {
+    let session_key = &current_key(session_key);
     let detached = take_detached(session_key)?;
     let (child, master, screen, fresh, warning) = match detached {
         Some(detached) => {

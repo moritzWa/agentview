@@ -266,13 +266,12 @@ impl PtyApp {
     fn send(&mut self, bytes: &[u8]) {
         self.master.write_all(bytes).expect("write key to PTY");
         self.master.flush().expect("flush PTY input");
-        if bytes.last() == Some(&b'\r') {
-            // Without bracketed paste, the dashboard treats an Enter with more
-            // input right behind it as a pasted line break. Pause the way a
-            // person does after pressing Enter so the next scripted key does
-            // not arrive inside that paste window.
-            thread::sleep(Duration::from_millis(40));
-        }
+        // Without bracketed paste, the dashboard treats a key with more input
+        // right behind it, or one following the previous key within the paste
+        // gap, as pasted text. Pause the way a person does between keys so the
+        // next scripted write does not arrive inside that paste window. A
+        // single write is still delivered as one burst.
+        thread::sleep(Duration::from_millis(40));
     }
 
     fn screen(&mut self) -> String {
@@ -1038,6 +1037,7 @@ fn harness_picker_switches_visible_backends_without_losing_the_draft() {
     app.wait_for("picker cancellation preserves Claude draft", |screen| {
         screen.contains("new task · harness Claude · model default")
             && screen.contains("keep this draft")
+            && !screen.contains("┌ choose harness")
     });
 
     app.send(b"\t");
@@ -1052,6 +1052,7 @@ fn harness_picker_switches_visible_backends_without_losing_the_draft() {
     app.wait_for("arrow and Enter Claude selection", |screen| {
         screen.contains("new task · harness Claude · model default")
             && screen.contains("keep this draft")
+            && !screen.contains("┌ choose harness")
     });
     app.send(ESC);
     app.wait_for("harness composer cancellation", |screen| {
@@ -1211,8 +1212,9 @@ fn terminal_harness_backgrounds_resumes_stops_then_deletes_in_a_real_pty() {
             && screen.contains("install")
     });
     app.send(ENTER);
-    app.wait_for("Terminal shell selected", |screen| {
+    app.wait_for("Terminal shell selected and picker closed", |screen| {
         screen.contains("new task · harness Terminal · shell default")
+            && !screen.contains("choose Terminal shell")
     });
     app.send(b"release shell");
     app.send(ENTER);
@@ -1365,7 +1367,16 @@ esac
     app.wait_for("animated slow Cursor launch", |screen| {
         screen.contains("launching Cursor")
     });
-    app.wait_for("Cursor native foreground after allocation", |screen| {
+    app.wait_for(
+        "dashboard keeps the allocated Cursor row selected",
+        |screen| {
+            screen.contains("launched managed Cursor session cursor-auth-session")
+                && screen.contains("cursor login task")
+                && screen.contains("Cursor native session is ready")
+        },
+    );
+    app.send(ENTER);
+    app.wait_for("Enter opens the Cursor native foreground", |screen| {
         screen.contains("CURSOR NATIVE FOREGROUND") && !screen.contains("agentview")
     });
     app.send(SHIFT_LEFT);

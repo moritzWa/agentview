@@ -1043,7 +1043,7 @@ mod tests {
     #[test]
     fn refuses_prompts_cursor_agent_would_parse_as_options() {
         let invocation = CursorInvocation::host("cursor-agent");
-        let cwd = Path::new("/work/repo");
+        let cwd = &std::env::temp_dir();
         for prompt in ["--yolo", "-f", "  --force fix it", "-p"] {
             let error = invocation
                 .resume_with_prompt("chat-id", cwd, prompt, None)
