@@ -954,7 +954,7 @@ fn hundreds_of_sessions_coalesce_arrow_bursts_without_output_backlog() {
     });
     app.send(b"\t");
     app.wait_for("stress task composer", |screen| {
-        screen.contains("new task · harness Claude · model default")
+        screen.contains(" · harness Claude · model default")
     });
     app.screen();
     let typing_output_before = app.raw.len();
@@ -971,7 +971,7 @@ fn hundreds_of_sessions_coalesce_arrow_bursts_without_output_backlog() {
     );
     app.send(ESC);
     app.wait_for("stress task composer close", |screen| {
-        !screen.contains("new task · harness Claude · model default")
+        !screen.contains(" · harness Claude · model default")
     });
     app.exit_cleanly();
 }
@@ -1019,8 +1019,7 @@ fn harness_picker_switches_visible_backends_without_losing_the_draft() {
     });
     app.send(b"keep this draft");
     app.wait_for("Claude draft composer", |screen| {
-        screen.contains("new task · harness Claude · model default")
-            && screen.contains("keep this draft")
+        screen.contains(" · harness Claude · model default") && screen.contains("keep this draft")
     });
     app.send(b"\t");
     app.wait_for("two-harness picker", |screen| {
@@ -1035,7 +1034,7 @@ fn harness_picker_switches_visible_backends_without_losing_the_draft() {
     });
     app.send(ESC);
     app.wait_for("picker cancellation preserves Claude draft", |screen| {
-        screen.contains("new task · harness Claude · model default")
+        screen.contains(" · harness Claude · model default")
             && screen.contains("keep this draft")
             && !screen.contains("┌ choose harness")
     });
@@ -1043,14 +1042,13 @@ fn harness_picker_switches_visible_backends_without_losing_the_draft() {
     app.send(b"\t");
     app.send(b"2");
     app.wait_for("direct Pi harness selection", |screen| {
-        screen.contains("new task · harness Pi · model default")
-            && screen.contains("keep this draft")
+        screen.contains(" · harness Pi · model default") && screen.contains("keep this draft")
     });
     app.send(b"\t");
     app.send(UP);
     app.send(ENTER);
     app.wait_for("arrow and Enter Claude selection", |screen| {
-        screen.contains("new task · harness Claude · model default")
+        screen.contains(" · harness Claude · model default")
             && screen.contains("keep this draft")
             && !screen.contains("┌ choose harness")
     });
@@ -1065,8 +1063,7 @@ fn harness_picker_switches_visible_backends_without_losing_the_draft() {
     });
     app.send(ESC);
     app.wait_for("slash picker returns to composer", |screen| {
-        screen.contains("new task · harness Claude · model default")
-            && !screen.contains("┌ choose harness")
+        screen.contains(" · harness Claude · model default") && !screen.contains("┌ choose harness")
     });
     app.send(ESC);
     app.wait_for("slash harness composer close", |screen| {
@@ -1174,7 +1171,7 @@ exit 0"#,
 
     app.send(ESC);
     app.wait_for("extended harness composer close", |screen| {
-        !screen.contains("new task · harness") && screen.contains("describe a task")
+        !screen.contains(" · harness") && screen.contains("describe a task")
     });
     app.exit_cleanly();
 }
@@ -1213,7 +1210,7 @@ fn terminal_harness_backgrounds_resumes_stops_then_deletes_in_a_real_pty() {
     });
     app.send(ENTER);
     app.wait_for("Terminal shell selected and picker closed", |screen| {
-        screen.contains("new task · harness Terminal · shell default")
+        screen.contains(" · harness Terminal · shell default")
             && !screen.contains("choose Terminal shell")
     });
     app.send(b"release shell");
@@ -1314,8 +1311,7 @@ esac
     });
     app.send(b"cursor login task");
     app.wait_for("Cursor task draft", |screen| {
-        screen.contains("new task · harness Cursor · model default")
-            && screen.contains("cursor login task")
+        screen.contains(" · harness Cursor · model default") && screen.contains("cursor login task")
     });
     app.send(ENTER);
     app.wait_for("Cursor sign-in is actionable", |screen| {
@@ -1360,7 +1356,7 @@ esac
     app.send(DOWN);
     app.send(ENTER);
     app.wait_for("exact Cursor account model selected", |screen| {
-        screen.contains("new task · harness Cursor · model claude-sonnet-4.6")
+        screen.contains(" · harness Cursor · model claude-sonnet-4.6")
             && screen.contains("cursor login task")
     });
     app.send(ENTER);
@@ -1592,7 +1588,7 @@ send({'jsonrpc':'2.0','id':request['id'],'result':{'models':[
     app.send(DOWN);
     app.send(ENTER);
     app.wait_for("exact Copilot account model selected", |screen| {
-        screen.contains("new task · harness GitHub Copilot · model gpt-5.4")
+        screen.contains(" · harness GitHub Copilot · model gpt-5.4")
             && screen.contains("copilot account task")
     });
     app.send(ENTER);
@@ -1770,7 +1766,7 @@ while :; do sleep 1; done
     app.send(DOWN);
     app.send(ENTER);
     app.wait_for("selected Antigravity model", |screen| {
-        screen.contains("new task · harness Antigravity · model gemini-3-pro")
+        screen.contains(" · harness Antigravity · model gemini-3-pro")
             && screen.contains("antigravity account task")
     });
     app.send(ENTER);
@@ -2129,7 +2125,7 @@ fn real_host_auto_resolves_harnesses_models_and_bounded_history() {
     }
     app.send(ENTER);
     app.wait_for("real host OpenCode selection", |screen| {
-        screen.contains("new task · harness OpenCode · model default")
+        screen.contains(" · harness OpenCode · model default")
             && screen.contains("read-only host draft")
     });
     app.send(SHIFT_TAB);
@@ -2140,7 +2136,7 @@ fn real_host_auto_resolves_harnesses_models_and_bounded_history() {
     });
     app.send(ESC);
     app.wait_for("real model picker cancellation", |screen| {
-        screen.contains("new task · harness OpenCode · model default")
+        screen.contains(" · harness OpenCode · model default")
     });
     app.send(ESC);
     app.wait_for("real composer cancellation", |screen| {
@@ -2333,7 +2329,7 @@ fn real_host_composer_selects_provider_model_filter_and_manual_refresh() {
     });
     app.send(b"x");
     app.wait_for("Pi composer title", |screen| {
-        screen.contains("new task · harness Pi · model default")
+        screen.contains(" · harness Pi · model default")
     });
     app.send(SHIFT_TAB);
     app.wait_for("account-visible Pi model picker", |screen| {
@@ -2341,7 +2337,7 @@ fn real_host_composer_selects_provider_model_filter_and_manual_refresh() {
     });
     app.send(ESC);
     app.wait_for("Pi draft survives model picker", |screen| {
-        screen.contains("new task · harness Pi · model default") && screen.contains("❯ x")
+        screen.contains(" · harness Pi · model default") && screen.contains("❯ x")
     });
     app.send(b"\t");
     app.wait_for("visible harness picker", |screen| {
@@ -2352,7 +2348,7 @@ fn real_host_composer_selects_provider_model_filter_and_manual_refresh() {
     app.send(b"\t");
     app.send(ENTER);
     app.wait_for("selected Claude composer title", |screen| {
-        screen.contains("new task · harness Claude · model default")
+        screen.contains(" · harness Claude · model default")
     });
     app.send(SHIFT_TAB);
     app.wait_for("account-visible Claude model picker", |screen| {
@@ -2364,11 +2360,11 @@ fn real_host_composer_selects_provider_model_filter_and_manual_refresh() {
     });
     app.send(ENTER);
     app.wait_for("Claude model composer title", |screen| {
-        screen.contains("new task · harness Claude · model opus") && screen.contains("❯ x")
+        screen.contains(" · harness Claude · model opus") && screen.contains("❯ x")
     });
     app.send(ESC);
     app.wait_for("model composer close", |screen| {
-        !screen.contains("new task · harness Claude · model opus")
+        !screen.contains(" · harness Claude · model opus")
     });
 
     app.send(CTRL_F);
@@ -2510,7 +2506,7 @@ fn wide_real_tty_exercises_primary_interactions_and_restores_terminal() {
 
     app.send(b"\t");
     app.wait_for("new task composer", |screen| {
-        screen.contains('❯') && screen.contains("new task · harness Claude · model default")
+        screen.contains('❯') && screen.contains(" · harness Claude · model default")
     });
     app.send(b"draft a release");
     app.send(CTRL_J);
