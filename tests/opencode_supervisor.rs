@@ -116,7 +116,19 @@ fn owned_server_survives_dashboard_reconnect_and_rejects_external_sessions() {
     second_controller
         .reply(&snapshot.sessions[0], "restart work")
         .unwrap();
-    wait_for_state(&second_source, &second_controller, SessionState::Working);
+    snapshot = wait_for_state(&second_source, &second_controller, SessionState::Working);
+
+    // OpenCode keeps a turn busy while it waits on a prompt, its own or a
+    // subagent's; the dashboard must show that as needing input and still
+    // allow an interrupt.
+    for prompt in ["needs approval", "needs subagent answer"] {
+        second_controller
+            .reply(&snapshot.sessions[0], prompt)
+            .unwrap();
+        snapshot = wait_for_state(&second_source, &second_controller, SessionState::NeedsInput);
+        second_controller.interrupt(&snapshot.sessions[0]).unwrap();
+        snapshot = wait_for_state(&second_source, &second_controller, SessionState::Completed);
+    }
 
     second.shutdown_server().unwrap();
     let deadline = Instant::now() + Duration::from_secs(3);
@@ -238,6 +250,8 @@ authorization = "Basic " + base64.b64encode(f"{username}:{password}".encode()).d
 sessions = {}
 statuses = {}
 messages = {}
+permissions = []
+questions = []
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_):
@@ -271,6 +285,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.respond(200, {key: {"type": value} for key, value in statuses.items()})
         if parsed.path == "/session":
             return self.respond(200, list(sessions.values()))
+        if parsed.path == "/permission":
+            return self.respond(200, permissions)
+        if parsed.path == "/question":
+            return self.respond(200, questions)
         if parsed.path.endswith("/message"):
             session_id = parsed.path.split("/")[2]
             if session_id not in sessions: return self.respond(404, {"error": "missing"})
@@ -303,12 +321,19 @@ class Handler(BaseHTTPRequestHandler):
             messages[session_id].append({"info": {"role": "assistant", "time": {"completed": sessions[session_id]["time"]["updated"] + 1}}, "parts": [{"type": "text", "text": "answer: " + text}]})
             sessions[session_id]["time"]["updated"] += 1
             statuses[session_id] = "busy"
+            if text == "needs approval":
+                permissions.append({"id": "per_1", "sessionID": session_id, "permission": "edit", "patterns": ["*"]})
+            if text == "needs subagent answer":
+                sessions["ses_child"] = {"id": "ses_child", "parentID": session_id, "title": "child", "time": {"created": 1, "updated": 1}}
+                questions.append({"id": "que_1", "sessionID": "ses_child", "questions": []})
             return self.respond(204)
         if parsed.path.endswith("/abort"):
             session_id = parsed.path.split("/")[2]
             if session_id not in sessions: return self.respond(404, {"error": "missing"})
             self.body()
             statuses[session_id] = "idle"
+            permissions.clear()
+            questions.clear()
             return self.respond(200, True)
         return self.respond(404, {"error": "unknown"})
 
