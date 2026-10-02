@@ -10,6 +10,8 @@ harnesses and plain shell jobs.
 [![Release](https://img.shields.io/badge/release-v0.1.0-7c5cff.svg)](https://github.com/moritzWa/agentview/releases/latest)
 [![License](https://img.shields.io/badge/license-MIT-7c5cff.svg)](LICENSE)
 
+<img src="docs/assets/demo.gif" alt="agentview demo: browsing sessions, inspecting one, and starting a new task" width="800">
+
 </div>
 
 Install agentview on macOS or Linux:
