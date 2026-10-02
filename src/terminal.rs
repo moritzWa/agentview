@@ -253,6 +253,7 @@ pub fn run_dashboard(
         app.set_view_mode(view_mode);
     }
     app.color_scheme = color_scheme;
+    crate::theme::set_terminal_scheme(color_scheme);
     let scheme_watcher = SchemeWatcher::spawn(theme_preference);
     let mut terminal = TerminalSession::enter()?;
     let initial_size = terminal.terminal.size()?;
@@ -527,6 +528,7 @@ pub fn run_dashboard(
         if let Some(scheme) = scheme_watcher.as_ref().and_then(SchemeWatcher::take_change) {
             if app.color_scheme != scheme {
                 app.color_scheme = scheme;
+                crate::theme::set_terminal_scheme(scheme);
                 needs_draw = true;
             }
         }

@@ -6,8 +6,8 @@
 
 use std::io::{self, IsTerminal, Write};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::{mpsc, Arc, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -94,6 +94,55 @@ pub fn set_active_palette(palette: Palette) {
 
 pub fn active_palette() -> Palette {
     ACTIVE.with(|slot| slot.get())
+}
+
+/// The dashboard's resolved scheme, shared with the native-session bridge so
+/// it can answer a provider's color queries without a terminal round trip.
+static TERMINAL_SCHEME: AtomicU8 = AtomicU8::new(0);
+static TERMINAL_BACKGROUND: OnceLock<(u8, u8, u8)> = OnceLock::new();
+
+pub fn set_terminal_scheme(scheme: ColorScheme) {
+    let value = match scheme {
+        ColorScheme::Dark => 1,
+        ColorScheme::Light => 2,
+    };
+    TERMINAL_SCHEME.store(value, Ordering::Relaxed);
+}
+
+fn terminal_scheme() -> Option<ColorScheme> {
+    match TERMINAL_SCHEME.load(Ordering::Relaxed) {
+        1 => Some(ColorScheme::Dark),
+        2 => Some(ColorScheme::Light),
+        _ => None,
+    }
+}
+
+/// `OSC 10` (foreground) or `OSC 11` (background) reply for the current
+/// scheme, or `None` before the dashboard has resolved one. The background
+/// the terminal reported at startup is reused while it still matches.
+pub(crate) fn osc_color_reply(code: u8) -> Option<String> {
+    let scheme = terminal_scheme()?;
+    let palette = Palette::for_scheme(scheme);
+    let (red, green, blue) = match code {
+        10 => rgb(palette.fg),
+        11 => TERMINAL_BACKGROUND
+            .get()
+            .copied()
+            .filter(|&(red, green, blue)| scheme_from_rgb(red, green, blue) == scheme)
+            .unwrap_or_else(|| rgb(palette.bg)),
+        _ => return None,
+    };
+    Some(format!(
+        "\x1b]{code};rgb:{red:02x}{red:02x}/{green:02x}{green:02x}/{blue:02x}{blue:02x}\x1b\\"
+    ))
+}
+
+fn rgb(color: Color) -> (u8, u8, u8) {
+    match color {
+        Color::Rgb(red, green, blue) => (red, green, blue),
+        Color::White => (255, 255, 255),
+        _ => (0, 0, 0),
+    }
 }
 
 pub fn resolve(preference: ThemePreference) -> ColorScheme {
@@ -216,6 +265,7 @@ fn scheme_change(
 /// Terminal background, then `COLORFGBG`, then the OS appearance.
 pub fn detect_color_scheme() -> Option<ColorScheme> {
     if let Some((red, green, blue)) = query_terminal_background() {
+        let _ = TERMINAL_BACKGROUND.set((red, green, blue));
         return Some(scheme_from_rgb(red, green, blue));
     }
     if let Some(scheme) = scheme_from_colorfgbg(std::env::var("COLORFGBG").ok().as_deref()) {
