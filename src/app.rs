@@ -191,6 +191,8 @@ pub enum AppAction {
         pinned: bool,
         keys: Vec<(String, u64)>,
     },
+    /// Read an image from the system clipboard into the draft.
+    PasteImage,
     /// Load the locally hidden registry into the restore picker.
     BrowseHidden,
     /// Remove one ID from the local hidden registry and reveal its row.
@@ -222,6 +224,8 @@ pub struct App {
     pub input: String,
     /// Byte offset of the composer cursor in `input`; `None` is the end.
     input_cursor: Option<usize>,
+    /// Images pasted into the draft. `[Image #N]` in `input` names entry N-1.
+    pasted_images: Vec<PathBuf>,
     pub filter: String,
     pub launch_targets: Vec<LaunchTarget>,
     pub launch_provider: Provider,
@@ -316,6 +320,7 @@ impl App {
             overlay: Overlay::None,
             input: String::new(),
             input_cursor: None,
+            pasted_images: Vec::new(),
             filter: String::new(),
             launch_targets,
             launch_provider,
@@ -617,7 +622,7 @@ impl App {
                 if session.capabilities.contains(&Capability::Respond) {
                     let action = AppAction::RespondInput {
                         session_id: session.id.clone(),
-                        answer: self.input.trim().to_owned(),
+                        answer: self.submitted_input(),
                     };
                     self.clear_input();
                     return action;
@@ -632,7 +637,7 @@ impl App {
                 }
                 let action = AppAction::Reply {
                     session_id: session.id.clone(),
-                    prompt: self.input.trim().to_owned(),
+                    prompt: self.submitted_input(),
                 };
                 self.clear_input();
                 action
@@ -1319,11 +1324,49 @@ impl App {
     fn clear_input(&mut self) {
         self.input.clear();
         self.input_cursor = None;
+        self.pasted_images.clear();
+    }
+
+    /// Ctrl+V: open the composer if needed and ask for the clipboard image.
+    pub fn request_image_paste(&mut self) -> AppAction {
+        if self.overlay == Overlay::None {
+            self.start_new_session(None);
+        }
+        if self.draft_accepts_images() {
+            AppAction::PasteImage
+        } else {
+            AppAction::None
+        }
+    }
+
+    fn draft_accepts_images(&self) -> bool {
+        self.overlay == Overlay::Composer(ComposerMode::NewSession)
+            || (self.overlay == Overlay::Peek
+                && self
+                    .selected_session()
+                    .is_some_and(|session| session.capabilities.contains(&Capability::Reply)))
+    }
+
+    /// Insert an `[Image #N]` token for a saved clipboard image.
+    pub fn attach_image(&mut self, path: PathBuf) {
+        if !self.draft_accepts_images() {
+            return;
+        }
+        self.pasted_images.push(path);
+        let token = format!("{} ", image_token(self.pasted_images.len()));
+        for character in token.chars() {
+            self.push_input(character);
+        }
+    }
+
+    fn submitted_input(&self) -> String {
+        expand_image_tokens(self.input.trim(), &self.pasted_images)
     }
 
     fn set_input(&mut self, text: String) {
         self.input = text;
         self.input_cursor = None;
+        self.pasted_images.clear();
     }
 
     /// Where typing lands in `input`. Only composers have a movable cursor;
@@ -1508,13 +1551,29 @@ impl App {
             self.directory_selection = 0;
         } else {
             let cursor = self.input_cursor();
-            if let Some((index, _)) = self.input[..cursor].char_indices().next_back() {
+            if let Some(start) = self.image_token_before(cursor) {
+                self.input.replace_range(start..cursor, "");
+                if self.input_cursor.is_some() {
+                    self.place_input_cursor(start);
+                }
+            } else if let Some((index, _)) = self.input[..cursor].char_indices().next_back() {
                 self.input.remove(index);
                 if self.input_cursor.is_some() {
                     self.place_input_cursor(index);
                 }
             }
         }
+    }
+
+    /// Start of an `[Image #N]` token ending at `cursor`, so Backspace
+    /// removes a pasted image in one press.
+    fn image_token_before(&self, cursor: usize) -> Option<usize> {
+        let before = &self.input[..cursor];
+        (1..=self.pasted_images.len()).find_map(|number| {
+            before
+                .strip_suffix(image_token(number).as_str())
+                .map(str::len)
+        })
     }
 
     fn active_text_field(&mut self) -> &mut String {
@@ -2066,6 +2125,20 @@ impl App {
 /// Keep printable text, tabs, and line breaks from a paste. `\r\n` and bare
 /// `\r` become `\n`; other control characters are dropped so a paste can never
 /// carry escape sequences into the draft.
+fn image_token(number: usize) -> String {
+    format!("[Image #{number}]")
+}
+
+/// Replace every `[Image #N]` with the image path, which each harness reads
+/// as an image file.
+fn expand_image_tokens(text: &str, images: &[PathBuf]) -> String {
+    let mut text = text.to_owned();
+    for (index, path) in images.iter().enumerate() {
+        text = text.replace(&image_token(index + 1), &path.display().to_string());
+    }
+    text
+}
+
 pub fn normalize_pasted_text(text: &str) -> String {
     let mut output = String::with_capacity(text.len());
     let mut characters = text.chars().peekable();
@@ -2114,10 +2187,11 @@ impl App {
             ));
             return AppAction::None;
         }
+        let images = std::mem::take(&mut self.pasted_images);
         self.clear_input();
         self.overlay = Overlay::None;
         match mode {
-            ComposerMode::NewSession => self.submit_new_session(input),
+            ComposerMode::NewSession => self.submit_new_session(input, images),
             ComposerMode::Rename { session_id } => AppAction::Rename {
                 session_id,
                 name: input,
@@ -2150,13 +2224,14 @@ impl App {
         }
     }
 
-    fn submit_new_session(&mut self, input: String) -> AppAction {
+    fn submit_new_session(&mut self, input: String, images: Vec<PathBuf>) -> AppAction {
         if !input.starts_with('/') {
             if self.launch_provider == Provider::Antigravity && self.launch_model.is_none() {
                 // Antigravity 1.1.x can terminate a task when its account does
                 // not advertise a default PlanModel/RequestedModel. Never send
                 // the user's task until an exact model has been selected.
                 self.set_input(input);
+                self.pasted_images = images;
                 return self.open_model_picker();
             }
             let cwd = self.launch_directory();
@@ -2164,7 +2239,7 @@ impl App {
             return AppAction::Launch {
                 provider: self.launch_provider.clone(),
                 model: self.launch_model.clone(),
-                prompt: input,
+                prompt: expand_image_tokens(&input, &images),
                 cwd,
             };
         }
@@ -2707,6 +2782,46 @@ mod tests {
     }
 
     #[test]
+    fn a_pasted_image_launches_with_its_path_in_place_of_the_token() {
+        let mut app = app_with(vec![session("one", SessionState::Working)]);
+
+        assert_eq!(app.request_image_paste(), AppAction::PasteImage);
+        assert_eq!(app.overlay, Overlay::Composer(ComposerMode::NewSession));
+        app.attach_image(PathBuf::from("/state/images/a.png"));
+        app.paste_input("fix this and");
+        app.push_input(' ');
+        app.attach_image(PathBuf::from("/state/images/b.png"));
+        assert_eq!(app.input, "[Image #1] fix this and [Image #2] ");
+
+        match app.activate() {
+            AppAction::Launch { prompt, .. } => assert_eq!(
+                prompt,
+                "/state/images/a.png fix this and /state/images/b.png"
+            ),
+            other => panic!("expected a launch, got {other:?}"),
+        }
+        assert!(app.pasted_images.is_empty());
+    }
+
+    #[test]
+    fn backspace_removes_a_pasted_image_token_in_one_press() {
+        let mut app = App::new(SessionSnapshot {
+            sessions: vec![session("one", SessionState::Working)],
+            warnings: vec![],
+        });
+
+        app.request_image_paste();
+        app.paste_input("look");
+        app.push_input(' ');
+        app.attach_image(PathBuf::from("/state/images/a.png"));
+        app.pop_input();
+        app.pop_input();
+        assert_eq!(app.input, "look ");
+        app.pop_input();
+        assert_eq!(app.input, "look");
+    }
+
+    #[test]
     fn pasting_many_lines_makes_one_draft_and_never_submits() {
         let mut app = App::new(SessionSnapshot {
             sessions: vec![session("one", SessionState::Working)],
@@ -2786,7 +2901,7 @@ mod tests {
             app.input = format!("{} codex", command.to_ascii_uppercase());
             assert!(app.draft_is_dashboard_command(), "{command}");
 
-            app.submit_new_session(command.to_string());
+            app.submit_new_session(command.to_string(), Vec::new());
             assert!(
                 !app.notice
                     .as_deref()
