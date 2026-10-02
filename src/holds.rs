@@ -88,6 +88,7 @@ mod tests {
         std::fs::write(dir.join(name), body).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_hold_counts_only_while_its_process_lives_and_before_it_expires() {
         let root = tempfile::tempdir().unwrap();
