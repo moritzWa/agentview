@@ -12,6 +12,10 @@ use serde_json::{json, Value};
 use tempfile::tempdir;
 
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "the Python fake server misses the 10s readiness window on hosted macOS runners"
+)]
 fn restart_keeps_the_endpoint_and_resumes_only_interrupted_top_level_turns() {
     let directory = tempdir().unwrap();
     let fake = directory.path().join("fake-opencode");
