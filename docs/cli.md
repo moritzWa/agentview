@@ -261,13 +261,18 @@ exact Interrupt authority, the first press stops that exact session. Discovery
 refreshes immediately; when the same row becomes idle, the next press deletes
 it if the provider grants exact Delete authority. Providers without a safe
 delete surface instead remove the idle row locally and reversibly, retaining
-provider history. An active row without Interrupt authority still requires an
-explicit local-hide confirmation because its live process will continue. The
-same rule applies from Peek.
+provider history. The same rule applies from Peek.
 
-Completed-group deletion remains confirmed. It deletes only when every row
-grants Delete; otherwise it offers to hide only the undeletable rows locally.
-Bulk stop for an active group remains unavailable.
+Delete and local hide always take two presses on the same row. The first press
+replaces the row's summary with `ctrl+x again to delete` (or `to hide`) and
+changes nothing; the second press acts. Any other key, or a different
+selection, cancels. A stop counts as the first press, so stopping and then
+removing a session is still Ctrl+X twice. An active row without Interrupt
+authority is hidden this way too; its live process continues.
+
+Completed-group deletion uses the same two presses on the group heading. It
+deletes only when every row grants Delete; otherwise it hides only the
+undeletable rows locally. Bulk stop for an active group remains unavailable.
 
 The local hidden-ID registry can also be managed without opening the TUI:
 
@@ -457,8 +462,8 @@ label.
 | Session row | `ctrl+r` | Open the accented `rename session` composer. The `name ❯` mode label is separate from the editable display name; empty submission clears it and follows the latest provider title again. |
 | Host coding-harness session row | `ctrl+m` | Choose a different supported harness, edit the prefilled local name, and migrate the exact selected session through `session-migrate`. The default is `CURRENT NAME (TARGET HARNESS)`. Escape returns from the name editor to the target picker before closing the workflow. |
 | Idle owned Codex row | `ctrl+a`, then `enter` | Confirm archive. |
-| Session row or Peek | `ctrl+x` | Stop an exact active owned session; after refresh reports it idle, press again to delete it or remove it reversibly from agentview's view. Active rows without stop authority require a local-hide confirmation. |
-| Completed group | `ctrl+x`, then `enter` or `ctrl+x` | Delete only when every member grants Delete; otherwise offer to hide the undeletable rows locally. |
+| Session row or Peek | `ctrl+x`, then `ctrl+x` | Stop an exact active owned session; after refresh reports it idle, press again to delete it or remove it reversibly from agentview's view. Idle rows and active rows without stop authority show `ctrl+x again to delete` (or `to hide`) on the first press and act on the second; any other key cancels. |
+| Completed group | `ctrl+x`, then `ctrl+x` | Delete only when every member grants Delete; otherwise hide the undeletable rows locally. |
 | Any ordinary view | `?` | Open contextual help; `?`, `enter`, or `esc` closes it. |
 | Any overlay/composer | `esc` | Cancel that mode and discard its unsubmitted input. |
 | Session list | `esc` | Quit immediately and restore the terminal. |

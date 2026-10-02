@@ -1362,6 +1362,13 @@ fn handle_key(app: &mut App, key: KeyEvent) -> AppAction {
     if key.kind == KeyEventKind::Release {
         return AppAction::None;
     }
+    let removal_key =
+        key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('x');
+    if !removal_key {
+        app.disarm_removal();
+    } else if key.kind == KeyEventKind::Repeat {
+        return AppAction::None;
+    }
     if key.modifiers.contains(KeyModifiers::CONTROL) {
         return match key.code {
             KeyCode::Char('s') if app.overlay == Overlay::None => {
@@ -2817,6 +2824,19 @@ mod tests {
 
         let mut locally_removed = app();
         locally_removed.snapshot.sessions[0].state = SessionState::Completed;
+        assert_eq!(
+            handle_key(&mut locally_removed, control_key('x')),
+            AppAction::None
+        );
+        handle_key(&mut locally_removed, key(KeyCode::Down));
+        handle_key(&mut locally_removed, key(KeyCode::Up));
+        assert_eq!(
+            handle_key(&mut locally_removed, control_key('x')),
+            AppAction::None
+        );
+        let mut held = control_key('x');
+        held.kind = KeyEventKind::Repeat;
+        assert_eq!(handle_key(&mut locally_removed, held), AppAction::None);
         assert_eq!(
             handle_key(&mut locally_removed, control_key('x')),
             AppAction::Hide {

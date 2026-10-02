@@ -110,16 +110,7 @@ pub enum ComposerMode {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ConfirmTarget {
-    Archive {
-        id: String,
-    },
-    Hide {
-        session_ids: Vec<String>,
-    },
-    Group {
-        key: String,
-        session_ids: Vec<String>,
-    },
+    Archive { id: String },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -277,6 +268,7 @@ pub struct App {
     #[cfg(test)]
     group_cache_rebuilds: usize,
     pub notice: Option<String>,
+    pending_removal: Option<SelectionKey>,
     pub details: BTreeMap<String, String>,
     pub refreshed_at: SystemTime,
     pub should_quit: bool,
@@ -365,6 +357,7 @@ impl App {
             #[cfg(test)]
             group_cache_rebuilds: 0,
             notice: None,
+            pending_removal: None,
             details: BTreeMap::new(),
             refreshed_at: SystemTime::now(),
             should_quit: false,
@@ -395,9 +388,12 @@ impl App {
                 | Overlay::Composer(ComposerMode::MigrationName { .. })
                 | Overlay::Confirm(_)
         );
-        if self.selection != previous_selection && selection_bound_overlay {
-            self.overlay = Overlay::None;
-            self.clear_input();
+        if self.selection != previous_selection {
+            self.pending_removal = None;
+            if selection_bound_overlay {
+                self.overlay = Overlay::None;
+                self.clear_input();
+            }
         }
     }
 
@@ -1145,67 +1141,97 @@ impl App {
         self.overlay = Overlay::Composer(ComposerMode::MigrationName { session_id, target });
     }
 
+    /// Ctrl+X on a row. Stop runs on the first press and arms the row, so the
+    /// press after it reaches idle removes it. Delete and hide need a second
+    /// press on the same row; any other key disarms via `disarm_removal`.
     pub fn start_confirm(&mut self) -> AppAction {
+        let Some(selection) = self.selection.clone() else {
+            return AppAction::None;
+        };
+        let action = match self.removal_action() {
+            Ok(AppAction::None) => return AppAction::None,
+            Ok(action) => action,
+            Err(notice) => {
+                self.pending_removal = None;
+                self.set_notice(notice);
+                return AppAction::None;
+            }
+        };
+        self.notice = None;
+        if matches!(action, AppAction::Interrupt { .. }) {
+            self.pending_removal = Some(selection);
+        } else if self.pending_removal.as_ref() != Some(&selection) {
+            self.pending_removal = Some(selection);
+            return AppAction::None;
+        } else {
+            self.pending_removal = None;
+        }
+        self.overlay = Overlay::None;
+        action
+    }
+
+    pub fn disarm_removal(&mut self) {
+        self.pending_removal = None;
+    }
+
+    /// The verb a second Ctrl+X would perform on the selected row, when armed.
+    pub fn pending_removal_verb(&self) -> Option<&'static str> {
+        if self.pending_removal.is_none() || self.pending_removal != self.selection {
+            return None;
+        }
+        let group = matches!(self.selection, Some(SelectionKey::Group(_)));
+        match self.removal_action().ok()? {
+            AppAction::Delete { .. } if group => Some("delete all"),
+            AppAction::Delete { .. } => Some("delete"),
+            AppAction::Hide { .. } => Some("hide"),
+            _ => None,
+        }
+    }
+
+    fn removal_action(&self) -> Result<AppAction, &'static str> {
         if let Some(session) = self.selected_session() {
-            let running = is_active_session_state(session.state);
             let id = session.id.clone();
-            let action = if session.capabilities.contains(&Capability::Interrupt) {
+            return Ok(if session.capabilities.contains(&Capability::Interrupt) {
                 AppAction::Interrupt { session_id: id }
-            } else if !running && session.capabilities.contains(&Capability::Delete) {
+            } else if !is_active_session_state(session.state)
+                && session.capabilities.contains(&Capability::Delete)
+            {
                 AppAction::Delete {
                     session_ids: vec![id],
                 }
-            } else if !running {
+            } else {
                 AppAction::Hide {
                     session_ids: vec![id],
                 }
-            } else {
-                self.overlay = Overlay::Confirm(ConfirmTarget::Hide {
-                    session_ids: vec![id],
-                });
-                self.notice = None;
-                return AppAction::None;
-            };
-            self.overlay = Overlay::None;
-            self.notice = None;
-            return action;
-        } else if let Some(group) = self.selected_group() {
-            if group
-                .sessions
-                .iter()
-                .any(|index| is_active_session_state(self.snapshot.sessions[*index].state))
-            {
-                self.set_notice("bulk stop is unavailable; select one running session");
-                return AppAction::None;
-            }
-            let undeletable = group
-                .sessions
-                .iter()
-                .filter(|index| {
-                    !self.snapshot.sessions[**index]
-                        .capabilities
-                        .contains(&Capability::Delete)
-                })
-                .map(|index| self.snapshot.sessions[*index].id.clone())
-                .collect::<Vec<_>>();
-            if !undeletable.is_empty() {
-                self.overlay = Overlay::Confirm(ConfirmTarget::Hide {
-                    session_ids: undeletable,
-                });
-                self.notice = None;
-                return AppAction::None;
-            }
-            self.overlay = Overlay::Confirm(ConfirmTarget::Group {
-                key: group.key,
-                session_ids: group
-                    .sessions
-                    .iter()
-                    .map(|index| self.snapshot.sessions[*index].id.clone())
-                    .collect(),
             });
-            self.notice = None;
         }
-        AppAction::None
+        let Some(group) = self.selected_group() else {
+            return Ok(AppAction::None);
+        };
+        let sessions = group
+            .sessions
+            .iter()
+            .map(|index| &self.snapshot.sessions[*index]);
+        if sessions
+            .clone()
+            .any(|session| is_active_session_state(session.state))
+        {
+            return Err("bulk stop is unavailable; select one running session");
+        }
+        let undeletable = sessions
+            .clone()
+            .filter(|session| !session.capabilities.contains(&Capability::Delete))
+            .map(|session| session.id.clone())
+            .collect::<Vec<_>>();
+        Ok(if undeletable.is_empty() {
+            AppAction::Delete {
+                session_ids: sessions.map(|session| session.id.clone()).collect(),
+            }
+        } else {
+            AppAction::Hide {
+                session_ids: undeletable,
+            }
+        })
     }
 
     pub fn start_archive_confirm(&mut self) {
@@ -2100,8 +2126,6 @@ impl App {
         self.overlay = Overlay::None;
         match target {
             ConfirmTarget::Archive { id } => AppAction::Archive { session_id: id },
-            ConfirmTarget::Hide { session_ids } => AppAction::Hide { session_ids },
-            ConfirmTarget::Group { session_ids, .. } => AppAction::Delete { session_ids },
         }
     }
 
@@ -4277,12 +4301,15 @@ mod tests {
         active.capabilities.clear();
         let mut app = app_with(vec![active]);
         assert_eq!(app.start_confirm(), AppAction::None);
+        assert_eq!(app.overlay, Overlay::None);
+        assert_eq!(app.pending_removal_verb(), Some("hide"));
         assert_eq!(
-            app.activate(),
+            app.start_confirm(),
             AppAction::Hide {
                 session_ids: vec!["active".into()]
             }
         );
+        assert_eq!(app.pending_removal_verb(), None);
 
         grant(&mut app.snapshot.sessions[0], &[Capability::Interrupt]);
         assert_eq!(
@@ -4294,6 +4321,7 @@ mod tests {
 
         app.snapshot.sessions[0].state = SessionState::Completed;
         app.snapshot.sessions[0].capabilities.clear();
+        assert_eq!(app.pending_removal_verb(), Some("hide"));
         assert_eq!(
             app.start_confirm(),
             AppAction::Hide {
@@ -4301,10 +4329,37 @@ mod tests {
             }
         );
         grant(&mut app.snapshot.sessions[0], &[Capability::Delete]);
+        assert_eq!(app.start_confirm(), AppAction::None);
+        assert_eq!(app.pending_removal_verb(), Some("delete"));
         assert_eq!(
             app.start_confirm(),
             AppAction::Delete {
                 session_ids: vec!["active".into()]
+            }
+        );
+    }
+
+    #[test]
+    fn removal_disarms_when_another_row_is_selected() {
+        let mut one = session("one", SessionState::Completed);
+        let mut two = session("two", SessionState::Completed);
+        grant(&mut one, &[Capability::Delete]);
+        grant(&mut two, &[Capability::Delete]);
+        let mut app = app_with(vec![one, two]);
+        app.selection = Some(SelectionKey::Session("one".into()));
+
+        assert_eq!(app.start_confirm(), AppAction::None);
+        app.selection = Some(SelectionKey::Session("two".into()));
+        assert_eq!(app.pending_removal_verb(), None);
+        assert_eq!(app.start_confirm(), AppAction::None);
+        assert_eq!(app.pending_removal_verb(), Some("delete"));
+
+        app.disarm_removal();
+        assert_eq!(app.start_confirm(), AppAction::None);
+        assert_eq!(
+            app.start_confirm(),
+            AppAction::Delete {
+                session_ids: vec!["two".into()]
             }
         );
     }
@@ -4317,18 +4372,20 @@ mod tests {
         let mut app = app_with(vec![one, two]);
         app.selection = Some(SelectionKey::Group("state:Completed".into()));
 
-        app.start_confirm();
+        assert_eq!(app.start_confirm(), AppAction::None);
+        assert_eq!(app.pending_removal_verb(), Some("hide"));
         assert_eq!(
-            app.activate(),
+            app.start_confirm(),
             AppAction::Hide {
                 session_ids: vec!["two".into()]
             }
         );
 
         grant(&mut app.snapshot.sessions[1], &[Capability::Delete]);
-        app.start_confirm();
+        assert_eq!(app.start_confirm(), AppAction::None);
+        assert_eq!(app.pending_removal_verb(), Some("delete all"));
         assert_eq!(
-            app.activate(),
+            app.start_confirm(),
             AppAction::Delete {
                 session_ids: vec!["one".into(), "two".into()]
             }
