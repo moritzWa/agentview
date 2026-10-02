@@ -37,6 +37,8 @@ const RETURN_HINT_REFRESH: Duration = Duration::from_millis(100);
 const EMPTY_PROMPT_MAX_COLUMN: u16 = 4;
 const MAX_INITIAL_INPUT_BYTES: usize = 256 * 1024;
 #[cfg(unix)]
+const MAX_PENDING_INPUT_BYTES: usize = 64 * 1024;
+#[cfg(unix)]
 const FALLBACK_TERMINAL_ROWS: u16 = 24;
 #[cfg(unix)]
 const FALLBACK_TERMINAL_COLUMNS: u16 = 80;
@@ -704,6 +706,7 @@ fn bridge_session(
     let mut redraw_restore_at = None;
     let mut hidden_queries = TerminalQueryScanner::default();
     let mut color_queries = answers_color_queries(session_key).then(TerminalQueryScanner::default);
+    let mut pending_input = PendingInput::default();
     if !fresh {
         // The physical screen can disagree with what OpenCode's diff renderer
         // believes it drew, so make it see a real size change and repaint.
@@ -727,12 +730,20 @@ fn bridge_session(
         let mut descriptors = [
             libc::pollfd {
                 fd: master.as_raw_fd(),
-                events: libc::POLLIN,
+                events: if pending_input.is_empty() {
+                    libc::POLLIN
+                } else {
+                    libc::POLLIN | libc::POLLOUT
+                },
                 revents: 0,
             },
             libc::pollfd {
                 fd: libc::STDIN_FILENO,
-                events: libc::POLLIN,
+                events: if pending_input.is_full() {
+                    0
+                } else {
+                    libc::POLLIN
+                },
                 revents: 0,
             },
         ];
@@ -754,7 +765,7 @@ fn bridge_session(
                     color_queries.as_mut(),
                 )?;
             }
-            forward_ready_initial_input(&mut initial_input, &screen, &mut master)?;
+            forward_ready_initial_input(&mut initial_input, &screen, &mut pending_input)?;
         }
         let mut detach = false;
         if descriptors[1].revents & libc::POLLIN != 0 {
@@ -774,8 +785,7 @@ fn bridge_session(
                         match action {
                             InputAction::Forward(bytes) => {
                                 return_gesture.clear(&mut stdout, &screen)?;
-                                master.write_all(&bytes)?;
-                                master.flush()?;
+                                pending_input.write_all(&bytes)?;
                             }
                             InputAction::Arrow(direction, bytes) => {
                                 if return_gesture.should_detach(direction, &screen) {
@@ -784,8 +794,7 @@ fn bridge_session(
                                 }
                                 return_gesture.clear(&mut stdout, &screen)?;
                                 let cursor = screen.screen().cursor_position();
-                                master.write_all(bytes)?;
-                                master.flush()?;
+                                pending_input.write_all(bytes)?;
                                 // Claude and a few other TUIs use Left at an
                                 // empty, left-margin prompt to change their own
                                 // view. Preserve the agentview second-press window in
@@ -809,11 +818,11 @@ fn bridge_session(
         if !detach {
             if let Some(bytes) = parser.flush_expired() {
                 return_gesture.clear(&mut stdout, &screen)?;
-                master.write_all(&bytes)?;
-                master.flush()?;
+                pending_input.write_all(&bytes)?;
             }
             detach = return_gesture.update(&mut stdout, &screen)?;
         }
+        pending_input.write_to(&mut master)?;
         if detach {
             // The provider keeps its controlling terminal, which is the
             // private pseudo-terminal, not the dashboard's. Stopping it here
@@ -1250,6 +1259,63 @@ fn copy_available(
     }
     output.flush()?;
     Ok(())
+}
+
+/// Keyboard bytes waiting for the provider to read them. Reading output leaves
+/// the pseudo-terminal non-blocking and its input queue holds only about a
+/// kilobyte on macOS, so a large paste or initial task has to wait here until
+/// the provider catches up instead of failing the write.
+#[cfg(unix)]
+#[derive(Default)]
+struct PendingInput {
+    bytes: std::collections::VecDeque<u8>,
+}
+
+#[cfg(unix)]
+impl PendingInput {
+    fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
+    }
+
+    /// Stop reading the keyboard past this, so a huge paste waits in the
+    /// outer terminal rather than in memory.
+    fn is_full(&self) -> bool {
+        self.bytes.len() >= MAX_PENDING_INPUT_BYTES
+    }
+
+    fn write_to(&mut self, master: &mut impl Write) -> Result<()> {
+        while !self.bytes.is_empty() {
+            let (front, _) = self.bytes.as_slices();
+            match master.write(front) {
+                Ok(0) => break,
+                Ok(written) => {
+                    self.bytes.drain(..written);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                // The provider is gone; the exit check reports that.
+                Err(error) if error.raw_os_error() == Some(libc::EIO) => {
+                    self.bytes.clear();
+                }
+                Err(error) => {
+                    return Err(error).context("failed to forward keyboard input to the provider")
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+impl Write for PendingInput {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.bytes.extend(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 /// Read provider output into the screen model without drawing it, answering
@@ -1725,6 +1791,65 @@ mod tests {
         let status = status_retrying_text_busy(&mut command).unwrap();
         release.join().unwrap();
         assert!(status.success());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_paste_larger_than_the_pty_input_queue_waits_for_the_provider_to_read() {
+        let (mut master_fd, mut slave_fd) = (-1, -1);
+        let opened = unsafe {
+            libc::openpty(
+                &mut master_fd,
+                &mut slave_fd,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(opened, 0);
+        let mut master = unsafe { std::fs::File::from_raw_fd(master_fd) };
+        let mut slave = unsafe { std::fs::File::from_raw_fd(slave_fd) };
+        let mut attributes: libc::termios = unsafe { std::mem::zeroed() };
+        unsafe {
+            assert_eq!(libc::tcgetattr(slave_fd, &mut attributes), 0);
+            libc::cfmakeraw(&mut attributes);
+            assert_eq!(libc::tcsetattr(slave_fd, libc::TCSANOW, &attributes), 0);
+        }
+        set_nonblocking(master_fd, true).unwrap();
+        set_nonblocking(slave_fd, true).unwrap();
+
+        let paste: Vec<u8> = (0..32 * 1024)
+            .map(|index| b'a' + (index % 26) as u8)
+            .collect();
+        let mut pending = PendingInput::default();
+        pending.write_all(b"\x1b[200~").unwrap();
+        pending.write_all(&paste).unwrap();
+        pending.write_all(b"\x1b[201~").unwrap();
+
+        pending.write_to(&mut master).unwrap();
+        assert!(
+            !pending.is_empty(),
+            "the stalled provider left room for the whole paste"
+        );
+
+        let mut received = Vec::new();
+        let mut chunk = [0_u8; 4096];
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !pending.is_empty() || received.len() < paste.len() + 12 {
+            assert!(Instant::now() < deadline, "paste never drained");
+            pending.write_to(&mut master).unwrap();
+            match slave.read(&mut chunk) {
+                Ok(read) => received.extend_from_slice(&chunk[..read]),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err(error) => panic!("{error}"),
+            }
+        }
+        let mut expected = b"\x1b[200~".to_vec();
+        expected.extend_from_slice(&paste);
+        expected.extend_from_slice(b"\x1b[201~");
+        assert_eq!(received, expected);
     }
 
     #[cfg(unix)]
