@@ -224,8 +224,8 @@ pub struct App {
     pub input: String,
     /// Byte offset of the composer cursor in `input`; `None` is the end.
     input_cursor: Option<usize>,
-    /// Images pasted into the draft. `[Image #N]` in `input` names entry N-1.
-    pasted_images: Vec<PathBuf>,
+    /// Images and long text pasted into the draft, shown there as tokens.
+    pasted: PastedParts,
     pub filter: String,
     pub launch_targets: Vec<LaunchTarget>,
     pub launch_provider: Provider,
@@ -320,7 +320,7 @@ impl App {
             overlay: Overlay::None,
             input: String::new(),
             input_cursor: None,
-            pasted_images: Vec::new(),
+            pasted: PastedParts::default(),
             filter: String::new(),
             launch_targets,
             launch_provider,
@@ -1324,7 +1324,7 @@ impl App {
     fn clear_input(&mut self) {
         self.input.clear();
         self.input_cursor = None;
-        self.pasted_images.clear();
+        self.pasted.clear();
     }
 
     /// Ctrl+V: open the composer if needed and ask for the clipboard image.
@@ -1332,14 +1332,15 @@ impl App {
         if self.overlay == Overlay::None {
             self.start_new_session(None);
         }
-        if self.draft_accepts_images() {
+        if self.draft_accepts_pasted_parts() {
             AppAction::PasteImage
         } else {
             AppAction::None
         }
     }
 
-    fn draft_accepts_images(&self) -> bool {
+    /// The new-task composer and a reply: drafts that are expanded on submit.
+    fn draft_accepts_pasted_parts(&self) -> bool {
         self.overlay == Overlay::Composer(ComposerMode::NewSession)
             || (self.overlay == Overlay::Peek
                 && self
@@ -1349,24 +1350,28 @@ impl App {
 
     /// Insert an `[Image #N]` token for a saved clipboard image.
     pub fn attach_image(&mut self, path: PathBuf) {
-        if !self.draft_accepts_images() {
+        if !self.draft_accepts_pasted_parts() {
             return;
         }
-        self.pasted_images.push(path);
-        let token = format!("{} ", image_token(self.pasted_images.len()));
-        for character in token.chars() {
+        self.pasted.images.push(path);
+        let token = format!("{} ", image_token(self.pasted.images.len()));
+        self.insert_input_text(&token);
+    }
+
+    fn insert_input_text(&mut self, text: &str) {
+        for character in text.chars() {
             self.push_input(character);
         }
     }
 
     fn submitted_input(&self) -> String {
-        expand_image_tokens(self.input.trim(), &self.pasted_images)
+        self.pasted.expand(self.input.trim())
     }
 
     fn set_input(&mut self, text: String) {
         self.input = text;
         self.input_cursor = None;
-        self.pasted_images.clear();
+        self.pasted.clear();
     }
 
     /// Where typing lands in `input`. Only composers have a movable cursor;
@@ -1489,6 +1494,8 @@ impl App {
 
     /// Insert pasted text as text. A paste never submits, so a clipboard with
     /// many lines becomes one multi-line draft instead of one launch per line.
+    /// A long paste into a task or reply shows as `[Pasted ~N lines]`, as in
+    /// OpenCode, and is expanded on submit.
     pub fn paste_input(&mut self, text: &str) {
         let text = normalize_pasted_text(text);
         if text.is_empty() {
@@ -1496,6 +1503,14 @@ impl App {
         }
         if self.overlay == Overlay::None {
             self.start_new_session(None);
+        }
+        let lines = text.matches('\n').count() + 1;
+        if self.draft_accepts_pasted_parts()
+            && (lines >= PASTE_SUMMARY_LINES || text.chars().count() > PASTE_SUMMARY_CHARS)
+        {
+            let token = self.pasted.add_text(text, lines, &self.input);
+            self.insert_input_text(&token);
+            return;
         }
         let single_line = self.input_is_single_line();
         for character in text.chars() {
@@ -1551,7 +1566,11 @@ impl App {
             self.directory_selection = 0;
         } else {
             let cursor = self.input_cursor();
-            if let Some(start) = self.image_token_before(cursor) {
+            if let Some(start) = self.pasted_token_before(cursor) {
+                let token = self.input[start..cursor].to_owned();
+                self.pasted
+                    .texts
+                    .retain(|(text_token, _)| *text_token != token);
                 self.input.replace_range(start..cursor, "");
                 if self.input_cursor.is_some() {
                     self.place_input_cursor(start);
@@ -1565,15 +1584,13 @@ impl App {
         }
     }
 
-    /// Start of an `[Image #N]` token ending at `cursor`, so Backspace
-    /// removes a pasted image in one press.
-    fn image_token_before(&self, cursor: usize) -> Option<usize> {
+    /// Start of a pasted image or text token ending at `cursor`, so
+    /// Backspace removes a paste in one press.
+    fn pasted_token_before(&self, cursor: usize) -> Option<usize> {
         let before = &self.input[..cursor];
-        (1..=self.pasted_images.len()).find_map(|number| {
-            before
-                .strip_suffix(image_token(number).as_str())
-                .map(str::len)
-        })
+        self.pasted
+            .tokens()
+            .find_map(|token| before.strip_suffix(token.as_str()).map(str::len))
     }
 
     fn active_text_field(&mut self) -> &mut String {
@@ -2129,14 +2146,78 @@ fn image_token(number: usize) -> String {
     format!("[Image #{number}]")
 }
 
-/// Replace every `[Image #N]` with the image path, which each harness reads
-/// as an image file.
-fn expand_image_tokens(text: &str, images: &[PathBuf]) -> String {
-    let mut text = text.to_owned();
-    for (index, path) in images.iter().enumerate() {
-        text = text.replace(&image_token(index + 1), &path.display().to_string());
+/// OpenCode's thresholds for showing a paste as `[Pasted ~N lines]`.
+const PASTE_SUMMARY_LINES: usize = 3;
+const PASTE_SUMMARY_CHARS: usize = 150;
+
+#[derive(Clone, Debug, Default)]
+struct PastedParts {
+    /// `[Image #N]` names entry N-1.
+    images: Vec<PathBuf>,
+    /// Each long text paste with the token that stands for it in the draft.
+    texts: Vec<(String, String)>,
+}
+
+impl PastedParts {
+    fn clear(&mut self) {
+        self.images.clear();
+        self.texts.clear();
     }
-    text
+
+    /// A token for `text` that no other paste or the draft already uses, so
+    /// each one expands to its own content wherever the cursor put it.
+    fn add_text(&mut self, text: String, lines: usize, draft: &str) -> String {
+        let base = format!("[Pasted ~{lines} lines]");
+        let taken =
+            |token: &str| draft.contains(token) || self.texts.iter().any(|(used, _)| used == token);
+        let token = if taken(&base) {
+            (2..)
+                .map(|number| format!("[Pasted ~{lines} lines #{number}]"))
+                .find(|token| !taken(token))
+                .expect("an unused number exists")
+        } else {
+            base
+        };
+        self.texts.push((token.clone(), text));
+        token
+    }
+
+    fn tokens(&self) -> impl Iterator<Item = String> + '_ {
+        (1..=self.images.len())
+            .map(image_token)
+            .chain(self.texts.iter().map(|(token, _)| token.clone()))
+    }
+
+    /// Replace every `[Image #N]` with the image path, which each harness
+    /// reads as an image file, and each text token with its paste. Tokens are
+    /// found in the draft as typed, so pasted content is never expanded again.
+    fn expand(&self, draft: &str) -> String {
+        let mut replacements = Vec::new();
+        for (index, path) in self.images.iter().enumerate() {
+            let token = image_token(index + 1);
+            for (start, _) in draft.match_indices(token.as_str()) {
+                replacements.push((start, token.len(), path.display().to_string()));
+            }
+        }
+        for (token, text) in &self.texts {
+            if let Some(start) = draft.find(token.as_str()) {
+                replacements.push((start, token.len(), text.clone()));
+            }
+        }
+        replacements.sort_by_key(|(start, _, _)| *start);
+        let mut expanded = String::with_capacity(draft.len());
+        let mut copied = 0;
+        for (start, length, replacement) in replacements {
+            if start < copied {
+                continue;
+            }
+            expanded.push_str(&draft[copied..start]);
+            expanded.push_str(&replacement);
+            copied = start + length;
+        }
+        expanded.push_str(&draft[copied..]);
+        expanded
+    }
 }
 
 pub fn normalize_pasted_text(text: &str) -> String {
@@ -2187,11 +2268,11 @@ impl App {
             ));
             return AppAction::None;
         }
-        let images = std::mem::take(&mut self.pasted_images);
+        let pasted = std::mem::take(&mut self.pasted);
         self.clear_input();
         self.overlay = Overlay::None;
         match mode {
-            ComposerMode::NewSession => self.submit_new_session(input, images),
+            ComposerMode::NewSession => self.submit_new_session(input, pasted),
             ComposerMode::Rename { session_id } => AppAction::Rename {
                 session_id,
                 name: input,
@@ -2224,14 +2305,14 @@ impl App {
         }
     }
 
-    fn submit_new_session(&mut self, input: String, images: Vec<PathBuf>) -> AppAction {
+    fn submit_new_session(&mut self, input: String, pasted: PastedParts) -> AppAction {
         if !input.starts_with('/') {
             if self.launch_provider == Provider::Antigravity && self.launch_model.is_none() {
                 // Antigravity 1.1.x can terminate a task when its account does
                 // not advertise a default PlanModel/RequestedModel. Never send
                 // the user's task until an exact model has been selected.
                 self.set_input(input);
-                self.pasted_images = images;
+                self.pasted = pasted;
                 return self.open_model_picker();
             }
             let cwd = self.launch_directory();
@@ -2239,7 +2320,7 @@ impl App {
             return AppAction::Launch {
                 provider: self.launch_provider.clone(),
                 model: self.launch_model.clone(),
-                prompt: expand_image_tokens(&input, &images),
+                prompt: pasted.expand(&input),
                 cwd,
             };
         }
@@ -2800,7 +2881,7 @@ mod tests {
             ),
             other => panic!("expected a launch, got {other:?}"),
         }
-        assert!(app.pasted_images.is_empty());
+        assert!(app.pasted.images.is_empty());
     }
 
     #[test]
@@ -2822,6 +2903,53 @@ mod tests {
     }
 
     #[test]
+    fn a_long_paste_shows_as_a_summary_and_launches_with_its_text() {
+        let mut app = app_with(vec![session("one", SessionState::Working)]);
+
+        app.paste_input("short paste");
+        assert_eq!(app.input, "short paste");
+        app.paste_input(" ");
+        app.paste_input("a\nb\nc");
+        app.paste_input(" then ");
+        app.paste_input(&"x".repeat(151));
+        app.move_input_cursor(CursorMovement::LineStart);
+        app.paste_input("d\ne\nf\n[Image #1]\n[Pasted ~3 lines]");
+        assert_eq!(
+            app.input,
+            "[Pasted ~5 lines]short paste [Pasted ~3 lines] then [Pasted ~1 lines]"
+        );
+
+        match app.activate() {
+            AppAction::Launch { prompt, .. } => assert_eq!(
+                prompt,
+                format!(
+                    "d\ne\nf\n[Image #1]\n[Pasted ~3 lines]short paste a\nb\nc then {}",
+                    "x".repeat(151)
+                )
+            ),
+            other => panic!("expected a launch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_repeated_summary_gets_its_own_token_and_backspace_drops_it() {
+        let mut app = app_with(vec![session("one", SessionState::Working)]);
+
+        app.paste_input("one\ntwo\nthree");
+        app.paste_input("four\nfive\nsix");
+        assert_eq!(app.input, "[Pasted ~3 lines][Pasted ~3 lines #2]");
+        app.pop_input();
+        assert_eq!(app.input, "[Pasted ~3 lines]");
+        assert_eq!(app.submitted_input(), "one\ntwo\nthree");
+
+        app.pop_input();
+        assert!(app.input.is_empty());
+        app.paste_input("seven\neight\nnine");
+        assert_eq!(app.input, "[Pasted ~3 lines]");
+        assert_eq!(app.submitted_input(), "seven\neight\nnine");
+    }
+
+    #[test]
     fn pasting_many_lines_makes_one_draft_and_never_submits() {
         let mut app = App::new(SessionSnapshot {
             sessions: vec![session("one", SessionState::Working)],
@@ -2831,11 +2959,12 @@ mod tests {
         app.paste_input("first line\r\nsecond line\rthird line\r");
 
         assert_eq!(app.overlay, Overlay::Composer(ComposerMode::NewSession));
-        assert_eq!(app.input, "first line\nsecond line\nthird line\n");
+        assert_eq!(app.input, "[Pasted ~4 lines]");
 
         app.paste_input("\u{1b}[31mfour\u{7}th\t!");
+        assert_eq!(app.input, "[Pasted ~4 lines][31mfourth\t!");
         assert_eq!(
-            app.input,
+            app.submitted_input(),
             "first line\nsecond line\nthird line\n[31mfourth\t!"
         );
 
@@ -2901,7 +3030,7 @@ mod tests {
             app.input = format!("{} codex", command.to_ascii_uppercase());
             assert!(app.draft_is_dashboard_command(), "{command}");
 
-            app.submit_new_session(command.to_string(), Vec::new());
+            app.submit_new_session(command.to_string(), PastedParts::default());
             assert!(
                 !app.notice
                     .as_deref()
