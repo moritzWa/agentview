@@ -1351,6 +1351,18 @@ impl App {
             || (self.overlay == Overlay::Peek && !self.input.is_empty())
     }
 
+    /// Turns a `\` right before the cursor into a line break, as Claude Code
+    /// does on Enter. Terminals such as Hyper report Shift+Enter as a plain
+    /// Enter, so a `\` followed by Return is the only newline they can send.
+    pub fn take_backslash_line_break(&mut self) -> bool {
+        if !self.draft_accepts_line_breaks() || !self.input[..self.input_cursor()].ends_with('\\') {
+            return false;
+        }
+        self.pop_input();
+        self.push_input('\n');
+        true
+    }
+
     /// Whether arrow and Home/End keys move the cursor in the draft instead
     /// of acting on the dashboard.
     pub fn input_cursor_movable(&self) -> bool {

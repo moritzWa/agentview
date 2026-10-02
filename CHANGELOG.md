@@ -14,6 +14,10 @@ and released versions are intended to follow Semantic Versioning.
   group. The first press shows `ctrl+x again to delete` (or `to hide`) on the
   row and the second press acts; any other key cancels. A stop still counts as
   the first press, so stop-then-delete remains Ctrl+X twice.
+- Enter right after a `\` in the composer replaces the `\` with a line break
+  instead of submitting, wherever the cursor is, as Claude Code does. Terminals
+  such as Hyper report Shift+Enter as a plain Enter, so `\` then Return is the
+  line break they can send.
 
 ## [0.1.0] - 2026-10-01
 
