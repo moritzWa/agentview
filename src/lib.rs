@@ -10,6 +10,7 @@ pub mod doctor;
 pub mod domain;
 pub(crate) mod fs_util;
 pub mod hidden;
+pub mod holds;
 pub mod last_harness;
 pub mod last_view;
 pub mod maintenance;

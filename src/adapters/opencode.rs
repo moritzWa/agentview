@@ -773,6 +773,7 @@ impl OpenCodeSource {
                 .collect::<Vec<_>>();
             opencode_live::assign(holders, &candidates)
         };
+        let holds = crate::holds::default_holds_dir();
         records
             .into_iter()
             .map(|mut record| {
@@ -786,6 +787,11 @@ impl OpenCodeSource {
                         .or(holder.map(|holder| holder.started_ms))
                         .unwrap_or(0);
                     apply_live_state(&mut session, last.as_ref(), child, holder, since);
+                    if let Some(reason) = holds.as_deref().and_then(|root| {
+                        crate::holds::live_hold(root, "opencode", &session.provider_session_id)
+                    }) {
+                        apply_hold(&mut session, &reason);
+                    }
                 }
                 session
             })
@@ -912,6 +918,23 @@ fn apply_live_state(
     session.state = state;
     session.raw_state = Some(raw_state.into());
     session.pid = Some(pid);
+}
+
+/// A plugin's background work, such as a CI monitor that will start the next
+/// turn, keeps an idle or closed session working. A question or permission
+/// prompt still needs the user first.
+fn apply_hold(session: &mut AgentSession, reason: &str) {
+    if session.state == SessionState::NeedsInput
+        && session.raw_state.as_deref() != Some("waiting at prompt")
+    {
+        return;
+    }
+    session.state = SessionState::Working;
+    session.raw_state = Some(if reason.is_empty() {
+        "background work".into()
+    } else {
+        format!("background: {reason}")
+    });
 }
 
 fn session_query(scope: &Scope) -> String {
@@ -1197,6 +1220,30 @@ mod tests {
             assert_eq!(request, &self.expected);
             Ok(self.output.lock().unwrap().take().unwrap())
         }
+    }
+
+    #[test]
+    fn a_background_hold_keeps_a_closed_or_idle_session_working_but_not_a_prompt() {
+        let input = r#"[{"id": "ses_1", "title": "t", "updated": 2, "created": 1,
+          "projectId": "global", "directory": "/work"}]"#;
+        let mut session = parse_opencode_session_list(input, Runtime::Host)
+            .unwrap()
+            .remove(0);
+        assert_eq!(session.state, SessionState::Completed);
+        apply_hold(&mut session, "CI on PR 8");
+        assert_eq!(session.state, SessionState::Working);
+        assert_eq!(session.raw_state.as_deref(), Some("background: CI on PR 8"));
+
+        session.state = SessionState::NeedsInput;
+        session.raw_state = Some("waiting at prompt".into());
+        apply_hold(&mut session, "");
+        assert_eq!(session.state, SessionState::Working);
+        assert_eq!(session.raw_state.as_deref(), Some("background work"));
+
+        session.state = SessionState::NeedsInput;
+        session.raw_state = Some("permission requested".into());
+        apply_hold(&mut session, "CI on PR 8");
+        assert_eq!(session.state, SessionState::NeedsInput);
     }
 
     #[test]
