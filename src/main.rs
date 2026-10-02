@@ -88,6 +88,12 @@ enum Commands {
         #[command(subcommand)]
         command: SessionCommand,
     },
+    /// Control the OpenCode server agentview runs for attached sessions.
+    #[command(name = "opencode")]
+    OpenCode {
+        #[command(subcommand)]
+        command: OpenCodeCommand,
+    },
     /// Check, install, and sign in to one harness (Terminal is built in).
     Setup {
         #[arg(value_name = "HARNESS", value_enum)]
@@ -151,6 +157,13 @@ enum SessionCommand {
     },
     /// List private display-name overrides.
     Aliases,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Subcommand)]
+enum OpenCodeCommand {
+    /// Restart the server on the same port and send `continue` to every
+    /// session whose turn the restart interrupted.
+    Restart,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Subcommand)]
@@ -505,6 +518,7 @@ fn main() -> Result<()> {
                 cli.json,
             )?,
             Commands::Sessions { command } => run_session_command(command, &cli)?,
+            Commands::OpenCode { command } => run_opencode_command(command, &cli)?,
             Commands::Setup { harness, yes } => run_harness_setup(*harness, *yes, &cli)?,
             Commands::PiSupervisor { state_dir, socket } => {
                 run_pi_supervisor_daemon(state_dir.clone(), socket.clone(), cli.pi_bin.clone())?
@@ -1109,6 +1123,61 @@ fn discovery_request(cli: &Cli) -> DiscoveryRequest {
         cwd: cli.cwd.clone(),
         history_limit: cli.history_limit as usize,
         history_oldest_first: false,
+    }
+}
+
+fn run_opencode_command(command: &OpenCodeCommand, cli: &Cli) -> Result<()> {
+    match command {
+        OpenCodeCommand::Restart => {
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            {
+                let report =
+                    OpenCodeSupervisor::host(cli.opencode_bin.clone())?.restart_server()?;
+                if cli.json {
+                    serde_json::to_writer_pretty(io::stdout().lock(), &report)?;
+                    println!();
+                } else {
+                    match report.previous_pid {
+                        Some(previous) => println!(
+                            "Restarted the OpenCode server (pid {previous} -> {}) on port {}.",
+                            report.pid, report.port
+                        ),
+                        None => println!(
+                            "No OpenCode server was running; started one (pid {}) on port {}.",
+                            report.pid, report.port
+                        ),
+                    }
+                    if report.previous_pid.is_some() && !report.same_port {
+                        println!("The old port was unavailable, so reopen attached sessions from the dashboard.");
+                    }
+                    for id in &report.resumed {
+                        println!("Resumed {}", sanitize_cli_text(id));
+                    }
+                    for id in &report.awaiting_input {
+                        println!(
+                            "Not resumed, it was waiting for your answer: {}",
+                            sanitize_cli_text(id)
+                        );
+                    }
+                    for (id, error) in &report.failed {
+                        println!(
+                            "Failed to resume {}: {}",
+                            sanitize_cli_text(id),
+                            sanitize_cli_text(error)
+                        );
+                    }
+                }
+                if !report.failed.is_empty() {
+                    std::process::exit(1);
+                }
+                Ok(())
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+            {
+                let _ = cli;
+                bail!("restarting the OpenCode server requires Linux or macOS")
+            }
+        }
     }
 }
 
