@@ -1037,6 +1037,7 @@ fn harness_picker_switches_visible_backends_without_losing_the_draft() {
     app.wait_for("picker cancellation preserves Claude draft", |screen| {
         screen.contains("new task · harness Claude · model default")
             && screen.contains("keep this draft")
+            && !screen.contains("┌ choose harness")
     });
 
     app.send(b"\t");
@@ -1051,6 +1052,7 @@ fn harness_picker_switches_visible_backends_without_losing_the_draft() {
     app.wait_for("arrow and Enter Claude selection", |screen| {
         screen.contains("new task · harness Claude · model default")
             && screen.contains("keep this draft")
+            && !screen.contains("┌ choose harness")
     });
     app.send(ESC);
     app.wait_for("harness composer cancellation", |screen| {
@@ -1210,8 +1212,9 @@ fn terminal_harness_backgrounds_resumes_stops_then_deletes_in_a_real_pty() {
             && screen.contains("install")
     });
     app.send(ENTER);
-    app.wait_for("Terminal shell selected", |screen| {
+    app.wait_for("Terminal shell selected and picker closed", |screen| {
         screen.contains("new task · harness Terminal · shell default")
+            && !screen.contains("choose Terminal shell")
     });
     app.send(b"release shell");
     app.send(ENTER);
