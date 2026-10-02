@@ -80,6 +80,7 @@ New in agentview, compared with
 - **Remembers where you were.** Opens on the last view, with the last harness
   you launched selected.
 - **Light and dark themes** that follow the terminal and the OS, live.
+- **Ctrl+X twice** deletes or hides a session, with no confirmation dialog.
 
 From Open Agent View:
 
