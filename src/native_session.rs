@@ -703,6 +703,7 @@ fn bridge_session(
     }
     let mut redraw_restore_at = None;
     let mut hidden_queries = TerminalQueryScanner::default();
+    let mut color_queries = answers_color_queries(session_key).then(TerminalQueryScanner::default);
     if !fresh {
         // The physical screen can disagree with what OpenCode's diff renderer
         // believes it drew, so make it see a real size change and repaint.
@@ -746,7 +747,12 @@ fn bridge_session(
             if redraw_restore_at.is_some() {
                 absorb_available(&mut master, &mut screen, &mut hidden_queries)?;
             } else {
-                copy_available(&mut master, &mut stdout, &mut screen)?;
+                copy_available(
+                    &mut master,
+                    &mut stdout,
+                    &mut screen,
+                    color_queries.as_mut(),
+                )?;
             }
             forward_ready_initial_input(&mut initial_input, &screen, &mut master)?;
         }
@@ -845,7 +851,7 @@ fn bridge_session(
             }
         }
         if let Some(status) = child.try_wait()? {
-            copy_available(&mut master, &mut stdout, &mut screen)?;
+            copy_available(&mut master, &mut stdout, &mut screen, None)?;
             return Ok(NativeSessionExit::Exited(status));
         }
     }
@@ -1030,13 +1036,35 @@ fn process_detached_output(
         let answer = match query {
             TerminalQuery::CursorPosition => {
                 let (row, column) = screen.screen().cursor_position();
-                format!("\x1b[{};{}R", u32::from(row) + 1, u32::from(column) + 1)
+                Some(format!(
+                    "\x1b[{};{}R",
+                    u32::from(row) + 1,
+                    u32::from(column) + 1
+                ))
             }
-            TerminalQuery::PrimaryAttributes => "\x1b[?1;2c".to_owned(),
+            TerminalQuery::PrimaryAttributes => Some("\x1b[?1;2c".to_owned()),
+            TerminalQuery::Color(code) => crate::theme::osc_color_reply(code),
         };
-        let _ = reply.write_all(answer.as_bytes());
+        if let Some(answer) = answer {
+            let _ = reply.write_all(answer.as_bytes());
+        }
     }
     screen.process(&bytes[processed..]);
+}
+
+/// Answer OpenCode's foreground and background color queries from the
+/// dashboard's scheme. OpenCode falls back to its dark palette when the
+/// terminal's replies are late, and duplicate replies from the terminal are
+/// ignored once it has decided.
+#[cfg(unix)]
+fn answer_color_queries(bytes: &[u8], queries: &mut TerminalQueryScanner, reply: &mut impl Write) {
+    for byte in bytes {
+        if let Some(TerminalQuery::Color(code)) = queries.feed(*byte) {
+            if let Some(answer) = crate::theme::osc_color_reply(code) {
+                let _ = reply.write_all(answer.as_bytes());
+            }
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -1046,9 +1074,12 @@ enum TerminalQuery {
     CursorPosition,
     /// `CSI c` or `CSI 0 c`
     PrimaryAttributes,
+    /// `OSC 10 ; ?` or `OSC 11 ; ?`
+    Color(u8),
 }
 
-/// Incremental CSI scanner, so a query split across two reads is still seen.
+/// Incremental CSI and OSC scanner, so a query split across two reads is
+/// still seen.
 #[cfg(unix)]
 #[derive(Default)]
 struct TerminalQueryScanner {
@@ -1063,11 +1094,21 @@ enum QueryScanState {
     Ground,
     Escape,
     Csi,
+    Osc,
+    OscEscape,
 }
 
 #[cfg(unix)]
 impl TerminalQueryScanner {
     const MAX_PARAMETERS: usize = 16;
+
+    fn osc_query(&self) -> Option<TerminalQuery> {
+        match self.parameters.as_slice() {
+            b"10;?" => Some(TerminalQuery::Color(10)),
+            b"11;?" => Some(TerminalQuery::Color(11)),
+            _ => None,
+        }
+    }
 
     fn feed(&mut self, byte: u8) -> Option<TerminalQuery> {
         match self.state {
@@ -1083,10 +1124,42 @@ impl TerminalQueryScanner {
                         self.parameters.clear();
                         QueryScanState::Csi
                     }
+                    b']' => {
+                        self.parameters.clear();
+                        QueryScanState::Osc
+                    }
                     0x1b => QueryScanState::Escape,
                     _ => QueryScanState::Ground,
                 };
                 None
+            }
+            QueryScanState::Osc => match byte {
+                0x07 => {
+                    self.state = QueryScanState::Ground;
+                    self.osc_query()
+                }
+                0x1b => {
+                    self.state = QueryScanState::OscEscape;
+                    None
+                }
+                _ => {
+                    // Long OSC payloads (titles, hyperlinks) are never queries.
+                    if self.parameters.len() < Self::MAX_PARAMETERS {
+                        self.parameters.push(byte);
+                    } else {
+                        self.parameters.clear();
+                        self.parameters.push(b'!');
+                    }
+                    None
+                }
+            },
+            QueryScanState::OscEscape => {
+                if byte == b'\\' {
+                    self.state = QueryScanState::Ground;
+                    return self.osc_query();
+                }
+                self.state = QueryScanState::Escape;
+                self.feed(byte)
             }
             QueryScanState::Csi => match byte {
                 0x30..=0x3f if self.parameters.len() < Self::MAX_PARAMETERS => {
@@ -1156,6 +1229,7 @@ fn copy_available(
     master: &mut std::fs::File,
     output: &mut impl Write,
     screen: &mut vt100::Parser,
+    mut color_queries: Option<&mut TerminalQueryScanner>,
 ) -> Result<()> {
     set_nonblocking(master.as_raw_fd(), true)?;
     let mut bytes = [0_u8; 8192];
@@ -1165,6 +1239,9 @@ fn copy_available(
             Ok(count) => {
                 screen.process(&bytes[..count]);
                 output.write_all(&bytes[..count])?;
+                if let Some(queries) = color_queries.as_deref_mut() {
+                    answer_color_queries(&bytes[..count], queries, master);
+                }
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
             Err(error) if error.raw_os_error() == Some(libc::EIO) => break,
@@ -1201,6 +1278,13 @@ fn absorb_available(
 /// hiding its output at the temporary size depends on.
 #[cfg(unix)]
 fn forces_redraw_on_resume(session_key: &str) -> bool {
+    session_key.starts_with("opencode:")
+}
+
+/// Other providers would read a second reply, the terminal's own, as typed
+/// input, so only OpenCode gets local color answers while it is in front.
+#[cfg(unix)]
+fn answers_color_queries(session_key: &str) -> bool {
     session_key.starts_with("opencode:")
 }
 
@@ -1837,6 +1921,39 @@ mod tests {
         );
         assert!(replies.is_empty());
         assert!(screen.screen().contents().is_empty());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn color_queries_are_answered_from_the_dashboard_scheme_across_reads() {
+        crate::theme::set_terminal_scheme(crate::theme::ColorScheme::Light);
+        let mut queries = TerminalQueryScanner::default();
+        let mut replies = Vec::new();
+        answer_color_queries(b"\x1b]10;?\x07\x1b]11", &mut queries, &mut replies);
+        answer_color_queries(b";?\x1b", &mut queries, &mut replies);
+        answer_color_queries(b"\\", &mut queries, &mut replies);
+        assert_eq!(
+            String::from_utf8(replies).unwrap(),
+            "\x1b]10;rgb:3b3b/3b3b/3b3b\x1b\\\x1b]11;rgb:ffff/ffff/ffff\x1b\\"
+        );
+        // Setting colors, titles, palette queries, and cursor queries are not
+        // color queries, and an unterminated OSC never answers.
+        let mut replies = Vec::new();
+        answer_color_queries(
+            b"\x1b]11;rgb:0/0/0\x07\x1b]0;title 11;?\x07\x1b]4;1;?\x07\x1b[6n\x1b]10;?\x1b[c",
+            &mut queries,
+            &mut replies,
+        );
+        assert!(replies.is_empty());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn only_opencode_sessions_get_color_answers_in_front() {
+        assert!(answers_color_queries("opencode:host:ses_1"));
+        assert!(answers_color_queries("opencode:host:launch-abc"));
+        assert!(!answers_color_queries("codex:portable:new"));
+        assert!(!answers_color_queries("setup:OpenCode"));
     }
 
     #[test]
