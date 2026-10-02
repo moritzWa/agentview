@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(any(target_os = "macos", test))]
 const IMAGE_EXTENSIONS: [&str; 6] = ["png", "jpg", "jpeg", "gif", "webp", "heic"];
 
 pub fn default_image_dir() -> Result<PathBuf> {
@@ -121,6 +122,7 @@ fn copied_image_file() -> Option<PathBuf> {
     None
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn is_image_path(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
