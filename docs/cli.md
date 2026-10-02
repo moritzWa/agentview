@@ -456,7 +456,8 @@ label.
 | New-task composer | `/setup [HARNESS]` | Open the selected or named harness's isolated install/login terminal. |
 | Writable composer | `ctrl+j` | Insert a newline rather than submit. |
 | Any view | paste | Pasted text is inserted as text, never submitted. Line breaks in the clipboard become newlines in one draft; a paste on the dashboard opens the new-task composer. agentview enables bracketed paste. On terminals without it, keys arriving within milliseconds of each other count as one paste: an Enter with more input right behind it is a pasted line break, pasted characters never act as shortcuts, and only an Enter after a known dashboard command still runs it. Control characters other than tab and newline are dropped; the model picker, filter, rename, and migration-name fields turn line breaks and tabs into spaces. |
-| Writable composer | `backspace` | Remove the last character. |
+| New-task composer or reply | `ctrl+v` | Save the clipboard image under `~/.local/state/agentview/images/` (or `$XDG_STATE_HOME/agentview/images/`) and insert `[Image #N]`. A copied image file is used where it is. On submit, each token becomes the image's absolute path, which the harness reads as an image file. `cmd+v` with only an image on the clipboard does the same. On the dashboard it opens the new-task composer first. Linux needs `wl-paste` or `xclip`; images do not reach harnesses running inside a container. |
+| Writable composer | `backspace` | Remove the last character, or a whole `[Image #N]` token. |
 | Writable composer/model filter | `option+backspace` or `ctrl+w` | Remove the previous word. |
 | Writable composer/model filter | `cmd+backspace` or `ctrl+u` | Remove to the beginning of the current line. |
 | Session row | `ctrl+r` | Open the accented `rename session` composer. The `name ❯` mode label is separate from the editable display name; empty submission clears it and follows the latest provider title again. |

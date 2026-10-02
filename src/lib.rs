@@ -3,6 +3,7 @@
 pub mod adapters;
 pub mod aliases;
 pub mod app;
+pub mod clipboard;
 mod codex_rpc;
 pub mod codex_supervisor;
 pub mod control;

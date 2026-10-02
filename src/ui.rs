@@ -1106,6 +1106,7 @@ fn help_actions(app: &App) -> Vec<String> {
         .push("ctrl+g or /restore to search hidden and older sessions and bring one back".into());
     actions.push("/filter text to filter sessions".into());
     actions.push("ctrl+j for newline".into());
+    actions.push("ctrl+v pastes a clipboard image into a task or reply".into());
     actions.push("tab for new task/harness picker".into());
     actions.push("/harness [name] switches harness".into());
     actions.push("ctrl+o picks the folder for a new session".into());
