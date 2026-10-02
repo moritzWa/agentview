@@ -335,6 +335,27 @@ host Codex, missing Codex, active threads, external threads, Docker threads,
 and providers without a documented archive operation are refused or reported
 as ineligible. agentview does not call deletion an archive.
 
+## Restarting the OpenCode server
+
+agentview runs one OpenCode server that its attached OpenCode sessions use.
+Restarting it, for example to pick up a new OpenCode build, normally cuts off
+every turn in flight. This command restarts it and resumes those turns:
+
+```console
+agentview opencode restart
+agentview --json opencode restart
+```
+
+Before stopping the server it records every top-level session with a running
+turn, in any directory used in the last three days. The new server listens on
+the same port with the same credentials, so open OpenCode windows reconnect by
+themselves. Each recorded session then gets a `continue` prompt using the agent
+and model of its last message. Subagent sessions are left alone because
+resuming their parent restarts them. Sessions that were waiting on a question
+or permission prompt are listed rather than resumed, since that prompt does not
+survive the restart and only you can answer it. If the restart fails partway,
+running the command again resumes the sessions it recorded.
+
 ## Managed Docker lifecycle
 
 Managed Docker is distinct from `--docker-container`. The latter enrolls one

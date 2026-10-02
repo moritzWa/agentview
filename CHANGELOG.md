@@ -8,6 +8,12 @@ and released versions are intended to follow Semantic Versioning.
 
 ## [Unreleased]
 
+### Added
+
+- `agentview opencode restart` restarts agentview's OpenCode server on the same
+  port, so open OpenCode windows reconnect, and sends `continue` to every
+  session whose turn the restart cut off.
+
 ### Changed
 
 - Ctrl+X no longer opens a confirmation dialog to delete or hide a session or

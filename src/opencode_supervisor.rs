@@ -5,9 +5,7 @@
 //! canonical session IDs it created. Unrelated history never enters this
 //! ownership record.
 
-use std::collections::BTreeMap;
-#[cfg(target_os = "linux")]
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::fmt::Write as FmtWrite;
 use std::fs::{self, File, OpenOptions};
@@ -37,6 +35,14 @@ const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(8);
 const MAX_HEADER_BYTES: usize = 64 * 1024;
 const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+/// A restart must not be abandoned halfway, so a server that ignores SIGTERM
+/// this long is killed.
+const RESTART_GRACE: Duration = Duration::from_secs(15);
+const KILL_GRACE: Duration = Duration::from_secs(5);
+const RESTART_PENDING_FILE: &str = "restart-pending.json";
+const RESUME_PROMPT: &str = "continue";
+const RECENT_DIRECTORY_WINDOW: Duration = Duration::from_secs(3 * 24 * 60 * 60);
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -331,79 +337,149 @@ impl OpenCodeSupervisor {
         let Some(record) = self.live_record_locked()? else {
             return Ok(());
         };
-        #[cfg(target_os = "linux")]
-        {
-            use std::os::unix::io::{AsRawFd, FromRawFd};
+        stop_server(&record, SHUTDOWN_GRACE, false)
+    }
 
-            let raw_fd =
-                unsafe { libc::syscall(libc::SYS_pidfd_open, record.pid as libc::pid_t, 0_u32) };
-            if raw_fd < 0 {
-                return Err(std::io::Error::last_os_error())
-                    .context("failed to open exact OpenCode server pidfd");
-            }
-            let pidfd = unsafe { File::from_raw_fd(raw_fd as i32) };
-            // Open the stable kernel reference first, then revalidate that the
-            // PID still denotes the recorded process before signaling through
-            // the pidfd. No persisted numeric PID is ever passed to kill(2).
-            if !verify_server(&record)? {
-                bail!("OpenCode server identity changed before shutdown");
-            }
-            verify_listener_owner(record.pid, record.port)?;
-            let sent = unsafe {
-                libc::syscall(
-                    libc::SYS_pidfd_send_signal,
-                    pidfd.as_raw_fd(),
-                    libc::SIGTERM,
-                    std::ptr::null::<libc::siginfo_t>(),
-                    0_u32,
-                )
-            };
-            if sent != 0 {
-                return Err(std::io::Error::last_os_error())
-                    .context("failed to stop exact OpenCode server through pidfd");
-            }
-            let mut descriptor = libc::pollfd {
-                fd: pidfd.as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            let polled = unsafe { libc::poll(&mut descriptor, 1, 5_000) };
-            if polled < 0 {
-                return Err(std::io::Error::last_os_error())
-                    .context("failed while waiting for exact OpenCode server exit");
-            }
-            if polled == 0 {
-                bail!("timed out waiting for exact OpenCode server to exit");
-            }
-            Ok(())
-        }
-        #[cfg(target_os = "macos")]
-        {
-            // macOS has no pidfd, so the identity check and the signal are two
-            // steps. The window is a PID reuse within microseconds of a check
-            // that also matched the start time, command line, and listener.
-            if !verify_server(&record)? {
-                bail!("OpenCode server identity changed before shutdown");
-            }
-            verify_listener_owner(record.pid, record.port)?;
-            if unsafe { libc::kill(record.pid as libc::pid_t, libc::SIGTERM) } != 0 {
-                return Err(std::io::Error::last_os_error())
-                    .context("failed to stop exact OpenCode server");
-            }
-            let deadline = Instant::now() + Duration::from_secs(5);
-            while verify_server(&record)? {
-                if Instant::now() >= deadline {
-                    bail!("timed out waiting for exact OpenCode server to exit");
+    /// Restart the owned server on the same port and credentials, then send
+    /// `continue` to every top-level session whose turn the restart cut off.
+    ///
+    /// Attached native TUIs reconnect on their own because the endpoint does
+    /// not change. Sessions blocked on a question or permission prompt are
+    /// reported instead of resumed: their prompt dies with the old server and
+    /// only the user can answer it. The interrupted set is persisted before
+    /// the old server stops, so a failed restart is completed by running this
+    /// again.
+    pub fn restart_server(&self) -> Result<OpenCodeRestartReport> {
+        let _lock = StateLock::acquire(&self.lock_path)?;
+        let pending_path = self.state_dir.join(RESTART_PENDING_FILE);
+        let mut pending = load_pending_turns(&pending_path)?;
+        let previous = self.live_record_locked()?;
+        let mut report = OpenCodeRestartReport::default();
+        if let Some(record) = &previous {
+            let (interrupted, awaiting_input) = self.interrupted_turns(record)?;
+            for turn in interrupted {
+                if !pending.iter().any(|known| known.id == turn.id) {
+                    pending.push(turn);
                 }
-                thread::sleep(Duration::from_millis(40));
             }
-            Ok(())
+            report.previous_pid = Some(record.pid);
+            report.awaiting_input = awaiting_input;
+            save_pending_turns(&pending_path, &pending)?;
+            stop_server(record, RESTART_GRACE, true)?;
         }
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-        {
-            let _ = record;
-            bail!("durable OpenCode supervision currently requires Linux or macOS")
+        let sessions = load_record(&self.record_path, &self.state_dir)?
+            .map(|record| record.sessions)
+            .unwrap_or_default();
+        let executable = previous
+            .as_ref()
+            .map_or(self.executable.as_str(), |record| {
+                record.executable.as_str()
+            });
+        let record = match &previous {
+            Some(endpoint) => self
+                .start_server(executable, sessions.clone(), Some(endpoint))
+                .or_else(|_| self.start_server(executable, sessions, None))?,
+            None => self.start_server(executable, sessions, None)?,
+        };
+        report.pid = record.pid;
+        report.port = record.port;
+        report.same_port = previous
+            .as_ref()
+            .is_some_and(|endpoint| endpoint.port == record.port);
+
+        let mut unresumed = Vec::new();
+        for turn in pending {
+            let path = with_directory_query(
+                &format!("/session/{}/prompt_async", url_path_segment(&turn.id)),
+                &turn.cwd,
+            );
+            match self.request_empty(&record, "POST", &path, Some(&resume_prompt_body(&turn))) {
+                Ok(()) => report.resumed.push(turn.id),
+                Err(error) => {
+                    report.failed.push((turn.id.clone(), format!("{error:#}")));
+                    unresumed.push(turn);
+                }
+            }
         }
+        if unresumed.is_empty() {
+            match fs::remove_file(&pending_path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error).context("failed to clear restart resume list"),
+            }
+        } else {
+            save_pending_turns(&pending_path, &unresumed)?;
+        }
+        Ok(report)
+    }
+
+    /// Top-level sessions with a turn in flight on this server, split into
+    /// those a restart can resume and those waiting on the user.
+    fn interrupted_turns(
+        &self,
+        record: &ServerRecord,
+    ) -> Result<(Vec<InterruptedTurn>, Vec<String>)> {
+        let mut directories = record
+            .sessions
+            .values()
+            .map(|owned| owned.cwd.clone())
+            .collect::<BTreeSet<_>>();
+        directories.extend(recent_session_directories(&record.executable));
+        let mut interrupted = Vec::new();
+        let mut awaiting_input = Vec::new();
+        for directory in directories.into_iter().filter(|path| path.is_dir()) {
+            // A directory whose project fails to load has no running turns,
+            // and must not block restarting everything else.
+            let Ok(statuses) = self.request_json(
+                record,
+                "GET",
+                &with_directory_query("/session/status", &directory),
+                None,
+            ) else {
+                continue;
+            };
+            let running = running_session_ids(&statuses);
+            if running.is_empty() {
+                continue;
+            }
+            let mut blocked = BTreeSet::new();
+            for route in ["/question", "/permission"] {
+                let requests = self.request_json(
+                    record,
+                    "GET",
+                    &with_directory_query(route, &directory),
+                    None,
+                )?;
+                blocked.extend(request_session_ids(&requests));
+            }
+            for id in running {
+                let session = self.request_json(
+                    record,
+                    "GET",
+                    &with_directory_query(
+                        &format!("/session/{}", url_path_segment(&id)),
+                        &directory,
+                    ),
+                    None,
+                )?;
+                if session.get("parentID").and_then(Value::as_str).is_some() {
+                    continue;
+                }
+                if blocked.contains(&id) {
+                    awaiting_input.push(id);
+                    continue;
+                }
+                let path = with_directory_query(
+                    &format!("/session/{}/message", url_path_segment(&id)),
+                    &directory,
+                );
+                let messages = self
+                    .request_json(record, "GET", &format!("{path}&limit=20"), None)
+                    .unwrap_or(Value::Null);
+                interrupted.push(interrupted_turn(id, directory.clone(), &messages));
+            }
+        }
+        Ok((interrupted, awaiting_input))
     }
 
     fn ensure_server_locked(&self) -> Result<ServerRecord> {
@@ -427,26 +503,45 @@ impl OpenCodeSupervisor {
                 return Ok(record.clone());
             }
         }
-        self.start_server(previous.map(|record| record.sessions).unwrap_or_default())
+        self.start_server(
+            &self.executable,
+            previous.map(|record| record.sessions).unwrap_or_default(),
+            None,
+        )
     }
 
-    fn start_server(&self, sessions: BTreeMap<String, OwnedSession>) -> Result<ServerRecord> {
+    /// Start a server, on `endpoint`'s port and credentials when given so
+    /// clients of a stopped predecessor reconnect without new arguments.
+    fn start_server(
+        &self,
+        executable: &str,
+        sessions: BTreeMap<String, OwnedSession>,
+        endpoint: Option<&ServerRecord>,
+    ) -> Result<ServerRecord> {
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
-            let _ = sessions;
+            let _ = (executable, sessions, endpoint);
             bail!("durable OpenCode supervision currently requires Linux or macOS process identity verification")
         }
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
-            let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))?;
-            let port = listener.local_addr()?.port();
-            drop(listener);
-            let password = random_secret()?;
-            let username = "opencode".to_owned();
+            let (port, username, password) = match endpoint {
+                Some(record) => (
+                    record.port,
+                    record.username.clone(),
+                    record.password.clone(),
+                ),
+                None => {
+                    let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))?;
+                    let port = listener.local_addr()?.port();
+                    drop(listener);
+                    (port, "opencode".to_owned(), random_secret()?)
+                }
+            };
             use std::os::unix::process::CommandExt;
 
             let log = private_append_file(&self.state_dir.join("server.log"))?;
-            let mut child = Command::new(&self.executable)
+            let mut child = Command::new(executable)
                 // The server outlives the dashboard, so it must not receive the
                 // interrupt or hangup the terminal sends to agentview's process group.
                 .process_group(0)
@@ -463,16 +558,14 @@ impl OpenCodeSupervisor {
                 .stdout(Stdio::from(log.try_clone()?))
                 .stderr(Stdio::from(log))
                 .spawn()
-                .with_context(|| {
-                    format!("failed to start OpenCode server via {}", self.executable)
-                })?;
+                .with_context(|| format!("failed to start OpenCode server via {executable}"))?;
             let pid = child.id();
             let mut record = ServerRecord {
                 version: RECORD_VERSION,
                 pid,
                 process_start_token: String::new(),
                 process_cmdline: Vec::new(),
-                executable: self.executable.clone(),
+                executable: executable.to_owned(),
                 port,
                 username,
                 password,
@@ -605,6 +698,273 @@ impl OpenCodeSupervisor {
     ) -> Result<()> {
         self.request_json(record, method, path, body).map(|_| ())
     }
+}
+
+/// Signal the exact verified server and wait for it to exit. With `force`, a
+/// server still running after `grace` is killed rather than reported.
+fn stop_server(record: &ServerRecord, grace: Duration, force: bool) -> Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::io::{AsRawFd, FromRawFd};
+
+        let raw_fd =
+            unsafe { libc::syscall(libc::SYS_pidfd_open, record.pid as libc::pid_t, 0_u32) };
+        if raw_fd < 0 {
+            return Err(std::io::Error::last_os_error())
+                .context("failed to open exact OpenCode server pidfd");
+        }
+        let pidfd = unsafe { File::from_raw_fd(raw_fd as i32) };
+        // Open the stable kernel reference first, then revalidate that the
+        // PID still denotes the recorded process before signaling through
+        // the pidfd. No persisted numeric PID is ever passed to kill(2).
+        if !verify_server(record)? {
+            bail!("OpenCode server identity changed before shutdown");
+        }
+        verify_listener_owner(record.pid, record.port)?;
+        let signal = |signal: libc::c_int| -> Result<()> {
+            let sent = unsafe {
+                libc::syscall(
+                    libc::SYS_pidfd_send_signal,
+                    pidfd.as_raw_fd(),
+                    signal,
+                    std::ptr::null::<libc::siginfo_t>(),
+                    0_u32,
+                )
+            };
+            if sent != 0 {
+                return Err(std::io::Error::last_os_error())
+                    .context("failed to stop exact OpenCode server through pidfd");
+            }
+            Ok(())
+        };
+        let exited = |timeout: Duration| -> Result<bool> {
+            let mut descriptor = libc::pollfd {
+                fd: pidfd.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let polled = unsafe { libc::poll(&mut descriptor, 1, timeout.as_millis() as i32) };
+            if polled < 0 {
+                return Err(std::io::Error::last_os_error())
+                    .context("failed while waiting for exact OpenCode server exit");
+            }
+            Ok(polled > 0)
+        };
+        signal(libc::SIGTERM)?;
+        if exited(grace)? {
+            return Ok(());
+        }
+        if force {
+            signal(libc::SIGKILL)?;
+            if exited(KILL_GRACE)? {
+                return Ok(());
+            }
+        }
+        bail!("timed out waiting for exact OpenCode server to exit")
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // macOS has no pidfd, so the identity check and the signal are two
+        // steps. The window is a PID reuse within microseconds of a check
+        // that also matched the start time, command line, and listener.
+        if !verify_server(record)? {
+            bail!("OpenCode server identity changed before shutdown");
+        }
+        verify_listener_owner(record.pid, record.port)?;
+        let exited = |timeout: Duration| -> Result<bool> {
+            let deadline = Instant::now() + timeout;
+            while verify_server(record)? {
+                if Instant::now() >= deadline {
+                    return Ok(false);
+                }
+                thread::sleep(Duration::from_millis(40));
+            }
+            Ok(true)
+        };
+        if unsafe { libc::kill(record.pid as libc::pid_t, libc::SIGTERM) } != 0 {
+            return Err(std::io::Error::last_os_error())
+                .context("failed to stop exact OpenCode server");
+        }
+        if exited(grace)? {
+            return Ok(());
+        }
+        if force && verify_server(record)? {
+            if unsafe { libc::kill(record.pid as libc::pid_t, libc::SIGKILL) } != 0 {
+                return Err(std::io::Error::last_os_error())
+                    .context("failed to kill exact OpenCode server");
+            }
+            if exited(KILL_GRACE)? {
+                return Ok(());
+            }
+        }
+        bail!("timed out waiting for exact OpenCode server to exit")
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = (record, grace, force);
+        bail!("durable OpenCode supervision currently requires Linux or macOS")
+    }
+}
+
+/// A turn a restart cut off, with the agent and model its last user message
+/// used so the resume does not fall back to the default agent.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InterruptedTurn {
+    id: String,
+    cwd: PathBuf,
+    #[serde(default)]
+    agent: Option<String>,
+    #[serde(default)]
+    provider_id: Option<String>,
+    #[serde(default)]
+    model_id: Option<String>,
+    #[serde(default)]
+    variant: Option<String>,
+}
+
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenCodeRestartReport {
+    pub previous_pid: Option<u32>,
+    pub pid: u32,
+    pub port: u16,
+    /// False when the old port could not be reused; attached TUIs then need
+    /// to be reopened from the dashboard.
+    pub same_port: bool,
+    pub resumed: Vec<String>,
+    /// Sessions that were blocked on a question or permission prompt.
+    pub awaiting_input: Vec<String>,
+    pub failed: Vec<(String, String)>,
+}
+
+fn running_session_ids(statuses: &Value) -> Vec<String> {
+    statuses
+        .as_object()
+        .map(|statuses| {
+            statuses
+                .iter()
+                .filter(|(_, status)| {
+                    status
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .is_some_and(|kind| kind != "idle")
+                })
+                .map(|(id, _)| id.clone())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn request_session_ids(requests: &Value) -> Vec<String> {
+    requests
+        .as_array()
+        .map(|requests| {
+            requests
+                .iter()
+                .filter_map(|request| request.get("sessionID").and_then(Value::as_str))
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn interrupted_turn(id: String, cwd: PathBuf, messages: &Value) -> InterruptedTurn {
+    let last_user = messages.as_array().and_then(|messages| {
+        messages
+            .iter()
+            .filter_map(|message| message.get("info"))
+            .filter(|info| info.get("role").and_then(Value::as_str) == Some("user"))
+            .max_by_key(|info| {
+                info.pointer("/time/created")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0)
+            })
+    });
+    let text = |pointer: &str| {
+        last_user
+            .and_then(|info| info.pointer(pointer))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    };
+    InterruptedTurn {
+        agent: text("/agent"),
+        provider_id: text("/model/providerID"),
+        model_id: text("/model/modelID"),
+        variant: text("/model/variant").or_else(|| text("/variant")),
+        id,
+        cwd,
+    }
+}
+
+fn resume_prompt_body(turn: &InterruptedTurn) -> Value {
+    let mut body = json!({"parts": [{"type": "text", "text": RESUME_PROMPT}]});
+    if let Some(agent) = &turn.agent {
+        body["agent"] = json!(agent);
+    }
+    if let (Some(provider), Some(model)) = (&turn.provider_id, &turn.model_id) {
+        body["model"] = json!({"providerID": provider, "modelID": model});
+    }
+    if let Some(variant) = &turn.variant {
+        body["variant"] = json!(variant);
+    }
+    body
+}
+
+/// Directories of recently active top-level sessions. Server status is
+/// scoped per directory, so these are the places a running turn can be.
+fn recent_session_directories(executable: &str) -> Vec<PathBuf> {
+    let since = now_millis().saturating_sub(RECENT_DIRECTORY_WINDOW.as_millis() as u64);
+    let query = format!(
+        "select distinct directory from session where parent_id is null and time_updated > {since}"
+    );
+    let Ok(output) = Command::new(executable)
+        .args(["db", &query, "--format", "tsv"])
+        .stdin(std::process::Stdio::null())
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .skip(1)
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(PathBuf::from)
+        .collect()
+}
+
+fn load_pending_turns(path: &Path) -> Result<Vec<InterruptedTurn>> {
+    match fs::read(path) {
+        Ok(input) => serde_json::from_slice(&input).context("invalid restart resume list"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(error) => Err(error).context("failed to read restart resume list"),
+    }
+}
+
+fn save_pending_turns(path: &Path, turns: &[InterruptedTurn]) -> Result<()> {
+    let temporary = path.with_extension(format!("tmp-{}-{}", std::process::id(), now_millis()));
+    let mut options = OpenOptions::new();
+    options.create_new(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    let result = (|| -> Result<()> {
+        let mut file = options.open(&temporary)?;
+        serde_json::to_writer_pretty(&mut file, turns)?;
+        file.sync_all()?;
+        crate::fs_util::replace_file(&temporary, path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
 }
 
 fn require_owned<'a>(record: &'a ServerRecord, session_id: &str) -> Result<&'a OwnedSession> {
