@@ -54,23 +54,45 @@ changes. Force one with `--theme light` or `--theme dark`.
 
 Five agents means five terminal tabs. The one waiting on you is always in the
 tab you aren't looking at. agentview lists every session from every harness in
-one place, with the ones that need you on top.
+one place, with the ones that need you on top. The conversation still lives in
+the harness that created it; selecting a row opens that harness's native
+interface.
 
-agentview brings Claude Code, Codex, Pi, OpenCode, Cursor, GitHub Copilot,
-Antigravity, Mistral Vibe, Muse Code, Qwen Code, Kimi Code, Oh My Pi, Grok,
-Kilo Code, OpenHands, Hermes Agent, MastraCode, Devin, and ordinary terminal jobs into one dashboard.
-The conversation still lives in the harness that created it; selecting a row
-opens that harness's native interface.
+## Features
+
+New in agentview, compared with
+[Open Agent View](https://github.com/xhluca/open-agent-view), which it started from:
+
+- **Start any recent session.** `Ctrl+G` searches older sessions the dashboard
+  does not list (OpenCode today) and ones you hid, by name, harness, folder, or
+  ID. Pick one and it is back on the list.
+- **Launches stay on the dashboard.** Harnesses that can run in the background
+  start there; the new row is selected and `Enter` opens it.
+- **Pin and reorder.** `Ctrl+T` pins a session to the top; `Option+↑` / `↓`
+  moves it within its group.
+- **Start in any folder.** `/cd` or `Ctrl+O` picks the working directory for a
+  new task. Tasks can span several lines, and a multi-line paste becomes one
+  draft instead of one launch per line.
+- **OpenCode that outlives the dashboard.** Sessions keep running after you
+  quit, and new ones get OpenCode's generated titles.
+- **Cursor everywhere.** Launch Cursor chats and see their live state on every
+  platform, including chats started outside agentview.
+- **Remembers where you were.** Opens on the last view, with the last harness
+  you launched selected.
+- **Light and dark themes** that follow the terminal and the OS, live.
+
+From Open Agent View:
 
 - **Know where to look.** Sessions are grouped as waiting for input, working,
   completed, or unknown, with the harness shown on every row.
 - **Return without killing the task.** Open a native session, then move back to
   the dashboard while its work continues.
-- **Arrange the list.** Pin, reorder, hide.
+- **Migrate between harnesses.** `Ctrl+M` moves a conversation to another
+  harness and keeps going.
 - **Stay fast as the list grows.** Discovery runs concurrently and the TUI only
   renders the page that fits the terminal.
-- **Use controls agentview can prove.** Stop, reply, archive, and delete are offered
-  only when the selected provider and session support them safely.
+- **Use controls agentview can prove.** Stop, reply, archive, and delete are
+  offered only when the selected provider and session support them safely.
 
 ## The everyday workflow
 
@@ -106,40 +128,8 @@ Install the companion CLI once with
 
 ## Harnesses
 
-agentview brings 18 local coding harnesses plus Terminal into one
-dashboard. This inventory follows the same order as the in-app harness picker.
-
-<table>
-  <tr>
-    <td align="center" width="25%"><a href="https://github.com/anthropics/claude-code"><img src="docs/assets/providers/claude.svg" width="64" height="64" alt="Claude Code logo"><br><strong>Claude Code</strong></a></td>
-    <td align="center" width="25%"><a href="https://github.com/openai/codex"><img src="docs/assets/providers/codex.png" width="64" height="64" alt="OpenAI Codex logo"><br><strong>OpenAI Codex</strong></a></td>
-    <td align="center" width="25%"><a href="https://pi.dev"><img src="docs/assets/providers/pi.svg" width="64" height="64" alt="Pi logo"><br><strong>Pi</strong></a></td>
-    <td align="center" width="25%"><a href="https://github.com/anomalyco/opencode"><img src="docs/assets/providers/opencode.svg" width="64" height="64" alt="OpenCode logo"><br><strong>OpenCode</strong></a></td>
-  </tr>
-  <tr>
-    <td align="center"><a href="https://cursor.com/cli"><img src="docs/assets/providers/cursor.svg" width="64" height="64" alt="Cursor logo"><br><strong>Cursor</strong></a></td>
-    <td align="center"><a href="https://github.com/github/copilot-cli"><img src="docs/assets/providers/copilot.svg" width="64" height="64" alt="GitHub Copilot logo"><br><strong>GitHub Copilot</strong></a></td>
-    <td align="center"><a href="https://developers.google.com/antigravity"><img src="docs/assets/providers/antigravity.svg" width="64" height="64" alt="Antigravity logo"><br><strong>Antigravity</strong></a></td>
-    <td align="center"><a href="https://github.com/mistralai/mistral-vibe"><img src="docs/assets/providers/mistral-vibe.svg" width="64" height="64" alt="Mistral Vibe logo"><br><strong>Mistral Vibe</strong></a></td>
-  </tr>
-  <tr>
-    <td align="center"><a href="https://dev.meta.ai/"><img src="docs/assets/providers/muse.svg" width="64" height="64" alt="Muse Code logo"><br><strong>Muse Code</strong></a></td>
-    <td align="center"><a href="https://github.com/QwenLM/qwen-code"><img src="docs/assets/providers/qwen.svg" width="64" height="64" alt="Qwen Code logo"><br><strong>Qwen Code</strong></a></td>
-    <td align="center"><a href="https://github.com/MoonshotAI/kimi-cli"><img src="docs/assets/providers/kimi-code.svg" width="64" height="64" alt="Kimi Code logo"><br><strong>Kimi Code</strong></a></td>
-    <td align="center"><a href="https://github.com/can1357/oh-my-pi"><img src="docs/assets/providers/oh-my-pi.svg" width="64" height="64" alt="Oh My Pi logo"><br><strong>Oh My Pi</strong></a></td>
-  </tr>
-  <tr>
-    <td align="center"><a href="https://github.com/xai-org/grok-build"><img src="docs/assets/providers/grok.svg" width="64" height="64" alt="Grok logo"><br><strong>Grok</strong></a></td>
-    <td align="center"><a href="https://github.com/Kilo-Org/kilocode"><img src="docs/assets/providers/kilo-code.svg" width="64" height="64" alt="Kilo Code logo"><br><strong>Kilo Code</strong></a></td>
-    <td align="center"><a href="https://github.com/OpenHands/OpenHands-CLI"><img src="docs/assets/providers/openhands.svg" width="64" height="64" alt="OpenHands logo"><br><strong>OpenHands</strong></a></td>
-    <td align="center"><a href="https://github.com/NousResearch/hermes-agent"><strong>Hermes Agent</strong></a></td>
-  </tr>
-  <tr>
-    <td align="center"><a href="https://github.com/mastra-ai/mastra/tree/main/mastracode"><strong>MastraCode</strong></a></td>
-    <td align="center"><a href="https://github.com/CognitionAI/devin-cli"><strong>Devin</strong></a></td>
-    <td align="center"><a href="docs/cli.md"><img src="docs/assets/providers/terminal.svg" width="64" height="64" alt="Terminal icon"><br><strong>Terminal</strong></a></td>
-  </tr>
-</table>
+agentview brings 18 local coding harnesses plus Terminal into one dashboard,
+listed in the in-app picker's order: [Claude Code](https://github.com/anthropics/claude-code), [OpenAI Codex](https://github.com/openai/codex), [Pi](https://pi.dev), [OpenCode](https://github.com/anomalyco/opencode), [Cursor](https://cursor.com/cli), [GitHub Copilot](https://github.com/github/copilot-cli), [Antigravity](https://developers.google.com/antigravity), [Mistral Vibe](https://github.com/mistralai/mistral-vibe), [Muse Code](https://dev.meta.ai/), [Qwen Code](https://github.com/QwenLM/qwen-code), [Kimi Code](https://github.com/MoonshotAI/kimi-cli), [Oh My Pi](https://github.com/can1357/oh-my-pi), [Grok](https://github.com/xai-org/grok-build), [Kilo Code](https://github.com/Kilo-Org/kilocode), [OpenHands](https://github.com/OpenHands/OpenHands-CLI), [Hermes Agent](https://github.com/NousResearch/hermes-agent), [MastraCode](https://github.com/mastra-ai/mastra/tree/main/mastracode), [Devin](https://github.com/CognitionAI/devin-cli), [Terminal](docs/cli.md).
 
 <details>
 <summary><strong>Compare feature support by harness</strong></summary>
@@ -171,14 +161,15 @@ session still appears in the dashboard, but that action stays in the harness's
 native interface. “Delete / archive” is checked when at least one safe removal
 operation is available.
 
+¹ Hermes and MastraCode offer models seen in saved sessions and accept exact
+model IDs; their native setup handles provider configuration. OpenHands reads
+model choices from its saved configurations and `LLM_MODEL`, and also accepts
+an exact model ID.
+
 ² Hermes and MastraCode foreground prompt automation requires a Unix terminal;
 their saved sessions can also be inspected on Windows. See the
 [integration notes](docs/exploration/shared-sqlite-harnesses.md) for native
 version coverage and model-picker limits.
-
-¹ Hermes and MastraCode offer models seen in saved sessions and accept exact
-model IDs. Their native setup handles provider configuration. OpenHands model choices are read from its saved configurations and
-`LLM_MODEL`; an exact model ID can also be entered directly.
 
 </details>
 
