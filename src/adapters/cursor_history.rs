@@ -447,6 +447,17 @@ fn background_state(
     screen_state(&screen)
 }
 
+/// The state the terminal this dashboard holds for a discovered chat shows
+/// now, for the dashboard to apply between discoveries.
+pub(super) fn background_screen_state(
+    session: &AgentSession,
+) -> Option<(SessionState, &'static str)> {
+    background_state(
+        session.pid,
+        crate::native_session::background_screen_contents(&session.id),
+    )
+}
+
 /// State of a chat whose terminal this dashboard holds in the background, or
 /// `None` when the screen does not settle it. The hint's absence alone is not
 /// evidence of waiting: typed input, a startup or login screen, or a renamed

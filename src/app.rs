@@ -385,10 +385,25 @@ impl App {
     pub fn replace_snapshot(&mut self, snapshot: SessionSnapshot) {
         let previous_keys = self.ordered_keys();
         self.snapshot = snapshot;
-        self.rebuild_snapshot_cache();
         self.refreshed_at = SystemTime::now();
+        self.snapshot_changed(&previous_keys);
+    }
+
+    /// Edit the current snapshot in place, between refreshes. `update`
+    /// returns whether it changed anything.
+    pub fn update_snapshot(&mut self, update: impl FnOnce(&mut SessionSnapshot) -> bool) -> bool {
+        let previous_keys = self.ordered_keys();
+        if !update(&mut self.snapshot) {
+            return false;
+        }
+        self.snapshot_changed(&previous_keys);
+        true
+    }
+
+    fn snapshot_changed(&mut self, previous_keys: &[SelectionKey]) {
+        self.rebuild_snapshot_cache();
         let previous_selection = self.selection.clone();
-        self.reconcile_selection_near(&previous_keys);
+        self.reconcile_selection_near(previous_keys);
         let selection_bound_overlay = matches!(
             self.overlay,
             Overlay::Peek

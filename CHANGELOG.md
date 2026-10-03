@@ -45,6 +45,11 @@ and released versions are intended to follow Semantic Versioning.
   now waits until the session reads it, which also covers long tasks typed
   into a new session at launch.
 
+- Replying in an opened OpenCode or Cursor session and returning to the
+  dashboard shows it as working within a fraction of a second, instead of
+  after the next full provider refresh. The dashboard now reads the screens
+  of sessions it keeps in the background on every tick.
+
 ## [0.1.0] - 2026-10-01
 
 ### Added

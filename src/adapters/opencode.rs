@@ -1068,6 +1068,19 @@ fn apply_live_state(
     session.pid = Some(pid);
 }
 
+/// The state the TUI this dashboard holds for `session` shows now, for the
+/// dashboard to apply between discoveries.
+pub(super) fn background_screen_state(
+    session: &AgentSession,
+) -> Option<(SessionState, &'static str)> {
+    let (_, screen) =
+        crate::native_session::background_screen_contents(&session.id).or_else(|| {
+            shared_client_showing(&session.id)
+                .and_then(|key| crate::native_session::background_screen_contents(&key))
+        })?;
+    opencode_live::settle_from_screen(opencode_live::screen_state(&screen)?)
+}
+
 fn apply_holds<'a>(sessions: impl Iterator<Item = &'a mut AgentSession>) {
     let Some(root) = crate::holds::default_holds_dir() else {
         return;
