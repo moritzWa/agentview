@@ -564,17 +564,13 @@ pub(super) fn combine(
 }
 
 /// The state a held screen gives a row between discoveries, or `None` to
-/// keep the row's state. As in [`combine`], an idle prompt does not end work
-/// the last discovery found: a background task or a plugin hold can keep a
-/// session working without showing it on screen.
+/// keep the row's state. An idle prompt is left to discovery: a background
+/// task or a plugin hold can keep a session working without showing it, and
+/// the managed server reports an idle session as completed.
 pub(super) fn settle_from_screen(
     screen: (SessionState, &'static str),
-    current: SessionState,
 ) -> Option<(SessionState, &'static str)> {
-    match screen {
-        (SessionState::NeedsInput, "waiting at prompt") if current == SessionState::Working => None,
-        screen => Some(screen),
-    }
+    (screen != (SessionState::NeedsInput, "waiting at prompt")).then_some(screen)
 }
 
 /// State of a session whose OpenCode terminal this dashboard holds in the
@@ -867,21 +863,13 @@ mod tests {
 
     #[test]
     fn a_held_screen_starts_work_at_once_but_an_idle_one_waits_for_discovery() {
-        let idle = (SessionState::NeedsInput, "waiting at prompt");
         let working = (SessionState::Working, "running turn");
         let permission = (SessionState::NeedsInput, "permission requested");
+        assert_eq!(settle_from_screen(working), Some(working));
+        assert_eq!(settle_from_screen(permission), Some(permission));
         assert_eq!(
-            settle_from_screen(working, SessionState::NeedsInput),
-            Some(working)
-        );
-        assert_eq!(settle_from_screen(idle, SessionState::Working), None);
-        assert_eq!(
-            settle_from_screen(idle, SessionState::NeedsInput),
-            Some(idle)
-        );
-        assert_eq!(
-            settle_from_screen(permission, SessionState::Working),
-            Some(permission)
+            settle_from_screen((SessionState::NeedsInput, "waiting at prompt")),
+            None
         );
     }
 

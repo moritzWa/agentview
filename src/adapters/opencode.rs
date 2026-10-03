@@ -1078,7 +1078,7 @@ pub(super) fn background_screen_state(
             shared_client_showing(&session.id)
                 .and_then(|key| crate::native_session::background_screen_contents(&key))
         })?;
-    opencode_live::settle_from_screen(opencode_live::screen_state(&screen)?, session.state)
+    opencode_live::settle_from_screen(opencode_live::screen_state(&screen)?)
 }
 
 fn apply_holds<'a>(sessions: impl Iterator<Item = &'a mut AgentSession>) {
