@@ -1,6 +1,6 @@
 <div align="center">
 
-<h1><img src="docs/assets/logo.svg" alt="agentview logo" width="40" height="40"> agentview</h1>
+<h1><img src="docs/assets/logo.svg" alt="agentview logo" width="40" height="40" align="absmiddle"> agentview</h1>
 
 **All your coding agents. One terminal.**<br>
 See which one needs you. Jump in, jump back out. Works with 18 coding
