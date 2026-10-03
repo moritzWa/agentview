@@ -50,6 +50,11 @@ and released versions are intended to follow Semantic Versioning.
   after the next full provider refresh. The dashboard now reads the screens
   of sessions it keeps in the background on every tick.
 
+- OpenCode sessions running in a terminal outside agentview now show as
+  working or waiting when `--opencode-bin` names a renamed build such as
+  `opencode-dev`, instead of as completed. Processes were recognized only
+  when the executable was called exactly `opencode`.
+
 ## [0.1.0] - 2026-10-01
 
 ### Added
