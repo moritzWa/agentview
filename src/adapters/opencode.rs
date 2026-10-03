@@ -1242,7 +1242,7 @@ fn transcripts_from(output: Result<crate::process::CommandOutput>) -> BTreeMap<S
 fn is_throwaway_directory(directory: &Path) -> bool {
     let temp = std::env::temp_dir();
     let temp = temp.canonicalize().unwrap_or(temp);
-    directory.starts_with(&temp)
+    directory.starts_with(temp)
         || [
             "/tmp",
             "/private/tmp",
