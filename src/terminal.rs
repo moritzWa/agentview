@@ -292,6 +292,8 @@ pub fn run_dashboard(
         &discovery_request_for_pending_launch(&current_request, pending_launch.as_ref()),
         &mut refresh_in_flight,
     )?;
+    let warm_control = control.clone();
+    let _warm_worker = thread::spawn(move || warm_control.warm_native_clients());
 
     let result = 'dashboard: loop {
         loop {

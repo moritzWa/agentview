@@ -285,6 +285,46 @@ pub fn resume(session_key: &str) -> Result<NativeSessionExit> {
     bail!("background terminal resume is unavailable on this platform")
 }
 
+/// Start a provider-native client straight into the background, as if it had
+/// been opened and returned from, so a later [`resume`] shows it at once.
+pub fn start_in_background(mut command: Command, session_key: &str) -> Result<()> {
+    validate_session_key(session_key)?;
+    #[cfg(unix)]
+    {
+        if !terminal_is_interactive() {
+            bail!("a background native session requires an interactive terminal");
+        }
+        let mut registry = detached_registry()
+            .lock()
+            .map_err(|_| anyhow!("provider-native background registry lock was poisoned"))?;
+        if registry.contains_key(session_key) {
+            bail!("a provider-native frontend already uses this session key");
+        }
+        let (child, master) = spawn_pty(&mut command)?;
+        let size = terminal_size(libc::STDIN_FILENO).unwrap_or(libc::winsize {
+            ws_row: FALLBACK_TERMINAL_ROWS,
+            ws_col: FALLBACK_TERMINAL_COLUMNS,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        });
+        let drain = start_output_drain(master, vt100::Parser::new(size.ws_row, size.ws_col, 0))?;
+        registry.insert(
+            session_key.to_owned(),
+            DetachedSession {
+                child: Some(child),
+                warning: None,
+                drain: Some(drain),
+            },
+        );
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = command;
+        bail!("background native sessions are unavailable on this platform")
+    }
+}
+
 /// List process-local frontend keys for dashboard discovery. Keys never grant
 /// authority over arbitrary processes: every entry was spawned by this agentview
 /// process and is still held by its private PTY registry.
@@ -864,6 +904,11 @@ fn bridge_session(
         }
         if redraw_restore_at.is_some_and(|at| Instant::now() >= at) {
             redraw_restore_at = None;
+            // A busy provider can read both size changes at once, see no net
+            // change, and skip the repaint, so show the hidden output first.
+            stdout.write_all(b"\x1b[2J\x1b[H")?;
+            stdout.write_all(&screen.screen().state_formatted())?;
+            stdout.flush()?;
             if let Some(size) = current_size {
                 set_pty_size(master.as_raw_fd(), size)?;
                 signal_group(child.id(), libc::SIGWINCH);
