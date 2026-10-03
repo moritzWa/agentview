@@ -712,6 +712,7 @@ fn bridge_session(
             stdout.flush()?;
         }
     }
+    REMOVAL_REQUESTED.store(false, std::sync::atomic::Ordering::SeqCst);
     let mut parser = DetachParser::for_session(session_key);
     let mut return_gesture = ReturnGesture::for_session(session_key);
     let mut current_size = terminal_size(libc::STDIN_FILENO).ok();
