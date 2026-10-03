@@ -149,22 +149,20 @@ fn render_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
         ]
     } else if area.width >= 70 {
         let ring = Style::default().fg(palette().dim);
-        let core = Style::default()
-            .fg(palette().accent)
-            .add_modifier(Modifier::BOLD);
+        let core = Style::default().fg(Color::Rgb(80, 108, 247));
         vec![
             Line::from(vec![
-                Span::styled("   ○ ○   ", ring),
+                Span::styled("  ▐█▌  ▐█▌   ", ring),
                 Span::styled(title, Style::default().add_modifier(Modifier::BOLD)),
             ]),
             Line::from(vec![
-                Span::styled("  ○ ", ring),
-                Span::styled("●", core),
-                Span::styled(" ○  ", ring),
+                Span::styled("██   ", ring),
+                Span::styled("██", core),
+                Span::styled("   ██ ", ring),
                 Span::styled(format!("{providers} · {cwd}"), Style::default().fg(palette().dim)),
             ]),
             Line::from(vec![
-                Span::styled("   ○ ○   ", ring),
+                Span::styled("  ▐█▌  ▐█▌   ", ring),
                 Span::styled(
                     format!(
                         "{awaiting} awaiting input · {working} working · {completed_status} · {mode} view"
@@ -174,7 +172,7 @@ fn render_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
             ]),
             Line::from(Span::styled(
                 if app.yolo {
-                    "         ⚠ YOLO MODE · native permission safeguards are relaxed"
+                    "             ⚠ YOLO MODE · native permission safeguards are relaxed"
                 } else {
                     ""
                 },
