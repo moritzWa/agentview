@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime};
 
 use anyhow::{bail, Context, Result};
@@ -311,6 +311,9 @@ impl ProviderController for OpenCodeController {
         if session.provider != Provider::OpenCode || session.runtime != Runtime::Host {
             bail!("the host OpenCode controller does not own this runtime");
         }
+        if let Some(outcome) = self.open_in_shared_client(session)? {
+            return Ok(outcome);
+        }
         let command = if self.owned_session(session)?.is_some() {
             self.supervisor
                 .as_ref()
@@ -356,7 +359,113 @@ fn native_outcome(
     }
 }
 
+/// A per-directory TUI that switches between sessions, by its native key.
+struct SharedClient {
+    /// The server it was started against; a new pid means a restart.
+    server_pid: u32,
+    /// The dashboard row ID of the session it shows.
+    showing: String,
+}
+
+fn shared_clients() -> &'static Mutex<BTreeMap<String, SharedClient>> {
+    static CLIENTS: OnceLock<Mutex<BTreeMap<String, SharedClient>>> = OnceLock::new();
+    CLIENTS.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+fn remember_shared_client(key: &str, server_pid: u32, showing: &str) {
+    if let Ok(mut clients) = shared_clients().lock() {
+        clients.insert(
+            key.to_owned(),
+            SharedClient {
+                server_pid,
+                showing: showing.to_owned(),
+            },
+        );
+    }
+}
+
+/// The native key of the shared TUI showing this dashboard row, if any.
+fn shared_client_showing(row_id: &str) -> Option<String> {
+    shared_clients()
+        .lock()
+        .ok()?
+        .iter()
+        .find(|(_, shared)| shared.showing == row_id)
+        .map(|(key, _)| key.clone())
+}
+
+/// Starts with `opencode:` so the native session layer gives it OpenCode's
+/// resume redraw and color answers; `shared` cannot be a runtime ID.
+fn shared_client_key(cwd: &Path) -> String {
+    format!("opencode:shared:{}", cwd.display())
+}
+
+/// The `--client` tag a switch is addressed to. The dashboard's pid keeps two
+/// dashboards on one server from switching each other's TUIs.
+fn shared_client_id(cwd: &Path) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    cwd.hash(&mut hasher);
+    format!("agentview-{}-{:016x}", std::process::id(), hasher.finish())
+}
+
 impl OpenCodeController {
+    /// Show `session` in the one TUI this dashboard keeps per directory,
+    /// switching it over from whatever session it showed last instead of
+    /// starting a TUI per session (2-3 s and about 500 MB each). `None`
+    /// leaves the open to the per-session path: no managed server, a server
+    /// that cannot switch one TUI alone, or a TUI already parked for this
+    /// exact session.
+    fn open_in_shared_client(&self, session: &AgentSession) -> Result<Option<ControlOutcome>> {
+        let Some(supervisor) = self.supervisor.as_ref() else {
+            return Ok(None);
+        };
+        if crate::native_session::is_backgrounded(&session.id) {
+            return Ok(None);
+        }
+        let cwd = match self.owned_session(session)? {
+            Some(owned) => owned.cwd,
+            None => session.cwd.clone(),
+        };
+        if !cwd.is_dir() {
+            return Ok(None);
+        }
+        let key = shared_client_key(&cwd);
+        let client = shared_client_id(&cwd);
+        let started_against = shared_clients()
+            .lock()
+            .ok()
+            .and_then(|clients| clients.get(&key).map(|shared| shared.server_pid));
+        let parked = crate::native_session::is_backgrounded(&key);
+        // A TUI from before a server restart still runs the old binary and
+        // plugins; replace it so a restart picks up OpenCode changes.
+        let reuse = parked
+            && started_against.is_some()
+            && started_against == supervisor.live_server_pid()?;
+        if parked && !reuse {
+            let _ = crate::native_session::terminate(&key);
+        }
+        let exit = if reuse {
+            supervisor.select_in_shared_client(&session.provider_session_id, &cwd, &client)?;
+            remember_shared_client(&key, started_against.unwrap_or_default(), &session.id);
+            crate::native_session::resume(&key)?
+        } else {
+            let Some((command, server_pid)) =
+                supervisor.shared_client_command(&session.provider_session_id, &cwd, &client)?
+            else {
+                return Ok(None);
+            };
+            remember_shared_client(&key, server_pid, &session.id);
+            crate::native_session::run(command, &key)?
+        };
+        if !matches!(exit, crate::native_session::NativeSessionExit::Backgrounded) {
+            if let Ok(mut clients) = shared_clients().lock() {
+                clients.remove(&key);
+            }
+        }
+        native_outcome(exit, &session.provider_session_id, &session.name).map(Some)
+    }
+
     fn owned_session(&self, session: &AgentSession) -> Result<Option<ManagedOpenCodeSession>> {
         if session.provider != Provider::OpenCode || session.runtime != Runtime::Host {
             bail!("the host OpenCode controller does not own this runtime");
@@ -901,7 +1010,10 @@ fn apply_live_state(
     holder: Option<&Holder>,
     since: u64,
 ) {
-    let background = crate::native_session::background_screen_contents(&session.id);
+    let background = crate::native_session::background_screen_contents(&session.id).or_else(|| {
+        shared_client_showing(&session.id)
+            .and_then(|key| crate::native_session::background_screen_contents(&key))
+    });
     let Some(pid) = background
         .as_ref()
         .map(|(pid, _)| *pid)

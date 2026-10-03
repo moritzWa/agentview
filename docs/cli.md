@@ -356,6 +356,16 @@ or permission prompt are listed rather than resumed, since that prompt does not
 survive the restart and only you can answer it. If the restart fails partway,
 running the command again resumes the sessions it recorded.
 
+Open windows reconnect but keep running the OpenCode build and TUI plugins they
+started with. The dashboard keeps one OpenCode window per folder and switches
+it between that folder's sessions with `/tui/select-session`, addressed to that
+window's `--client` ID. The first time you open a session after a restart, it
+replaces that window with a fresh one. A window running a session you opened
+before this feature existed keeps running until you close it. Shared windows
+need a server whose `/tui/select-session` accepts `client`; agentview reads the
+server's `/doc` to check, because older servers accept the field and then
+switch every attached window.
+
 ## Managed Docker lifecycle
 
 Managed Docker is distinct from `--docker-container`. The latter enrolls one

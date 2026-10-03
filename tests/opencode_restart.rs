@@ -96,6 +96,72 @@ fn restart_keeps_the_endpoint_and_resumes_only_interrupted_top_level_turns() {
 }
 
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "the Python fake server misses the 10s readiness window on hosted macOS runners"
+)]
+fn shared_client_is_used_only_when_the_server_can_switch_one_tui() {
+    let directory = tempdir().unwrap();
+    let fake = directory.path().join("fake-opencode");
+    write_fake_opencode(&fake);
+    let state_file = directory.path().join("server-state.json");
+    let supervisor = |dir: &Path| {
+        OpenCodeSupervisor::with_state_dir(fake.display().to_string(), dir.join("state")).unwrap()
+    };
+    let launched = supervisor(directory.path())
+        .launch("owned task", directory.path())
+        .unwrap();
+
+    assert!(
+        supervisor(directory.path())
+            .shared_client_command("ses_owned", directory.path(), "pane-1")
+            .unwrap()
+            .is_none(),
+        "a server that drops `client` would switch every TUI"
+    );
+
+    let mut state: Value = serde_json::from_slice(&fs::read(&state_file).unwrap()).unwrap();
+    state["client_targeting"] = json!(true);
+    fs::write(&state_file, serde_json::to_vec(&state).unwrap()).unwrap();
+    let targeting = supervisor(directory.path());
+    let (command, server_pid) = targeting
+        .shared_client_command("ses_owned", directory.path(), "pane-1")
+        .unwrap()
+        .expect("a server that targets one client gets a shared TUI");
+    assert_eq!(server_pid, launched.server_pid);
+    let args: Vec<_> = command
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        args.windows(2).any(|pair| pair == ["--client", "pane-1"]),
+        "{args:?}"
+    );
+    assert!(
+        args.windows(2)
+            .any(|pair| pair == ["--session", "ses_owned"]),
+        "{args:?}"
+    );
+
+    assert_eq!(
+        targeting
+            .select_in_shared_client("ses_owned", directory.path(), "pane-1")
+            .unwrap(),
+        launched.server_pid
+    );
+    let state: Value = serde_json::from_slice(&fs::read(&state_file).unwrap()).unwrap();
+    assert_eq!(
+        state["selects"][0]["body"],
+        json!({"sessionID": "ses_owned", "client": "pane-1"})
+    );
+    assert_eq!(
+        targeting.live_server_pid().unwrap(),
+        Some(launched.server_pid)
+    );
+    targeting.shutdown_server().unwrap();
+}
+
+#[test]
 #[ignore = "set AGENTVIEW_REAL_OPENCODE_BIN; runs one short model turn, AGENTVIEW_REAL_OPENCODE_MODEL is optional"]
 fn real_opencode_restart_resumes_a_turn_cut_off_mid_tool_call() {
     let executable = std::env::var("AGENTVIEW_REAL_OPENCODE_BIN").unwrap();
@@ -224,6 +290,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.respond(200, state["questions"])
         if parsed.path == "/permission":
             return self.respond(200, [])
+        if parsed.path == "/doc":
+            properties = {"sessionID": {"type": "string"}}
+            if state.get("client_targeting"):
+                properties["client"] = {"type": "string"}
+            schema = {"type": "object", "properties": properties}
+            return self.respond(200, {"paths": {"/tui/select-session": {"post": {"requestBody": {"content": {"application/json": {"schema": schema}}}}}}})
         if parsed.path == "/session":
             return self.respond(200, list(state["sessions"].values()))
         if parsed.path.endswith("/message"):
@@ -257,6 +329,10 @@ class Handler(BaseHTTPRequestHandler):
                 state["statuses"][session_id] = "busy"
                 save(state)
                 return self.respond(204)
+            if parsed.path == "/tui/select-session":
+                state.setdefault("selects", []).append({"query": parsed.query, "body": data})
+                save(state)
+                return self.respond(200, True)
         return self.respond(404, {"error": "unknown"})
 
 ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
