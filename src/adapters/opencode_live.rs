@@ -563,6 +563,20 @@ pub(super) fn combine(
     }
 }
 
+/// The state a held screen gives a row between discoveries, or `None` to
+/// keep the row's state. As in [`combine`], an idle prompt does not end work
+/// the last discovery found: a background task or a plugin hold can keep a
+/// session working without showing it on screen.
+pub(super) fn settle_from_screen(
+    screen: (SessionState, &'static str),
+    current: SessionState,
+) -> Option<(SessionState, &'static str)> {
+    match screen {
+        (SessionState::NeedsInput, "waiting at prompt") if current == SessionState::Working => None,
+        screen => Some(screen),
+    }
+}
+
 /// State of a session whose OpenCode terminal this dashboard holds in the
 /// background, or `None` when the screen does not settle it (a login or
 /// startup screen, or a remapped command-palette key).
@@ -849,6 +863,26 @@ mod tests {
         let permission = (SessionState::NeedsInput, "permission requested");
         assert_eq!(combine(Some(permission), working), permission);
         assert_eq!(combine(None, working), working);
+    }
+
+    #[test]
+    fn a_held_screen_starts_work_at_once_but_an_idle_one_waits_for_discovery() {
+        let idle = (SessionState::NeedsInput, "waiting at prompt");
+        let working = (SessionState::Working, "running turn");
+        let permission = (SessionState::NeedsInput, "permission requested");
+        assert_eq!(
+            settle_from_screen(working, SessionState::NeedsInput),
+            Some(working)
+        );
+        assert_eq!(settle_from_screen(idle, SessionState::Working), None);
+        assert_eq!(
+            settle_from_screen(idle, SessionState::NeedsInput),
+            Some(idle)
+        );
+        assert_eq!(
+            settle_from_screen(permission, SessionState::Working),
+            Some(permission)
+        );
     }
 
     #[test]

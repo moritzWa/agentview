@@ -56,6 +56,9 @@ struct PendingReveal {
 }
 const LAUNCH_ANIMATION_INTERVAL: Duration = Duration::from_millis(120);
 const LIVE_SESSION_ANIMATION_INTERVAL: Duration = Duration::from_millis(550);
+/// Held frontends publish their screen every 250 ms; checking more often
+/// keeps a reply's "working" within one publish of the keypress.
+const SCREEN_STATUS_INTERVAL: Duration = Duration::from_millis(100);
 const LAUNCH_SPINNER: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -273,6 +276,7 @@ pub fn run_dashboard(
     let mut launch_animation_tick = 0usize;
     let mut next_launch_animation = Instant::now();
     let mut next_live_animation = Instant::now() + LIVE_SESSION_ANIMATION_INTERVAL;
+    let mut next_screen_status = Instant::now();
     let mut needs_draw = true;
     let mut input_burst = InputBurst::default();
     let mut event_reader = MetaArrowReader::default();
@@ -314,6 +318,7 @@ pub fn run_dashboard(
                                 })
                         });
                     }
+                    crate::adapters::apply_background_screens(&mut snapshot);
                     let changed = snapshot != app.snapshot;
                     app.replace_snapshot(snapshot);
                     resolve_pending_reveal(&mut app, &mut pending_reveal, complete, Instant::now());
@@ -524,6 +529,12 @@ pub fn run_dashboard(
         if Instant::now() >= next_live_animation {
             needs_draw |= app.advance_live_animation();
             next_live_animation = Instant::now() + LIVE_SESSION_ANIMATION_INTERVAL;
+        }
+        if Instant::now() >= next_screen_status {
+            if !crate::native_session::detached_session_keys().is_empty() {
+                needs_draw |= app.update_snapshot(crate::adapters::apply_background_screens);
+            }
+            next_screen_status = Instant::now() + SCREEN_STATUS_INTERVAL;
         }
         if let Some(scheme) = scheme_watcher.as_ref().and_then(SchemeWatcher::take_change) {
             if app.color_scheme != scheme {

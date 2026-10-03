@@ -88,7 +88,7 @@ pub use session_migrate_native::{
 };
 pub use terminal_harness::{is_shell_install_choice, shell_install_name, TerminalHarness};
 
-use crate::domain::{AgentSession, SessionKind, SessionSnapshot, SessionState};
+use crate::domain::{AgentSession, Provider, Runtime, SessionKind, SessionSnapshot, SessionState};
 
 pub const DEFAULT_HISTORY_LIMIT: usize = 100;
 
@@ -250,6 +250,45 @@ impl DiscoveryEngine {
             source.cancel();
         }
     }
+}
+
+/// Re-read the screens of frontends this dashboard holds in the background,
+/// whose state discovery would otherwise only pick up on its next pass, and
+/// return whether any row changed. Reading a held screen costs no subprocess,
+/// so the dashboard can do this on every tick.
+pub fn apply_background_screens(snapshot: &mut SessionSnapshot) -> bool {
+    if crate::native_session::detached_session_keys().is_empty() {
+        return false;
+    }
+    apply_screen_states(snapshot, |session| match session.provider {
+        Provider::OpenCode => opencode::background_screen_state(session),
+        Provider::Cursor => cursor_history::background_screen_state(session),
+        _ => None,
+    })
+}
+
+fn apply_screen_states(
+    snapshot: &mut SessionSnapshot,
+    screen_state: impl Fn(&AgentSession) -> Option<(SessionState, &'static str)>,
+) -> bool {
+    let mut changed = false;
+    for session in &mut snapshot.sessions {
+        if session.runtime != Runtime::Host {
+            continue;
+        }
+        let Some((state, raw_state)) = screen_state(session) else {
+            continue;
+        };
+        if session.state != state || session.raw_state.as_deref() != Some(raw_state) {
+            session.state = state;
+            session.raw_state = Some(raw_state.into());
+            changed = true;
+        }
+    }
+    if changed {
+        snapshot.sort_for_display();
+    }
+    changed
 }
 
 fn deduplicate_sessions(sessions: &mut Vec<AgentSession>) {
@@ -687,5 +726,63 @@ mod tests {
             assert_eq!(sessions[0].name, "native provider title");
             assert_eq!(sessions[0].raw_state.as_deref(), Some("native"));
         }
+    }
+
+    #[test]
+    fn held_screens_update_host_rows_between_discoveries_and_resort_them() {
+        let session = |id: &str, runtime, state| AgentSession {
+            id: id.into(),
+            provider_session_id: id.into(),
+            provider: Provider::OpenCode,
+            runtime,
+            kind: SessionKind::Interactive,
+            name: id.into(),
+            cwd: PathBuf::from("/workspace"),
+            state,
+            summary: String::new(),
+            raw_state: Some("waiting at prompt".into()),
+            pid: Some(1),
+            started_at: None,
+            updated_at: None,
+            pull_requests: None,
+            capabilities: BTreeSet::new(),
+        };
+        let mut snapshot = SessionSnapshot {
+            sessions: vec![
+                session("other", Runtime::Host, SessionState::Working),
+                session("replied", Runtime::Host, SessionState::NeedsInput),
+                session(
+                    "container",
+                    Runtime::Docker {
+                        container_id: "c".into(),
+                        container_name: "c".into(),
+                        image: "i".into(),
+                    },
+                    SessionState::NeedsInput,
+                ),
+            ],
+            ..SessionSnapshot::default()
+        };
+        snapshot.sort_for_display();
+        let working = |session: &AgentSession| {
+            (session.id != "other").then_some((SessionState::Working, "running turn"))
+        };
+
+        assert!(apply_screen_states(&mut snapshot, working));
+        let state = |id: &str| {
+            let session = snapshot.sessions.iter().find(|s| s.id == id).unwrap();
+            (session.state, session.raw_state.as_deref())
+        };
+        assert_eq!(
+            state("replied"),
+            (SessionState::Working, Some("running turn"))
+        );
+        assert_eq!(state("container").0, SessionState::NeedsInput);
+        let order: Vec<_> = snapshot.sessions.iter().map(|s| s.state).collect();
+        let mut sorted = order.clone();
+        sorted.sort();
+        assert_eq!(order, sorted);
+
+        assert!(!apply_screen_states(&mut snapshot, working));
     }
 }
