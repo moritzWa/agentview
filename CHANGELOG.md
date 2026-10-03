@@ -17,6 +17,13 @@ and released versions are intended to follow Semantic Versioning.
   port, so open OpenCode windows reconnect, and sends `continue` to every
   session whose turn the restart cut off.
 
+- Opening OpenCode sessions reuses one OpenCode window per folder, switching it
+  to the chosen session instead of starting a window per session (2 to 3
+  seconds and about 300 MB each). After `agentview opencode restart`, the next
+  open starts a fresh window, so OpenCode and plugin changes take effect. This
+  needs an OpenCode server that can switch a single window; with older
+  servers, sessions open in their own windows as before.
+
 ### Changed
 
 - Ctrl+X no longer opens a confirmation dialog to delete or hide a session or

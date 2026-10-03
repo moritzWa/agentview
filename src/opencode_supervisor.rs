@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::process::Stdio;
+use std::sync::Mutex;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::thread;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -89,6 +90,8 @@ pub struct OpenCodeSupervisor {
     state_dir: PathBuf,
     record_path: PathBuf,
     lock_path: PathBuf,
+    /// Server pid and whether that server can switch a single TUI.
+    client_targeting: Mutex<Option<(u32, bool)>>,
 }
 
 impl OpenCodeSupervisor {
@@ -103,6 +106,7 @@ impl OpenCodeSupervisor {
             record_path: state_dir.join("server.json"),
             lock_path: state_dir.join("server.lock"),
             state_dir,
+            client_targeting: Mutex::new(None),
         })
     }
 
@@ -310,6 +314,82 @@ impl OpenCodeSupervisor {
             &owned.id,
             &owned.cwd,
         ))
+    }
+
+    /// Attach a TUI that `select_in_shared_client` can later move between
+    /// sessions, tagged with `client` so a switch reaches only this TUI.
+    /// Returns the command and the server's pid, or `None` when the server
+    /// cannot target one client: it would accept the request but switch
+    /// every attached TUI.
+    pub fn shared_client_command(
+        &self,
+        session_id: &str,
+        cwd: &Path,
+        client: &str,
+    ) -> Result<Option<(Command, u32)>> {
+        let _lock = StateLock::acquire(&self.lock_path)?;
+        let record = self.ensure_server_locked()?;
+        if !self.supports_client_targeting(&record) {
+            return Ok(None);
+        }
+        let mut command = build_native_attach_command(&self.executable, &record, session_id, cwd);
+        command.args(["--client", client]);
+        Ok(Some((command, record.pid)))
+    }
+
+    /// Switch the shared TUI tagged `client` to `session_id`. Returns the
+    /// server's pid so the caller can tell a restarted server from the one
+    /// the TUI was started against.
+    pub fn select_in_shared_client(
+        &self,
+        session_id: &str,
+        cwd: &Path,
+        client: &str,
+    ) -> Result<u32> {
+        let _lock = StateLock::acquire(&self.lock_path)?;
+        let record = self.required_live_record_locked()?;
+        if !self.supports_client_targeting(&record) {
+            bail!("the OpenCode server cannot switch a single TUI");
+        }
+        self.request_empty(
+            &record,
+            "POST",
+            &with_directory_query("/tui/select-session", cwd),
+            Some(&json!({ "sessionID": session_id, "client": client })),
+        )?;
+        Ok(record.pid)
+    }
+
+    /// The live server's pid, which changes when the server restarts.
+    pub fn live_server_pid(&self) -> Result<Option<u32>> {
+        let _lock = StateLock::acquire(&self.lock_path)?;
+        Ok(self.live_record_locked()?.map(|record| record.pid))
+    }
+
+    /// Whether the server's `/tui/select-session` accepts a `client`. Older
+    /// servers silently drop the field, so this reads the published schema
+    /// instead of trying the request. Cached per server process.
+    fn supports_client_targeting(&self, record: &ServerRecord) -> bool {
+        if let Ok(cache) = self.client_targeting.lock() {
+            if let Some((pid, supported)) = *cache {
+                if pid == record.pid {
+                    return supported;
+                }
+            }
+        }
+        let supported = self
+            .request_json(record, "GET", "/doc", None)
+            .map(|doc| {
+                doc.pointer(
+                    "/paths/~1tui~1select-session/post/requestBody/content/application~1json/schema/properties/client",
+                )
+                .is_some()
+            })
+            .unwrap_or(false);
+        if let Ok(mut cache) = self.client_targeting.lock() {
+            *cache = Some((record.pid, supported));
+        }
+        supported
     }
 
     /// Attach a native TUI to a session this supervisor did not create. Its
