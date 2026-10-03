@@ -84,6 +84,26 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
     }
 }
 
+/// Terminal tab title, such as `2 need input · 1 working · 3 done · agentview`.
+pub fn terminal_title(app: &App) -> String {
+    let counts = [
+        (app.session_count(SessionState::NeedsInput), "need input"),
+        (app.session_count(SessionState::Working), "working"),
+        (
+            app.session_count(SessionState::ReadyForReview)
+                + app.session_count(SessionState::Completed),
+            "done",
+        ),
+    ];
+    let mut parts = counts
+        .into_iter()
+        .filter(|(count, _)| *count > 0)
+        .map(|(count, label)| format!("{count} {label}"))
+        .collect::<Vec<_>>();
+    parts.push("agentview".into());
+    parts.join(" · ")
+}
+
 fn render_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let cwd = header_directory(app);
     let awaiting = app.session_count(SessionState::NeedsInput);
@@ -2073,6 +2093,24 @@ mod tests {
         assert!(rendered.contains("Completed"));
         assert!(rendered.contains("describe a task · /help for commands"));
         assert!(rendered.contains("1 awaiting input · 2 working · 1 completed"));
+    }
+
+    #[test]
+    fn terminal_title_counts_states_and_omits_empty_ones() {
+        let app = App::new(SessionSnapshot {
+            sessions: vec![
+                session("review", SessionState::ReadyForReview),
+                session("blocked", SessionState::NeedsInput),
+                session("asks", SessionState::NeedsInput),
+                session("done", SessionState::Completed),
+            ],
+            warnings: vec![],
+        });
+        assert_eq!(terminal_title(&app), "2 need input · 2 done · agentview");
+        assert_eq!(
+            terminal_title(&App::new(SessionSnapshot::default())),
+            "agentview"
+        );
     }
 
     #[test]

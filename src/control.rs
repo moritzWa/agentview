@@ -394,6 +394,10 @@ impl ControlHub {
         Ok(self.controller(provider)?.launch_presentation())
     }
 
+    pub fn provider_io_enabled(&self) -> bool {
+        self.provider_io_enabled
+    }
+
     pub fn supports_authentication(&self, provider: &Provider) -> bool {
         self.provider_io_enabled
             && self
