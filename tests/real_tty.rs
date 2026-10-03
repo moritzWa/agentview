@@ -1969,7 +1969,7 @@ fn completed_history_is_visible_by_default_and_stays_responsive() {
     app.send(&navigation);
     app.wait_for("coalesced completed-history arrow burst", |screen| {
         screen.contains("completed-session-0008 ·")
-            && screen.contains("provider actions are disabled while reading a fixture")
+            && screen.contains("enter to open native session")
     });
     let navigation_elapsed = navigation_started.elapsed();
     let navigation_bytes = app.raw.len() - output_before;
@@ -1981,8 +1981,8 @@ fn completed_history_is_visible_by_default_and_stays_responsive() {
         navigation_bytes < 24 * 1024,
         "208 queued arrows emitted {navigation_bytes} bytes instead of coalescing frames"
     );
-    // Fixture mode refuses provider inspection without leaking into provider
-    // I/O. Wait for that asynchronous refusal, then close Peek with exactly one
+    // Fixture mode answers Peek from the fixture summary without provider I/O.
+    // Wait for that asynchronous answer, then close Peek with exactly one
     // Escape. A second context-sensitive Escape would quit the dashboard and
     // leave the next test input writing to a closed PTY.
     app.send(ESC);
@@ -2070,13 +2070,14 @@ elif "models" in sys.argv:
     assert_lines_fit(&shown, 120);
 
     app.send(DOWN);
-    app.wait_for("nonfatal bounded-history warning", |screen| {
-        screen.contains("history is limited to 10 records")
+    let navigated = app.wait_for("bounded history stays in the header only", |screen| {
+        screen.contains("history capped") && screen.contains("enter/right open")
     });
+    assert!(!navigated.contains("history is limited to 10 records"));
     app.send(UP);
     app.send(b"draft");
     app.wait_for("contextual composer footer over warning", |screen| {
-        screen.contains("draft") && screen.contains("enter create · tab harness · shift+tab")
+        screen.contains("draft") && screen.contains("tab harness · shift+tab")
     });
     app.send(ESC);
     app.wait_for("composer closes before dashboard exit", |screen| {

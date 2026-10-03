@@ -10,7 +10,7 @@ harnesses and plain shell jobs.
 [![Release](https://img.shields.io/badge/release-v0.1.0-7c5cff.svg)](https://github.com/moritzWa/agentview/releases/latest)
 [![License](https://img.shields.io/badge/license-MIT-7c5cff.svg)](LICENSE)
 
-<img src="docs/assets/demo.gif" alt="agentview demo: browsing sessions, inspecting one, and starting a new task" width="800">
+<img src="docs/assets/demo.gif" alt="agentview demo: inspecting a session, bringing a past session back with Ctrl+G, and starting a new task" width="800">
 
 </div>
 
@@ -53,8 +53,10 @@ own interface.
 - **Grouped by status:** waiting for input, working, completed. The harness is
   shown on every row.
 - **Jump in and back out** of a native session while its work keeps running.
-- **Start any recent session.** `Ctrl+G` finds older or hidden sessions by
-  name, harness, folder, or ID.
+- **Bring back any past session** without leaving the dashboard. `Ctrl+G`
+  searches older and hidden sessions by name, harness, folder, or ID, even
+  while you're typing a task, and `Enter` puts the session back in the list.
+  No new terminal, `cd`, or `--resume` needed.
 - **Launches stay on the dashboard** for harnesses that can run in the
   background. `Enter` opens the new row.
 - **Pin and reorder** with `Ctrl+T` and `Option+↑` / `↓`.
@@ -76,6 +78,7 @@ own interface.
 | Move through sessions | `↑` / `↓` |
 | Open the selected session | `Enter` or `→` |
 | Return to agentview | `Shift+←`, or `←` twice at an empty prompt |
+| Bring back a past session | `Ctrl+G` or `/hidden` |
 | Rename / filter | `Ctrl+R` / `Ctrl+F` |
 | New line in a task | `Shift+Enter`, `Ctrl+J`, or `\` then `Enter` |
 | Show every shortcut | `?` |

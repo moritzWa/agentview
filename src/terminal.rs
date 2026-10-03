@@ -1426,7 +1426,14 @@ fn handle_key(app: &mut App, key: KeyEvent) -> AppAction {
             {
                 app.toggle_pin()
             }
-            KeyCode::Char('g') if app.overlay == Overlay::None => AppAction::BrowseHidden,
+            KeyCode::Char('g')
+                if matches!(
+                    app.overlay,
+                    Overlay::None | Overlay::Composer(ComposerMode::NewSession)
+                ) =>
+            {
+                AppAction::BrowseHidden
+            }
             KeyCode::Char('g') if app.overlay == Overlay::HiddenPicker => app.escape(),
             KeyCode::Char('o')
                 if matches!(
@@ -1795,6 +1802,10 @@ trait DashboardControl {
 
 impl DashboardControl for ControlHub {
     fn inspect_session(&self, session: &AgentSession) -> Result<String> {
+        // A fixture row has no provider transcript; its summary is the detail.
+        if !self.provider_io_enabled() {
+            return Ok(session.summary.clone());
+        }
         self.inspect(session)
     }
 
@@ -2697,7 +2708,10 @@ mod tests {
         assert_eq!(handle_key(&mut app, control_key('g')), AppAction::None);
         assert_eq!(app.overlay, Overlay::None);
         app.start_new_session(None);
-        assert_eq!(handle_key(&mut app, control_key('g')), AppAction::None);
+        assert_eq!(
+            handle_key(&mut app, control_key('g')),
+            AppAction::BrowseHidden
+        );
     }
 
     #[test]

@@ -238,6 +238,9 @@ pub struct App {
     pub directory_selection: usize,
     /// Escape returns to the new-task draft when the picker was opened from it.
     directory_picker_from_composer: bool,
+    /// Escape returns to the new-task draft when the restore picker was
+    /// opened from it.
+    hidden_picker_from_composer: bool,
     pub yolo: bool,
     pub yolo_supported_providers: BTreeSet<Provider>,
     pub harness_selection: usize,
@@ -333,6 +336,7 @@ impl App {
             directory_filter: String::new(),
             directory_selection: 0,
             directory_picker_from_composer: false,
+            hidden_picker_from_composer: false,
             yolo: false,
             yolo_supported_providers: BTreeSet::new(),
             harness_selection,
@@ -735,7 +739,11 @@ impl App {
                 AppAction::None
             }
             Overlay::HiddenPicker => {
-                self.overlay = Overlay::None;
+                self.overlay = if self.hidden_picker_from_composer {
+                    Overlay::Composer(ComposerMode::NewSession)
+                } else {
+                    Overlay::None
+                };
                 self.hidden_filter.clear();
                 self.hidden_candidates.clear();
                 self.restorable.clear();
@@ -2029,6 +2037,8 @@ impl App {
         self.hidden_filter.clear();
         self.hidden_selection = 0;
         self.notice = None;
+        self.hidden_picker_from_composer =
+            self.overlay == Overlay::Composer(ComposerMode::NewSession);
         self.overlay = Overlay::HiddenPicker;
     }
 
@@ -2189,6 +2199,9 @@ impl App {
         let session_id = record.id.clone();
         let hidden = self.hidden_ids.contains(&session_id);
         let restorable = self.restorable.remove(&session_id);
+        if self.hidden_picker_from_composer {
+            self.clear_input();
+        }
         self.overlay = Overlay::None;
         self.hidden_filter.clear();
         self.hidden_candidates.clear();
@@ -3665,6 +3678,18 @@ mod tests {
         app.input = "/hidden".into();
         assert_eq!(app.activate(), AppAction::BrowseHidden);
         assert_eq!(app.overlay, Overlay::None);
+    }
+
+    #[test]
+    fn escaping_the_restore_picker_returns_to_the_new_task_draft() {
+        let mut app = app_with(vec![]);
+        app.start_new_session(None);
+        app.input = "half-written task".into();
+        app.open_restore_picker(Vec::new());
+        assert_eq!(app.overlay, Overlay::HiddenPicker);
+        app.escape();
+        assert_eq!(app.overlay, Overlay::Composer(ComposerMode::NewSession));
+        assert_eq!(app.input, "half-written task");
     }
 
     #[test]

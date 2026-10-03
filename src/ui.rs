@@ -120,7 +120,7 @@ fn render_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
             .snapshot
             .warnings
             .iter()
-            .any(|warning| warning.contains("history is limited"))
+            .any(|warning| is_history_cap_warning(warning))
     {
         completed_status.push_str(" · history capped");
     }
@@ -899,7 +899,12 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
         sanitize_inline(notice)
     } else if app.overlay != Overlay::None {
         contextual_footer(app, area.width)
-    } else if let Some(warning) = app.snapshot.warnings.first() {
+    } else if let Some(warning) = app
+        .snapshot
+        .warnings
+        .iter()
+        .find(|warning| !is_history_cap_warning(warning))
+    {
         format!("warning: {}", sanitize_inline(warning))
     } else {
         contextual_footer(app, area.width)
@@ -910,6 +915,11 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
             .alignment(Alignment::Left),
         area,
     );
+}
+
+/// The header already reports these as "history capped".
+fn is_history_cap_warning(warning: &str) -> bool {
+    warning.contains("history is limited")
 }
 
 fn contextual_footer(app: &App, width: u16) -> String {
@@ -931,17 +941,17 @@ fn contextual_footer(app: &App, width: u16) -> String {
             "enter migrate · esc targets".into()
         }
         Overlay::Composer(ComposerMode::NewSession) if width >= 100 => format!(
-            "enter create · tab harness · shift+tab {} · ctrl+o folder · shift+enter newline · esc cancel",
+            "tab harness · shift+tab {} · ctrl+o folder · ctrl+g past sessions · ctrl+v image · /help",
             if app.launch_provider == Provider::Terminal { "shell" } else { "model" }
         ),
         Overlay::Composer(ComposerMode::NewSession) if width >= 70 => format!(
-            "enter create · tab harness · shift+tab {} · shift+enter newline · esc cancel",
+            "tab harness · shift+tab {} · ctrl+o folder · ctrl+g past sessions",
             if app.launch_provider == Provider::Terminal { "shell" } else { "model" }
         ),
-        Overlay::Composer(ComposerMode::NewSession) if width >= 55 => {
-            "enter to create · tab harness · /help · esc cancel".into()
+        Overlay::Composer(ComposerMode::NewSession) if width >= 45 => {
+            "tab harness · ctrl+g past sessions · /help".into()
         }
-        Overlay::Composer(ComposerMode::NewSession) => "enter to create · tab harness".into(),
+        Overlay::Composer(ComposerMode::NewSession) => "tab harness · ctrl+g past".into(),
         Overlay::HarnessPicker if width >= 55 => format!(
             "↑/↓ or tab to choose · 1–{} direct · enter select · esc back",
             app.launch_targets.len().min(9)
@@ -2449,6 +2459,23 @@ mod tests {
     }
 
     #[test]
+    fn footer_skips_history_cap_warnings() {
+        let app = App::new(SessionSnapshot {
+            sessions: Vec::new(),
+            warnings: vec![
+                "OpenCode (host) completed history is limited to 100 records for this refresh; increase --history-limit to load more".into(),
+            ],
+        });
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let rendered = buffer_text(terminal.backend().buffer());
+
+        assert!(!rendered.contains("warning:"));
+    }
+
+    #[test]
     fn narrow_hidden_picker_keeps_the_age_suffix_inside_the_border() {
         let mut app = App::new(SessionSnapshot::default());
         let hidden_at_ms = SystemTime::now()
@@ -2540,7 +2567,7 @@ mod tests {
         assert!(rendered.contains("❯ first line"));
         assert!(rendered.contains("second line"));
         assert!(rendered.contains("third line"));
-        assert!(rendered.contains("shift+enter newline"));
+        assert!(rendered.contains("ctrl+g past sessions"));
     }
 
     #[test]

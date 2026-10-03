@@ -149,6 +149,18 @@ Annotated tags are the current repository convention. Moving to signed tags
 requires a valid, non-expired maintainer signing key and a documented public-key
 verification path; do not claim a signature when those prerequisites are absent.
 
+When a release changes the dashboard's look or hint bar, re-record the README
+demo from `fixtures/demo-sessions.json`. It needs `vhs`, `ffmpeg`, and `uv`:
+
+```console
+cargo build --release
+uv run --with pillow scripts/demo.py
+```
+
+This rewrites `docs/assets/demo.gif` with a badge for each shortcut pressed,
+and leaves a 2600×1120 MP4 at `target/demo/demo.mp4`. Edit the step list in
+`scripts/demo.py` to change what the demo shows.
+
 ## Verify a published release
 
 Confirm the GitHub release contains the original verified archive and checksum,
