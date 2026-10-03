@@ -562,29 +562,36 @@ fn validate_model(model: &str) -> Result<()> {
     Ok(())
 }
 
+fn host_probe(executable: &str) -> HolderProbe {
+    let executable = executable.to_owned();
+    Arc::new(move || opencode_live::probe_host_holders(&executable))
+}
+
 impl OpenCodeSource {
     pub fn host(executable: impl Into<String>) -> Self {
+        let executable = executable.into();
         Self {
             label: "OpenCode (host)".into(),
+            probe: host_probe(&executable),
             invocation: OpenCodeInvocation::host(executable),
             runtime: Runtime::Host,
             runner: Arc::new(CancellableProcessRunner::default()),
             supervisor: None,
             discover_external_history: true,
-            probe: Arc::new(opencode_live::probe_host_holders),
             ownership: None,
         }
     }
 
     pub fn managed(executable: impl Into<String>, supervisor: Arc<OpenCodeSupervisor>) -> Self {
+        let executable = executable.into();
         Self {
             label: "OpenCode (host)".into(),
+            probe: host_probe(&executable),
             invocation: OpenCodeInvocation::host(executable),
             runtime: Runtime::Host,
             runner: Arc::new(CancellableProcessRunner::default()),
             supervisor: Some(supervisor),
             discover_external_history: true,
-            probe: Arc::new(opencode_live::probe_host_holders),
             ownership: None,
         }
     }
@@ -594,14 +601,15 @@ impl OpenCodeSource {
         executable: impl Into<String>,
         supervisor: Arc<OpenCodeSupervisor>,
     ) -> Self {
+        let executable = executable.into();
         Self {
             label: "OpenCode (managed host)".into(),
+            probe: host_probe(&executable),
             invocation: OpenCodeInvocation::host(executable),
             runtime: Runtime::Host,
             runner: Arc::new(CancellableProcessRunner::default()),
             supervisor: Some(supervisor),
             discover_external_history: false,
-            probe: Arc::new(opencode_live::probe_host_holders),
             ownership: None,
         }
     }

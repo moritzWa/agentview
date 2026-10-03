@@ -78,19 +78,22 @@ pub(super) struct Candidate<'a> {
 }
 
 /// Every live `opencode` process that runs a TUI or a headless `run`.
-pub(super) fn probe_host_holders() -> Vec<Holder> {
+/// Live OpenCode processes run by `opencode` or by the configured
+/// `executable`, such as a renamed development build.
+pub(super) fn probe_host_holders(executable: &str) -> Vec<Holder> {
     #[cfg(unix)]
     {
-        probe_with(&ProcessRunner, now_ms())
+        probe_with(&ProcessRunner, now_ms(), executable)
     }
     #[cfg(not(unix))]
     {
+        let _ = executable;
         Vec::new()
     }
 }
 
 #[cfg(unix)]
-fn probe_with(runner: &dyn CommandRunner, now_ms: u64) -> Vec<Holder> {
+fn probe_with(runner: &dyn CommandRunner, now_ms: u64, executable: &str) -> Vec<Holder> {
     let mut request = CommandRequest::new(
         "ps",
         vec!["axww".into(), "-o".into(), "pid=,etime=,args=".into()],
@@ -103,7 +106,7 @@ fn probe_with(runner: &dyn CommandRunner, now_ms: u64) -> Vec<Holder> {
         return Vec::new();
     };
     let own_pid = std::process::id();
-    let mut holders = parse_ps(text, now_ms, &process_args)
+    let mut holders = parse_ps(text, now_ms, executable, &process_args)
         .into_iter()
         .filter(|holder| holder.pid != own_pid)
         .collect::<Vec<_>>();
@@ -131,8 +134,12 @@ fn probe_with(runner: &dyn CommandRunner, now_ms: u64) -> Vec<Holder> {
 pub(super) fn parse_ps(
     output: &str,
     now_ms: u64,
+    executable: &str,
     exact_args: &dyn Fn(u32) -> Option<Vec<String>>,
 ) -> Vec<Holder> {
+    let configured = Path::new(executable)
+        .file_name()
+        .and_then(|name| name.to_str());
     output
         .lines()
         .filter_map(|line| {
@@ -140,7 +147,7 @@ pub(super) fn parse_ps(
             let pid = fields.next()?.parse::<u32>().ok()?;
             let elapsed = parse_etime(fields.next()?)?;
             let program = Path::new(fields.next()?).file_name()?.to_str()?;
-            if program != "opencode" {
+            if program != "opencode" && Some(program) != configured {
                 return None;
             }
             let args = exact_args(pid)
@@ -670,7 +677,7 @@ mod tests {
  5151       00:10 /usr/bin/vim opencode.rs
  6161       00:05 /bin/opencode-helper --session ses_b
 ";
-        let holders = parse_ps(rows, 1_000_000, &|_| None);
+        let holders = parse_ps(rows, 1_000_000, "opencode", &|_| None);
         assert_eq!(
             holders,
             vec![
@@ -689,11 +696,38 @@ mod tests {
     }
 
     #[test]
+    fn a_renamed_configured_executable_also_holds_sessions() {
+        let rows = "\
+ 101       00:10 /Users/m/.local/bin/opencode-dev --session ses_dev
+ 102       00:10 opencode --session ses_plain
+ 103       00:10 /Users/m/.local/bin/opencode-dev attach http://127.0.0.1:1 --session ses_x
+ 104       00:10 /bin/opencode-helper --session ses_b
+";
+        let sessions = |executable| {
+            parse_ps(rows, 1_000_000, executable, &|_| None)
+                .into_iter()
+                .map(|holder| holder.target)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            sessions("/Users/m/.local/bin/opencode-dev"),
+            vec![
+                Target::Session("ses_dev".into()),
+                Target::Session("ses_plain".into()),
+            ]
+        );
+        assert_eq!(
+            sessions("opencode"),
+            vec![Target::Session("ses_plain".into())]
+        );
+    }
+
+    #[test]
     fn exact_arguments_keep_a_prompt_with_spaces_and_flags_whole() {
         let rows = "7070       00:03 opencode --model=a/b --prompt=explain the --session flag\n";
-        let split = parse_ps(rows, 10_000, &|_| None);
+        let split = parse_ps(rows, 10_000, "opencode", &|_| None);
         assert_eq!(split[0].target, Target::Session("flag".into()));
-        let exact = parse_ps(rows, 10_000, &|_| {
+        let exact = parse_ps(rows, 10_000, "opencode", &|_| {
             Some(vec![
                 "opencode".into(),
                 "--model=a/b".into(),
