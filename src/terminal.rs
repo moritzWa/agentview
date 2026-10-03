@@ -1769,11 +1769,18 @@ trait DashboardControl {
     fn interrupt_session(&self, session: &AgentSession) -> Result<ControlOutcome>;
     fn archive_session(&self, session: &AgentSession) -> Result<ControlOutcome>;
     fn delete_session(&self, session: &AgentSession) -> Result<ControlOutcome>;
+    fn take_removal_request(&self) -> bool {
+        false
+    }
 }
 
 impl DashboardControl for ControlHub {
     fn inspect_session(&self, session: &AgentSession) -> Result<String> {
         self.inspect(session)
+    }
+
+    fn take_removal_request(&self) -> bool {
+        crate::native_session::take_removal_request()
     }
 
     fn open_session(&self, session: &AgentSession) -> Result<ControlOutcome> {
@@ -1992,6 +1999,26 @@ fn dispatch_action<T: DashboardTerminal, C: DashboardControl>(
                     }
                 }
             }
+        }
+        AppAction::Open { session_id } => {
+            let refresh = handle_action_legacy(
+                terminal,
+                app,
+                AppAction::Open {
+                    session_id: session_id.clone(),
+                },
+                control,
+            );
+            if !control.take_removal_request() || !app.select_and_reveal_session(&session_id) {
+                return ActionEffect {
+                    refresh,
+                    ..ActionEffect::default()
+                };
+            }
+            let removal = app.start_confirm();
+            let mut effect = dispatch_action(terminal, app, removal, control);
+            effect.refresh |= refresh;
+            effect
         }
         other => ActionEffect {
             refresh: handle_action_legacy(terminal, app, other, control),
@@ -3633,6 +3660,7 @@ mod tests {
         calls: Mutex<Vec<String>>,
         fail_on: Option<&'static str>,
         launch_hint: Option<&'static str>,
+        removal_requested: std::sync::atomic::AtomicBool,
     }
 
     impl FakeControl {
@@ -3716,6 +3744,84 @@ mod tests {
         fn delete_session(&self, session: &AgentSession) -> Result<ControlOutcome> {
             self.invoke("delete", session.id.clone())
         }
+
+        fn take_removal_request(&self) -> bool {
+            self.removal_requested
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    #[test]
+    fn removal_key_inside_a_native_session_arms_removal_on_its_row() {
+        let mut app = app();
+        let mut terminal = FakeTerminal::default();
+        let control = FakeControl::default();
+
+        dispatch_action(
+            &mut terminal,
+            &mut app,
+            AppAction::Open {
+                session_id: "worker".into(),
+            },
+            &control,
+        );
+        assert_eq!(app.pending_removal_verb(), None);
+
+        control
+            .removal_requested
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        dispatch_action(
+            &mut terminal,
+            &mut app,
+            AppAction::Open {
+                session_id: "worker".into(),
+            },
+            &control,
+        );
+        assert_eq!(app.pending_removal_verb(), Some("hide"));
+        assert_eq!(
+            control.calls.lock().unwrap().as_slice(),
+            ["open:worker", "open:worker"]
+        );
+        assert_eq!(
+            handle_key(
+                &mut app,
+                KeyEvent {
+                    modifiers: KeyModifiers::CONTROL,
+                    ..key(KeyCode::Char('x'))
+                }
+            ),
+            AppAction::Hide {
+                session_ids: vec!["worker".into()]
+            }
+        );
+    }
+
+    #[test]
+    fn removal_key_inside_a_running_native_session_interrupts_it() {
+        let mut app = app();
+        app.snapshot.sessions[0]
+            .capabilities
+            .insert(Capability::Interrupt);
+        let mut terminal = FakeTerminal::default();
+        let control = FakeControl::default();
+        control
+            .removal_requested
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+
+        dispatch_action(
+            &mut terminal,
+            &mut app,
+            AppAction::Open {
+                session_id: "worker".into(),
+            },
+            &control,
+        );
+
+        assert_eq!(
+            control.calls.lock().unwrap().as_slice(),
+            ["open:worker", "interrupt:worker"]
+        );
     }
 
     #[test]
@@ -4337,6 +4443,7 @@ mod tests {
                 calls: Mutex::default(),
                 fail_on: Some(operation),
                 launch_hint: None,
+                ..FakeControl::default()
             };
             assert!(handle_action(&mut terminal, &mut app, action, &control));
             assert!(app.notice.as_deref().unwrap().contains(expected));
@@ -4352,6 +4459,7 @@ mod tests {
             calls: Mutex::default(),
             fail_on: Some("inspect"),
             launch_hint: None,
+            ..FakeControl::default()
         };
 
         assert!(!handle_action(
@@ -4389,6 +4497,7 @@ mod tests {
             calls: Mutex::default(),
             fail_on: Some("open"),
             launch_hint: None,
+            ..FakeControl::default()
         };
         assert!(handle_action(
             &mut terminal,
@@ -4454,6 +4563,7 @@ mod tests {
             calls: Mutex::default(),
             fail_on: Some("delete"),
             launch_hint: None,
+            ..FakeControl::default()
         };
 
         assert!(handle_action(

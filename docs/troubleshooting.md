@@ -148,6 +148,12 @@ The managed backend remains alive, and Enter or Right on the same dashboard
 row restores the exact retained screen. This applies to every configured
 native harness, including Oh My Pi, Grok, Kilo Code, and OpenHands.
 
+OpenCode returns on the first Left at the input boundary. A Ctrl+X that no
+other key follows within 350 ms also returns, then acts like the dashboard's
+own Ctrl+X on that row: it stops a running turn, or arms hide/delete for a
+second Ctrl+X. A key typed right after Ctrl+X still reaches OpenCode as its
+leader shortcut.
+
 Older builds handed the terminal directly to the provider, so Pi/OpenCode Left
 did nothing and Claude consumed it for its own agent view. `ctrl+c` in that
 mode could terminate the provider frontend. Use the double-arrow hint or a
