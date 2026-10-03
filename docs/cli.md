@@ -37,6 +37,7 @@ agentview is already up to date.
 | `--all` | Compatibility flag that explicitly includes completed sessions; completed is already the default. |
 | `--hide-completed` / `--active-only` | Hide completed sessions at startup. `/completed show` restores them without restarting. |
 | `--include-interactive` | Include provider sessions reported as foreground/interactive. |
+| `--include-temp` | Include sessions whose working directory is a system temp directory (`/tmp`, `/var/tmp`, `/var/folders`, `$TMPDIR`). They are hidden by default because agents start throwaway sessions there; pinned sessions and `--cwd` inside a temp directory still show them. |
 | `--include-external` | Include provider sessions not created or managed by agentview. External history is excluded by default. |
 | `--history-limit N` | Read at most `N` persisted-history records per provider per refresh; default 100, range 1–10,000. Live/owned inventories are separate. |
 | `--cwd PATH` | Keep sessions whose working directory starts with `PATH`. |

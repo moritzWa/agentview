@@ -818,6 +818,7 @@ printf '%s\n' '[{"id":"slow","cwd":"/workspace/slow","kind":"background","sessio
             "--no-host-copilot",
             "--no-host-cursor",
             "--include-external",
+            "--include-temp",
             "--refresh-ms",
             "60000",
         ]);

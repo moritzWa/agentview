@@ -34,6 +34,9 @@ and released versions are intended to follow Semantic Versioning.
   instead of submitting, wherever the cursor is, as Claude Code does. Terminals
   such as Hyper report Shift+Enter as a plain Enter, so `\` then Return is the
   line break they can send.
+- Sessions started in a system temp directory such as `/tmp` are hidden, since
+  agents run throwaway sessions there and leave them behind. Pinned sessions
+  stay visible, and `--include-temp` shows the rest.
 
 ### Fixed
 
