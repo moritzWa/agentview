@@ -206,6 +206,12 @@ pub trait ProviderController: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// Start the provider's native client behind the dashboard so the first
+    /// open does not wait for it to load.
+    fn warm_native_client(&self) -> Result<()> {
+        Ok(())
+    }
+
     /// Record a persisted session as one the dashboard lists, so discovery
     /// returns it without `--include-external` and beyond the history window.
     fn adopt(&self, _session: &RestorableSession) -> Result<()> {
@@ -658,6 +664,17 @@ impl ControlHub {
         }
         sessions.sort_by_key(|session| std::cmp::Reverse(session.updated_at_ms));
         (sessions, errors)
+    }
+
+    /// Start every provider's native client behind the dashboard. A client
+    /// that fails to start is opened the ordinary way later.
+    pub fn warm_native_clients(&self) {
+        if self.ensure_provider_io().is_err() {
+            return;
+        }
+        for controller in self.controllers.values() {
+            let _ = controller.warm_native_client();
+        }
     }
 
     pub fn adopt(&self, session: &RestorableSession) -> Result<()> {

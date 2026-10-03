@@ -17,7 +17,7 @@ use crate::control::{
 use crate::domain::{
     AgentSession, Capability, Provider, Runtime, SessionKind, SessionSnapshot, SessionState,
 };
-use crate::opencode_supervisor::{ManagedOpenCodeSession, OpenCodeSupervisor};
+use crate::opencode_supervisor::{ManagedOpenCodeSession, OpenCodeSupervisor, SharedClientReach};
 use crate::process::{CancellableProcessRunner, CommandRequest, CommandRunner};
 
 // `opencode session list` is workspace-scoped in OpenCode 1.18.18 despite its
@@ -192,6 +192,10 @@ impl ProviderController for OpenCodeController {
         run_native_authentication(&self.executable, &["auth", "login"], Provider::OpenCode)
     }
 
+    fn warm_native_client(&self) -> Result<()> {
+        self.warm_shared_client()
+    }
+
     fn enrich(&self, snapshot: &mut SessionSnapshot) {
         let Some(supervisor) = &self.supervisor else {
             return;
@@ -362,7 +366,8 @@ fn native_outcome(
     }
 }
 
-/// A per-directory TUI that switches between sessions, by its native key.
+/// A TUI that switches between sessions, by its native key: one for every
+/// directory when the server can move it, otherwise one per directory.
 struct SharedClient {
     /// The server it was started against; a new pid means a restart.
     server_pid: u32,
@@ -397,23 +402,41 @@ fn shared_client_showing(row_id: &str) -> Option<String> {
         .map(|(key, _)| key.clone())
 }
 
+/// Held while deciding whether a shared TUI exists and starting one, so a
+/// warm-up and an open never start two TUIs under one key.
+static SHARED_CLIENT_GATE: Mutex<()> = Mutex::new(());
+
 /// Starts with `opencode:` so the native session layer gives it OpenCode's
 /// resume redraw and color answers; `shared` cannot be a runtime ID.
-fn shared_client_key(cwd: &Path) -> String {
-    format!("opencode:shared:{}", cwd.display())
+/// `None` names the one TUI that moves between directories.
+fn shared_client_key(cwd: Option<&Path>) -> String {
+    match cwd {
+        Some(cwd) => format!("opencode:shared:{}", cwd.display()),
+        None => "opencode:shared".into(),
+    }
 }
 
 /// The `--client` tag a switch is addressed to. The dashboard's pid keeps two
 /// dashboards on one server from switching each other's TUIs.
-fn shared_client_id(cwd: &Path) -> String {
+fn shared_client_id(cwd: Option<&Path>) -> String {
     use std::hash::{Hash, Hasher};
+    let Some(cwd) = cwd else {
+        return format!("agentview-{}", std::process::id());
+    };
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     cwd.hash(&mut hasher);
     format!("agentview-{}-{:016x}", std::process::id(), hasher.finish())
 }
 
+/// The key and `--client` tag of the TUI that shows sessions in `cwd`.
+fn shared_client_for(reach: SharedClientReach, cwd: &Path) -> (String, String) {
+    let scope = (reach != SharedClientReach::AnyDirectory).then_some(cwd);
+    (shared_client_key(scope), shared_client_id(scope))
+}
+
 impl OpenCodeController {
-    /// Show `session` in the one TUI this dashboard keeps per directory,
+    /// Show `session` in the TUI this dashboard keeps for every directory, or
+    /// per directory when the server cannot move one TUI between them,
     /// switching it over from whatever session it showed last instead of
     /// starting a TUI per session (2-3 s and about 500 MB each). `None`
     /// leaves the open to the per-session path: no managed server, a server
@@ -433,8 +456,14 @@ impl OpenCodeController {
         if !cwd.is_dir() {
             return Ok(None);
         }
-        let key = shared_client_key(&cwd);
-        let client = shared_client_id(&cwd);
+        let reach = supervisor.shared_client_reach()?;
+        if reach == SharedClientReach::None {
+            return Ok(None);
+        }
+        let (key, client) = shared_client_for(reach, &cwd);
+        let gate = SHARED_CLIENT_GATE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let started_against = shared_clients()
             .lock()
             .ok()
@@ -445,21 +474,36 @@ impl OpenCodeController {
         let reuse = parked
             && started_against.is_some()
             && started_against == supervisor.live_server_pid()?;
-        if parked && !reuse {
+        // A TUI that could not be switched is replaced rather than shown on
+        // the wrong session.
+        let switched = reuse
+            && supervisor
+                .select_in_shared_client(&session.provider_session_id, &cwd, &client)
+                .is_ok();
+        if parked && !switched {
             let _ = crate::native_session::terminate(&key);
         }
-        let exit = if reuse {
-            supervisor.select_in_shared_client(&session.provider_session_id, &cwd, &client)?;
+        let start = if switched {
             remember_shared_client(&key, started_against.unwrap_or_default(), &session.id);
-            crate::native_session::resume(&key)?
+            None
         } else {
-            let Some((command, server_pid)) =
-                supervisor.shared_client_command(&session.provider_session_id, &cwd, &client)?
+            let Some((command, server_pid)) = supervisor.shared_client_command(
+                Some(&session.provider_session_id),
+                &cwd,
+                &client,
+            )?
             else {
                 return Ok(None);
             };
             remember_shared_client(&key, server_pid, &session.id);
-            crate::native_session::run(command, &key)?
+            Some(command)
+        };
+        // The TUI is now recorded, so a warm-up will leave it alone while it
+        // runs in front.
+        drop(gate);
+        let exit = match start {
+            None => crate::native_session::resume(&key)?,
+            Some(command) => crate::native_session::run(command, &key)?,
         };
         if !matches!(exit, crate::native_session::NativeSessionExit::Backgrounded) {
             if let Ok(mut clients) = shared_clients().lock() {
@@ -467,6 +511,39 @@ impl OpenCodeController {
             }
         }
         native_outcome(exit, &session.provider_session_id, &session.name).map(Some)
+    }
+
+    /// Start the TUI shared by every directory behind the dashboard, so the
+    /// first session opened only has to switch it. Leaves a stopped server
+    /// stopped, and per-directory TUIs to their first open.
+    fn warm_shared_client(&self) -> Result<()> {
+        let Some(supervisor) = self.supervisor.as_ref() else {
+            return Ok(());
+        };
+        if supervisor.live_server_pid()?.is_none()
+            || supervisor.shared_client_reach()? != SharedClientReach::AnyDirectory
+        {
+            return Ok(());
+        }
+        let cwd = std::env::current_dir()?;
+        let (key, client) = shared_client_for(SharedClientReach::AnyDirectory, &cwd);
+        let _gate = SHARED_CLIENT_GATE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let recorded = shared_clients()
+            .lock()
+            .map(|clients| clients.contains_key(&key))
+            .unwrap_or(true);
+        if recorded || crate::native_session::is_backgrounded(&key) {
+            return Ok(());
+        }
+        let Some((command, server_pid)) = supervisor.shared_client_command(None, &cwd, &client)?
+        else {
+            return Ok(());
+        };
+        crate::native_session::start_in_background(command, &key)?;
+        remember_shared_client(&key, server_pid, "");
+        Ok(())
     }
 
     fn owned_session(&self, session: &AgentSession) -> Result<Option<ManagedOpenCodeSession>> {

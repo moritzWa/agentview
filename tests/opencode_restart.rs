@@ -7,7 +7,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use agentview::domain::SessionState;
-use agentview::opencode_supervisor::OpenCodeSupervisor;
+use agentview::opencode_supervisor::{OpenCodeSupervisor, SharedClientReach};
 use serde_json::{json, Value};
 use tempfile::tempdir;
 
@@ -114,18 +114,26 @@ fn shared_client_is_used_only_when_the_server_can_switch_one_tui() {
 
     assert!(
         supervisor(directory.path())
-            .shared_client_command("ses_owned", directory.path(), "pane-1")
+            .shared_client_command(Some("ses_owned"), directory.path(), "pane-1")
             .unwrap()
             .is_none(),
         "a server that drops `client` would switch every TUI"
+    );
+    assert_eq!(
+        supervisor(directory.path()).shared_client_reach().unwrap(),
+        SharedClientReach::None
     );
 
     let mut state: Value = serde_json::from_slice(&fs::read(&state_file).unwrap()).unwrap();
     state["client_targeting"] = json!(true);
     fs::write(&state_file, serde_json::to_vec(&state).unwrap()).unwrap();
     let targeting = supervisor(directory.path());
+    assert_eq!(
+        targeting.shared_client_reach().unwrap(),
+        SharedClientReach::Directory
+    );
     let (command, server_pid) = targeting
-        .shared_client_command("ses_owned", directory.path(), "pane-1")
+        .shared_client_command(Some("ses_owned"), directory.path(), "pane-1")
         .unwrap()
         .expect("a server that targets one client gets a shared TUI");
     assert_eq!(server_pid, launched.server_pid);
@@ -158,7 +166,36 @@ fn shared_client_is_used_only_when_the_server_can_switch_one_tui() {
         targeting.live_server_pid().unwrap(),
         Some(launched.server_pid)
     );
-    targeting.shutdown_server().unwrap();
+
+    let mut state: Value = serde_json::from_slice(&fs::read(&state_file).unwrap()).unwrap();
+    state["directory_targeting"] = json!(true);
+    fs::write(&state_file, serde_json::to_vec(&state).unwrap()).unwrap();
+    let moving = supervisor(directory.path());
+    assert_eq!(
+        moving.shared_client_reach().unwrap(),
+        SharedClientReach::AnyDirectory
+    );
+    let (command, _) = moving
+        .shared_client_command(None, directory.path(), "pane-1")
+        .unwrap()
+        .expect("a server that moves one client gets a shared TUI");
+    assert!(
+        !command.get_args().any(|arg| arg == "--session"),
+        "a warmed TUI starts on the home screen"
+    );
+    moving
+        .select_in_shared_client("ses_owned", directory.path(), "pane-1")
+        .unwrap();
+    let state: Value = serde_json::from_slice(&fs::read(&state_file).unwrap()).unwrap();
+    assert_eq!(
+        state["selects"][1]["body"],
+        json!({
+            "sessionID": "ses_owned",
+            "client": "pane-1",
+            "targetDirectory": directory.path().to_string_lossy(),
+        })
+    );
+    moving.shutdown_server().unwrap();
 }
 
 #[test]
@@ -294,6 +331,8 @@ class Handler(BaseHTTPRequestHandler):
             properties = {"sessionID": {"type": "string"}}
             if state.get("client_targeting"):
                 properties["client"] = {"type": "string"}
+            if state.get("directory_targeting"):
+                properties["targetDirectory"] = {"type": "string"}
             schema = {"type": "object", "properties": properties}
             return self.respond(200, {"paths": {"/tui/select-session": {"post": {"requestBody": {"content": {"application/json": {"schema": schema}}}}}}})
         if parsed.path == "/session":

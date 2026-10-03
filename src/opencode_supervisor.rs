@@ -90,8 +90,19 @@ pub struct OpenCodeSupervisor {
     state_dir: PathBuf,
     record_path: PathBuf,
     lock_path: PathBuf,
-    /// Server pid and whether that server can switch a single TUI.
-    client_targeting: Mutex<Option<(u32, bool)>>,
+    /// Server pid and how far that server can move a single TUI.
+    client_targeting: Mutex<Option<(u32, SharedClientReach)>>,
+}
+
+/// How far `/tui/select-session` can move one attached TUI.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SharedClientReach {
+    /// The server would switch every attached TUI, so none can be shared.
+    None,
+    /// One TUI can switch between the sessions of the directory it started in.
+    Directory,
+    /// One TUI can also move to another directory with `targetDirectory`.
+    AnyDirectory,
 }
 
 impl OpenCodeSupervisor {
@@ -316,30 +327,41 @@ impl OpenCodeSupervisor {
         ))
     }
 
+    /// How far the server, started if needed, can move one attached TUI.
+    pub fn shared_client_reach(&self) -> Result<SharedClientReach> {
+        let _lock = StateLock::acquire(&self.lock_path)?;
+        let record = self.ensure_server_locked()?;
+        Ok(self.client_reach(&record))
+    }
+
     /// Attach a TUI that `select_in_shared_client` can later move between
     /// sessions, tagged with `client` so a switch reaches only this TUI.
-    /// Returns the command and the server's pid, or `None` when the server
-    /// cannot target one client: it would accept the request but switch
-    /// every attached TUI.
+    /// Without `session_id` it starts on OpenCode's home screen. Returns the
+    /// command and the server's pid, or `None` when the server cannot target
+    /// one client: it would accept the request but switch every attached TUI.
     pub fn shared_client_command(
         &self,
-        session_id: &str,
+        session_id: Option<&str>,
         cwd: &Path,
         client: &str,
     ) -> Result<Option<(Command, u32)>> {
         let _lock = StateLock::acquire(&self.lock_path)?;
         let record = self.ensure_server_locked()?;
-        if !self.supports_client_targeting(&record) {
+        if self.client_reach(&record) == SharedClientReach::None {
             return Ok(None);
         }
-        let mut command = build_native_attach_command(&self.executable, &record, session_id, cwd);
+        let mut command = attach_command(&self.executable, &record, cwd);
+        if let Some(session_id) = session_id {
+            command.args(["--session", session_id]);
+        }
         command.args(["--client", client]);
         Ok(Some((command, record.pid)))
     }
 
-    /// Switch the shared TUI tagged `client` to `session_id`. Returns the
-    /// server's pid so the caller can tell a restarted server from the one
-    /// the TUI was started against.
+    /// Switch the shared TUI tagged `client` to `session_id`, moving it to
+    /// `cwd` first when the server supports that. Returns the server's pid so
+    /// the caller can tell a restarted server from the one the TUI was
+    /// started against.
     pub fn select_in_shared_client(
         &self,
         session_id: &str,
@@ -348,14 +370,19 @@ impl OpenCodeSupervisor {
     ) -> Result<u32> {
         let _lock = StateLock::acquire(&self.lock_path)?;
         let record = self.required_live_record_locked()?;
-        if !self.supports_client_targeting(&record) {
-            bail!("the OpenCode server cannot switch a single TUI");
+        let mut body = json!({ "sessionID": session_id, "client": client });
+        match self.client_reach(&record) {
+            SharedClientReach::None => bail!("the OpenCode server cannot switch a single TUI"),
+            SharedClientReach::Directory => {}
+            SharedClientReach::AnyDirectory => {
+                body["targetDirectory"] = json!(cwd.to_string_lossy());
+            }
         }
         self.request_empty(
             &record,
             "POST",
             &with_directory_query("/tui/select-session", cwd),
-            Some(&json!({ "sessionID": session_id, "client": client })),
+            Some(&body),
         )?;
         Ok(record.pid)
     }
@@ -366,30 +393,36 @@ impl OpenCodeSupervisor {
         Ok(self.live_record_locked()?.map(|record| record.pid))
     }
 
-    /// Whether the server's `/tui/select-session` accepts a `client`. Older
-    /// servers silently drop the field, so this reads the published schema
-    /// instead of trying the request. Cached per server process.
-    fn supports_client_targeting(&self, record: &ServerRecord) -> bool {
+    /// Which of `client` and `targetDirectory` the server's
+    /// `/tui/select-session` accepts. Older servers silently drop unknown
+    /// fields, so this reads the published schema instead of trying the
+    /// request. Cached per server process.
+    fn client_reach(&self, record: &ServerRecord) -> SharedClientReach {
         if let Ok(cache) = self.client_targeting.lock() {
-            if let Some((pid, supported)) = *cache {
+            if let Some((pid, reach)) = *cache {
                 if pid == record.pid {
-                    return supported;
+                    return reach;
                 }
             }
         }
-        let supported = self
+        let reach = self
             .request_json(record, "GET", "/doc", None)
             .map(|doc| {
-                doc.pointer(
-                    "/paths/~1tui~1select-session/post/requestBody/content/application~1json/schema/properties/client",
-                )
-                .is_some()
+                let properties = doc.pointer(
+                    "/paths/~1tui~1select-session/post/requestBody/content/application~1json/schema/properties",
+                );
+                let accepts = |field: &str| properties.and_then(|p| p.get(field)).is_some();
+                match (accepts("client"), accepts("targetDirectory")) {
+                    (true, true) => SharedClientReach::AnyDirectory,
+                    (true, false) => SharedClientReach::Directory,
+                    (false, _) => SharedClientReach::None,
+                }
             })
-            .unwrap_or(false);
+            .unwrap_or(SharedClientReach::None);
         if let Ok(mut cache) = self.client_targeting.lock() {
-            *cache = Some((record.pid, supported));
+            *cache = Some((record.pid, reach));
         }
-        supported
+        reach
     }
 
     /// Attach a native TUI to a session this supervisor did not create. Its
@@ -1060,11 +1093,17 @@ fn build_native_attach_command(
     session_id: &str,
     cwd: &Path,
 ) -> Command {
+    let mut command = attach_command(executable, record, cwd);
+    command.args(["--session", session_id]);
+    command
+}
+
+fn attach_command(executable: &str, record: &ServerRecord, cwd: &Path) -> Command {
     let mut command = Command::new(executable);
     command
         .arg("attach")
         .arg(format!("http://127.0.0.1:{}", record.port))
-        .args(["--session", session_id, "--dir"])
+        .arg("--dir")
         .arg(cwd)
         .env("OPENCODE_SERVER_USERNAME", &record.username)
         .env("OPENCODE_SERVER_PASSWORD", &record.password)
@@ -2222,10 +2261,10 @@ mod tests {
             vec![
                 "attach",
                 "http://127.0.0.1:4242",
-                "--session",
-                "ses_owned",
                 "--dir",
-                "/work/project"
+                "/work/project",
+                "--session",
+                "ses_owned"
             ]
         );
         assert!(!arguments.iter().any(|value| value.contains("private")));
