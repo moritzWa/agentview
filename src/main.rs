@@ -241,6 +241,10 @@ struct Cli {
     #[arg(long)]
     include_interactive: bool,
 
+    /// Include sessions started in a system temp directory such as /tmp.
+    #[arg(long)]
+    include_temp: bool,
+
     /// Include provider sessions that were not created or managed by agentview.
     #[arg(long)]
     include_external: bool,
@@ -532,6 +536,19 @@ fn main() -> Result<()> {
     // provider path would otherwise leave the common parent at 0755 and the
     // hidden-session registry would correctly refuse to use it.
     let hidden_sessions = HiddenSessions::load_default()?;
+    let pinned_sessions = PinnedSessions::load_default()?;
+    let temporary_roots = agentview::hidden::temporary_roots();
+    // Asking for a temp directory with --cwd means those sessions are wanted.
+    let hidden_sessions = if cli.include_temp
+        || cli
+            .cwd
+            .as_ref()
+            .is_some_and(|cwd| agentview::hidden::is_under_any(cwd, &temporary_roots))
+    {
+        hidden_sessions
+    } else {
+        hidden_sessions.hide_temporary_directories(temporary_roots, pinned_sessions.clone())
+    };
     let session_aliases = SessionAliases::load_default()?;
     let migration_registry = MigrationRegistry::load_default()?;
     let migration_client = MigrationClient::host(cli.session_migrate_bin.clone())
@@ -1076,7 +1093,7 @@ fn main() -> Result<()> {
         Duration::from_millis(cli.refresh_ms),
         &control,
         hidden_sessions,
-        PinnedSessions::load_default()?,
+        pinned_sessions,
         agentview::order::SessionOrder::load_default()?,
         last_harness,
         LastView::load_default()?,
