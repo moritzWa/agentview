@@ -194,6 +194,7 @@ pub fn run_dashboard(
     let worker_control = control.clone();
     let worker_hidden_sessions = hidden_sessions.clone();
     let worker_session_aliases = session_aliases.clone();
+    let turn_classifier = crate::turn_classifier::TurnClassifier::from_env(control);
     let _refresh_worker = thread::spawn(move || {
         let mut first_refresh = true;
         while let Ok(worker_request) = refresh_rx.recv() {
@@ -214,6 +215,9 @@ pub fn run_dashboard(
                                 .push(format!("failed to reload local session names: {error:#}"));
                         }
                         worker_session_aliases.apply_snapshot(&mut partial);
+                        if let Some(classifier) = &turn_classifier {
+                            classifier.apply(&mut partial);
+                        }
                         partial.warnings.push(format!(
                             "loading remaining providers… ({completed}/{total})"
                         ));
@@ -234,6 +238,9 @@ pub fn run_dashboard(
                     .push(format!("failed to reload local session names: {error:#}"));
             }
             worker_session_aliases.apply_snapshot(&mut snapshot);
+            if let Some(classifier) = &turn_classifier {
+                classifier.apply(&mut snapshot);
+            }
             if snapshot_tx.send((snapshot, true)).is_err() {
                 break;
             }
@@ -545,6 +552,7 @@ pub fn run_dashboard(
         }
         if needs_draw {
             terminal.terminal.draw(|frame| ui::render(frame, &app))?;
+            terminal.set_title(&ui::terminal_title(&app));
             needs_draw = false;
         }
 
@@ -2263,7 +2271,16 @@ struct TerminalSession {
     // Gates every VT input mode, not only the Kitty keyboard flags: bracketed
     // paste rides on it too, because the legacy Windows console rejects both.
     keyboard_enhancement: bool,
+    /// Last tab title written; native sessions overwrite it while they run.
+    title: Option<String>,
 }
+
+// XTWINOPS title stack: the shell's own tab title comes back on exit.
+// Terminals without a title stack ignore both sequences.
+#[cfg(unix)]
+const PUSH_TITLE: &str = "\x1b[22;0t";
+#[cfg(unix)]
+const POP_TITLE: &str = "\x1b[23;0t";
 
 fn use_keyboard_enhancement(windows_legacy_event_api: bool) -> bool {
     // Crossterm's Windows event reader already distinguishes Enter from a
@@ -2290,12 +2307,25 @@ impl TerminalSession {
             )?;
         }
         execute!(stdout, crossterm::cursor::Hide)?;
+        #[cfg(unix)]
+        execute!(stdout, crossterm::style::Print(PUSH_TITLE))?;
         let terminal = Terminal::new(CrosstermBackend::new(stdout))?;
         Ok(Self {
             terminal,
             active: true,
             keyboard_enhancement,
+            title: None,
         })
+    }
+
+    fn set_title(&mut self, title: &str) {
+        if self.active && self.title.as_deref() != Some(title) {
+            let written = execute!(
+                self.terminal.backend_mut(),
+                crossterm::terminal::SetTitle(title)
+            );
+            self.title = written.is_ok().then(|| title.to_owned());
+        }
     }
 
     fn suspend(&mut self) -> Result<()> {
@@ -2338,6 +2368,7 @@ impl TerminalSession {
         execute!(self.terminal.backend_mut(), crossterm::cursor::Hide)?;
         self.terminal.clear()?;
         self.active = true;
+        self.title = None;
         Ok(())
     }
 }
@@ -2354,6 +2385,11 @@ impl DashboardTerminal for TerminalSession {
 
 impl Drop for TerminalSession {
     fn drop(&mut self) {
+        #[cfg(unix)]
+        let _ = execute!(
+            self.terminal.backend_mut(),
+            crossterm::style::Print(POP_TITLE)
+        );
         if !self.active {
             return;
         }

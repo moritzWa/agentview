@@ -255,6 +255,19 @@ and `--all` remains accepted for compatibility. External history is
 limited to 100 records per provider by default, with a warning when more exist.
 The Show-more row pages only the already discovered window.
 
+### Needs input versus done
+
+Most providers report an idle session as completed or as waiting at its prompt
+without saying whether the agent asked something. When an OpenRouter key is set
+in `OPENROUTER_API_KEY` or `~/.config/agentview/openrouter-api-key`, the
+dashboard sends the transcript tail of each session that went idle in the last
+24 hours to a small model once per turn. A turn that waits on the user moves to
+Needs input; a finished one stays Completed. Permission and question prompts are
+already known and are never sent. `AGENTVIEW_TURN_CLASSIFIER_MODEL` overrides
+the default `google/gemini-2.5-flash-lite`, and `AGENTVIEW_TURN_CLASSIFIER=off`
+disables it. The terminal tab title shows the same counts, for example
+`2 need input · 1 working · 3 done · agentview`.
+
 ### Local hide, provider delete, and provider archive
 
 Ctrl+X follows the selected row's current lifecycle. On an active row with
@@ -466,7 +479,7 @@ label.
 | Session list | `ctrl+s` | Toggle status and working-directory grouping. |
 | Session list | `ctrl+f` | Edit the case-insensitive name/summary/path/provider filter. |
 | Session list | `ctrl+l` | Request an immediate provider refresh. |
-| Session list | `ctrl+g` | Search sessions hidden with `ctrl+x`, plus older OpenCode sessions the dashboard does not list, by name, harness, folder, or ID; `page up` / `page down` move by the rows that fit. Older sessions arrive in the background while the hidden ones are already searchable. `enter` unhides the chosen one, or adopts an older session so it stays listed without `--include-external`, and selects its row once discovery lists it, unless you have moved the cursor or opened another panel meanwhile; a row the current filter excludes is reported rather than the filter being cleared. `esc` or `ctrl+g` closes the picker. Zellij binds `ctrl+g` to its lock mode by default, so under Zellij use `/hidden` instead or unbind that key. |
+| Session list or new-task composer | `ctrl+g` | Search sessions hidden with `ctrl+x`, plus older OpenCode sessions the dashboard does not list, by name, harness, folder, or ID; `page up` / `page down` move by the rows that fit. Older sessions arrive in the background while the hidden ones are already searchable. `enter` unhides the chosen one, or adopts an older session so it stays listed without `--include-external`, and selects its row once discovery lists it, unless you have moved the cursor or opened another panel meanwhile; a row the current filter excludes is reported rather than the filter being cleared. `esc` or `ctrl+g` closes the picker, returning to the draft when it was opened from the composer. Zellij binds `ctrl+g` to its lock mode by default, so under Zellij use `/hidden` instead or unbind that key. |
 | Session list | `ctrl+t` or `ctrl+p` | Pin or unpin the selected session. Pinned rows stay in a group at the top. `ctrl+t` matches Claude Code's agent-view pin key; `cmd+p` also works when the terminal delivers it as the super modifier. Both also work in Peek. A pin is kept while the session is hidden with `ctrl+x` and applies again once it is restored. |
 | Session list | `tab`, `/`, or printable text | Compose a new host task. `/` begins a dashboard command rather than a filter. |
 | New-task composer | `shift+enter`, `ctrl+enter`, `alt+enter`, `ctrl+j`, or `\` then `enter` | Add a line without submitting; pasted text keeps its lines. A `\` right before the cursor is replaced by the line break, as in Claude Code, for terminals that report `shift+enter` as plain `enter`. `enter` submits the whole draft. |

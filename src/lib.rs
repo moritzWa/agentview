@@ -24,6 +24,7 @@ pub mod pins;
 pub mod process;
 pub mod terminal;
 pub mod theme;
+pub mod turn_classifier;
 pub mod ui;
 
 #[cfg(test)]
