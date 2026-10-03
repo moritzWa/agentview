@@ -1088,6 +1088,12 @@ fn help_actions(app: &App) -> Vec<String> {
         actions.push("enter/right to open session".into());
         actions.push("left/right twice at a boundary returns from native session".into());
         actions.push("shift+left/right returns immediately".into());
+        if app
+            .selected_session()
+            .is_some_and(|session| session.provider == Provider::OpenCode)
+        {
+            actions.push("ctrl+x in OpenCode returns and removes like ctrl+x here".into());
+        }
         actions.push("ctrl+r to rename".into());
     }
     actions.push("ctrl+s to switch views".into());

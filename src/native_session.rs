@@ -5,7 +5,10 @@
 //! a cursor boundary, the first arrow is still forwarded and opens a short,
 //! visible return window; pressing the same arrow again returns to the
 //! dashboard. OpenCode sessions return on that first Left instead.
-//! Shift+Left and Shift+Right are immediate equivalents. The
+//! Shift+Left and Shift+Right are immediate equivalents. In OpenCode, a Ctrl+X
+//! that no other key follows returns too and asks the dashboard to treat it as
+//! its own Ctrl+X on that row; a quick follow-up key keeps it OpenCode's
+//! leader. The
 //! provider process keeps running on its own pseudo-terminal, and a drain
 //! thread holds the screen it produces. Selecting the same row attaches that
 //! live screen again.
@@ -33,6 +36,10 @@ use anyhow::{anyhow, bail, Context, Result};
 const ESCAPE_FLUSH_DELAY: Duration = Duration::from_millis(30);
 const ARROW_SETTLE_DELAY: Duration = Duration::from_millis(75);
 const ARROW_RETURN_WINDOW: Duration = Duration::from_millis(1600);
+/// How long a lone Ctrl+X waits for the rest of an OpenCode leader sequence
+/// before it counts as the dashboard's removal key.
+const LEADER_HOLD: Duration = Duration::from_millis(350);
+const CTRL_X: u8 = 0x18;
 const RETURN_HINT_REFRESH: Duration = Duration::from_millis(100);
 const EMPTY_PROMPT_MAX_COLUMN: u16 = 4;
 const MAX_INITIAL_INPUT_BYTES: usize = 256 * 1024;
@@ -111,6 +118,14 @@ fn current_key(session_key: &str) -> String {
         .get(session_key)
         .cloned()
         .unwrap_or_else(|| session_key.to_owned())
+}
+
+static REMOVAL_REQUESTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the last foreground session returned through the removal key,
+/// clearing the request so it applies once.
+pub fn take_removal_request() -> bool {
+    REMOVAL_REQUESTED.swap(false, std::sync::atomic::Ordering::SeqCst)
 }
 
 /// Run or reattach one provider-native client. Non-TTY callers retain the
@@ -697,7 +712,8 @@ fn bridge_session(
             stdout.flush()?;
         }
     }
-    let mut parser = DetachParser::default();
+    REMOVAL_REQUESTED.store(false, std::sync::atomic::Ordering::SeqCst);
+    let mut parser = DetachParser::for_session(session_key);
     let mut return_gesture = ReturnGesture::for_session(session_key);
     let mut current_size = terminal_size(libc::STDIN_FILENO).ok();
     if let Some(size) = current_size {
@@ -821,6 +837,10 @@ fn bridge_session(
                 pending_input.write_all(&bytes)?;
             }
             detach = return_gesture.update(&mut stdout, &screen)?;
+        }
+        if !detach && parser.take_expired_leader() {
+            REMOVAL_REQUESTED.store(true, std::sync::atomic::Ordering::SeqCst);
+            detach = true;
         }
         pending_input.write_to(&mut master)?;
         if detach {
@@ -1511,11 +1531,24 @@ const RECOGNIZED_ARROWS: [&[u8]; 6] = [
 struct DetachParser {
     pending: Vec<u8>,
     pending_since: Option<Instant>,
+    holds_leader: bool,
+    held_leader_since: Option<Instant>,
 }
 
 impl DetachParser {
+    fn for_session(session_key: &str) -> Self {
+        Self {
+            holds_leader: session_key.starts_with("opencode:"),
+            ..Self::default()
+        }
+    }
+
     fn push(&mut self, input: &[u8]) -> Vec<InputAction> {
-        let mut bytes = std::mem::take(&mut self.pending);
+        let mut bytes = Vec::new();
+        if self.held_leader_since.take().is_some() {
+            bytes.push(CTRL_X);
+        }
+        bytes.append(&mut self.pending);
         self.pending_since = None;
         bytes.extend_from_slice(input);
         let mut actions = Vec::new();
@@ -1564,6 +1597,10 @@ impl DetachParser {
                 self.pending_since = Some(Instant::now());
                 break;
             }
+            if self.holds_leader && remaining == [CTRL_X] {
+                self.held_leader_since = Some(Instant::now());
+                break;
+            }
             forward.push(bytes[index]);
             index += 1;
         }
@@ -1583,6 +1620,17 @@ impl DetachParser {
         }
         self.pending_since = None;
         Some(std::mem::take(&mut self.pending))
+    }
+
+    fn take_expired_leader(&mut self) -> bool {
+        if self
+            .held_leader_since
+            .is_some_and(|since| since.elapsed() >= LEADER_HOLD)
+        {
+            self.held_leader_since = None;
+            return true;
+        }
+        false
     }
 }
 
@@ -1904,6 +1952,45 @@ mod tests {
                 InputAction::Detach,
             ]
         );
+    }
+
+    #[test]
+    fn opencode_holds_a_lone_ctrl_x_until_it_expires_as_the_removal_key() {
+        let mut parser = DetachParser::for_session("opencode:ses_1");
+        assert_eq!(
+            parser.push(b"hi\x18"),
+            vec![InputAction::Forward(b"hi".to_vec())]
+        );
+        assert!(!parser.take_expired_leader());
+        parser.held_leader_since = Some(Instant::now() - LEADER_HOLD);
+        assert!(parser.take_expired_leader());
+        assert!(!parser.take_expired_leader());
+        assert_eq!(parser.push(b"a"), vec![InputAction::Forward(b"a".to_vec())]);
+    }
+
+    #[test]
+    fn opencode_leader_sequences_reach_the_provider_intact() {
+        let mut parser = DetachParser::for_session("opencode:ses_1");
+        assert_eq!(parser.push(b"\x18"), vec![]);
+        assert_eq!(
+            parser.push(b"n"),
+            vec![InputAction::Forward(b"\x18n".to_vec())]
+        );
+        assert_eq!(
+            parser.push(b"\x18m"),
+            vec![InputAction::Forward(b"\x18m".to_vec())]
+        );
+        assert!(!parser.take_expired_leader());
+    }
+
+    #[test]
+    fn other_providers_receive_ctrl_x_immediately() {
+        let mut parser = DetachParser::for_session("claude:worker");
+        assert_eq!(
+            parser.push(b"\x18"),
+            vec![InputAction::Forward(b"\x18".to_vec())]
+        );
+        assert!(!parser.take_expired_leader());
     }
 
     #[test]
