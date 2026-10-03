@@ -58,6 +58,9 @@ pub struct RestorableSession {
     pub name: String,
     pub cwd: PathBuf,
     pub updated_at_ms: u64,
+    /// Recent message text the picker searches; empty when the provider
+    /// offers none or the session is older than the search window.
+    pub transcript: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

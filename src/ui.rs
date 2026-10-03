@@ -1357,7 +1357,9 @@ fn render_hidden_picker(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let popup_width = area.width.saturating_sub(2).min(84).max(30);
     let visible_rows = hidden_picker_rows_for_height(area.height);
     let result_rows = choices.len().clamp(1, visible_rows);
-    let popup_height = (result_rows as u16 + 4)
+    // Inside the borders, less the leading "   " and the quotes.
+    let snippet = app.hidden_snippet(popup_width.saturating_sub(7) as usize);
+    let popup_height = (result_rows as u16 + 4 + u16::from(snippet.is_some()))
         .min(area.height.saturating_sub(2))
         .max(5);
     let popup = Rect::new(
@@ -1375,7 +1377,7 @@ fn render_hidden_picker(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Span::styled(" search  ", Style::default().fg(palette().dim)),
         Span::styled(
             if app.hidden_filter.is_empty() {
-                "type a name, harness, folder, or ID".into()
+                "type a name, folder, ID, or words from the chat".into()
             } else {
                 sanitize_inline(&app.hidden_filter)
             },
@@ -1459,6 +1461,12 @@ fn render_hidden_picker(frame: &mut Frame<'_>, app: &App, area: Rect) {
                     })
                 }),
         );
+    }
+    if let Some(snippet) = snippet {
+        lines.push(Line::from(Span::styled(
+            format!("   “{}”", sanitize_inline(&snippet)),
+            Style::default().fg(palette().dim),
+        )));
     }
     lines.push(
         Line::from(if popup_width >= 60 {

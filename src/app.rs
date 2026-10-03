@@ -255,6 +255,9 @@ pub struct App {
     /// Persisted sessions the restore picker offers besides hidden ones,
     /// keyed by row ID.
     pub restorable: BTreeMap<String, RestorableSession>,
+    /// ASCII-lowercased `RestorableSession::transcript` by row ID. ASCII
+    /// lowercasing keeps byte offsets, so a match maps back onto the original.
+    transcripts_lower: BTreeMap<String, String>,
     hidden_ids: BTreeSet<String>,
     pub restorable_loading: bool,
     pub models_loading: bool,
@@ -342,6 +345,7 @@ impl App {
             sort_keys: BTreeMap::new(),
             hidden_candidates: Vec::new(),
             restorable: BTreeMap::new(),
+            transcripts_lower: BTreeMap::new(),
             hidden_ids: BTreeSet::new(),
             restorable_loading: false,
             hidden_filter: String::new(),
@@ -720,6 +724,7 @@ impl App {
                 self.hidden_filter.clear();
                 self.hidden_candidates.clear();
                 self.restorable.clear();
+                self.transcripts_lower.clear();
                 self.restorable_loading = false;
                 self.notice = None;
                 AppAction::None
@@ -1987,6 +1992,7 @@ impl App {
         self.hidden_ids = records.iter().map(|record| record.id.clone()).collect();
         self.hidden_candidates = records;
         self.restorable.clear();
+        self.transcripts_lower.clear();
         self.restorable_loading = loading;
         self.hidden_filter.clear();
         self.hidden_selection = 0;
@@ -2020,6 +2026,10 @@ impl App {
                     hidden_at_ms: session.updated_at_ms,
                 });
             }
+            if !session.transcript.is_empty() {
+                self.transcripts_lower
+                    .insert(session.id.clone(), session.transcript.to_ascii_lowercase());
+            }
             self.restorable.insert(session.id.clone(), session);
         }
         self.hidden_candidates.extend(added);
@@ -2046,29 +2056,66 @@ impl App {
         self.hidden_ids.contains(id)
     }
 
+    /// Picker rows matching the filter: name, harness, ID, or folder matches
+    /// first, then rows whose recent message text alone matches.
     pub fn hidden_choices(&self) -> Vec<&HiddenSessionRecord> {
         let needle = self.hidden_filter.to_ascii_lowercase();
-        self.hidden_candidates
+        let (mut by_label, by_text): (Vec<_>, Vec<_>) = self
+            .hidden_candidates
             .iter()
-            .filter(|record| {
-                needle.is_empty()
-                    || record
-                        .name
-                        .as_deref()
-                        .is_some_and(|name| name.to_ascii_lowercase().contains(&needle))
-                    || record.provider.as_ref().is_some_and(|provider| {
-                        provider.label().to_ascii_lowercase().contains(&needle)
-                    })
-                    || record.id.to_ascii_lowercase().contains(&needle)
-                    || self.restorable.get(&record.id).is_some_and(|session| {
-                        session
-                            .cwd
-                            .to_string_lossy()
-                            .to_ascii_lowercase()
-                            .contains(&needle)
-                    })
+            .filter_map(|record| {
+                if needle.is_empty() || self.label_matches(record, &needle) {
+                    Some((record, true))
+                } else if self.transcript_match(&record.id, &needle).is_some() {
+                    Some((record, false))
+                } else {
+                    None
+                }
             })
-            .collect()
+            .partition(|(_, label)| *label);
+        by_label.extend(by_text);
+        by_label.into_iter().map(|(record, _)| record).collect()
+    }
+
+    fn label_matches(&self, record: &HiddenSessionRecord, needle: &str) -> bool {
+        record
+            .name
+            .as_deref()
+            .is_some_and(|name| name.to_ascii_lowercase().contains(needle))
+            || record
+                .provider
+                .as_ref()
+                .is_some_and(|provider| provider.label().to_ascii_lowercase().contains(needle))
+            || record.id.to_ascii_lowercase().contains(needle)
+            || self.restorable.get(&record.id).is_some_and(|session| {
+                session
+                    .cwd
+                    .to_string_lossy()
+                    .to_ascii_lowercase()
+                    .contains(needle)
+            })
+    }
+
+    /// Byte offset of `needle` in a row's message text. Needles shorter than
+    /// three characters match nearly every transcript, so they never search it.
+    fn transcript_match(&self, id: &str, needle: &str) -> Option<usize> {
+        if needle.trim().chars().count() < 3 {
+            return None;
+        }
+        self.transcripts_lower.get(id)?.find(needle)
+    }
+
+    /// The message text around the filter's match in the selected row, for
+    /// the picker's preview line. `None` when the row matched on its label.
+    pub fn hidden_snippet(&self, width: usize) -> Option<String> {
+        let needle = self.hidden_filter.to_ascii_lowercase();
+        let record = *self.hidden_choices().get(self.hidden_selection)?;
+        if self.label_matches(record, &needle) {
+            return None;
+        }
+        let start = self.transcript_match(&record.id, &needle)?;
+        let text = &self.restorable.get(&record.id)?.transcript;
+        Some(snippet_around(text, start, needle.len(), width))
     }
 
     pub fn move_hidden_selection(&mut self, delta: isize) {
@@ -2114,6 +2161,7 @@ impl App {
         self.hidden_filter.clear();
         self.hidden_candidates.clear();
         self.restorable.clear();
+        self.transcripts_lower.clear();
         self.restorable_loading = false;
         match restorable {
             Some(session) => AppAction::Restore { session, hidden },
@@ -2733,6 +2781,62 @@ fn abbreviate_home(path: &std::path::Path) -> String {
         .unwrap_or_else(|| path.display().to_string())
 }
 
+/// About `width` characters of `text` around the match at byte `start`, on
+/// one line, with the match a third of the way in.
+fn snippet_around(text: &str, start: usize, len: usize, width: usize) -> String {
+    let flatten = |part: &str| part.split_whitespace().collect::<Vec<_>>().join(" ");
+    let end = (start + len).min(text.len());
+    // Only a window around the match is flattened; transcripts run to
+    // hundreds of kilobytes and this runs on every redraw.
+    let mut from = start.saturating_sub(width * 4);
+    while !text.is_char_boundary(from) {
+        from -= 1;
+    }
+    let mut to = (end + width * 4).min(text.len());
+    while !text.is_char_boundary(to) {
+        to += 1;
+    }
+    let (raw_before, raw_after) = (&text[from..start], &text[end..to]);
+    let (before, matched, after) = (
+        flatten(raw_before),
+        flatten(&text[start..end]),
+        flatten(raw_after),
+    );
+    let after_room = if to < text.len() {
+        usize::MAX
+    } else {
+        after.chars().count() + 1
+    };
+    let lead = (width / 3).max(
+        width
+            .saturating_sub(matched.chars().count() + 1)
+            .saturating_sub(after_room),
+    );
+    let before_chars = before.chars().count();
+    let mut snippet = String::new();
+    if before_chars > lead || from > 0 {
+        snippet.push('…');
+        snippet.extend(before.chars().skip((before_chars + 1).saturating_sub(lead)));
+    } else {
+        snippet.push_str(&before);
+    }
+    if !before.is_empty() && raw_before.ends_with(char::is_whitespace) {
+        snippet.push(' ');
+    }
+    snippet.push_str(&matched);
+    if !after.is_empty() && raw_after.starts_with(char::is_whitespace) {
+        snippet.push(' ');
+    }
+    let room = width.saturating_sub(snippet.chars().count());
+    if after.chars().count() > room || (to < text.len() && !after.is_empty()) {
+        snippet.extend(after.chars().take(room.saturating_sub(1)));
+        snippet.push('…');
+    } else {
+        snippet.push_str(&after);
+    }
+    snippet
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
@@ -3157,7 +3261,71 @@ mod tests {
             name: name.into(),
             cwd: PathBuf::from(cwd),
             updated_at_ms: updated,
+            transcript: String::new(),
         }
+    }
+
+    #[test]
+    fn restore_picker_finds_sessions_by_message_text_after_label_matches() {
+        let mut app = app_with(Vec::new());
+        app.open_restore_picker(Vec::new());
+        let mut chatty = restorable("ses_chat", "Picker polish", "/work/a", 90);
+        chatty.transcript =
+            "first line\n\nwe should   Retry the flaky upload test before merging".into();
+        app.add_restorable_sessions(
+            vec![
+                chatty,
+                restorable("ses_named", "Upload retries", "/work/b", 40),
+                restorable("ses_other", "Unrelated", "/work/c", 30),
+            ],
+            &[],
+        );
+
+        for character in "upload".chars() {
+            app.push_input(character);
+        }
+        assert_eq!(
+            app.hidden_choices()
+                .iter()
+                .map(|record| record.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["opencode:host:ses_named", "opencode:host:ses_chat"]
+        );
+        assert_eq!(
+            app.hidden_snippet(60),
+            None,
+            "a name match needs no preview"
+        );
+
+        app.move_hidden_selection(1);
+        assert_eq!(
+            app.hidden_snippet(70).as_deref(),
+            Some("first line we should Retry the flaky upload test before merging")
+        );
+        assert_eq!(
+            app.hidden_snippet(24).as_deref(),
+            Some("…e flaky upload test be…")
+        );
+    }
+
+    #[test]
+    fn restore_picker_ignores_message_text_for_short_filters() {
+        let mut app = app_with(Vec::new());
+        app.open_restore_picker(Vec::new());
+        let mut chatty = restorable("ses_chat", "Picker polish", "/work/a", 90);
+        chatty.transcript = "zq marks the spot".into();
+        app.add_restorable_sessions(
+            vec![chatty, restorable("ses_other", "Unrelated", "/work/c", 30)],
+            &[],
+        );
+
+        for character in "zq".chars() {
+            app.push_input(character);
+        }
+        assert!(app.hidden_choices().is_empty());
+        app.push_input(' ');
+        app.push_input('m');
+        assert_eq!(app.hidden_choices().len(), 1);
     }
 
     #[test]
