@@ -40,7 +40,7 @@ const ARROW_RETURN_WINDOW: Duration = Duration::from_millis(1600);
 /// before it counts as the dashboard's removal key.
 const LEADER_HOLD: Duration = Duration::from_millis(350);
 const CTRL_X: u8 = 0x18;
-const CTRL_L: u8 = 0x0c;
+const CTRL_J: u8 = 0x0a;
 const RETURN_HINT_REFRESH: Duration = Duration::from_millis(100);
 const EMPTY_PROMPT_MAX_COLUMN: u16 = 4;
 const MAX_INITIAL_INPUT_BYTES: usize = 256 * 1024;
@@ -776,7 +776,7 @@ fn bridge_session(
     let mut pending_input = PendingInput::default();
     // Resuming shows the saved screen as is: forcing OpenCode to repaint
     // costs about a quarter second on every open. If the terminal ever
-    // disagrees with OpenCode's diff renderer, Ctrl+L forces the repaint.
+    // disagrees with OpenCode's diff renderer, Ctrl+J forces the repaint.
     if !fresh {
         signal_group(child.id(), libc::SIGWINCH);
     }
@@ -1452,9 +1452,9 @@ fn absorb_available(
 }
 
 /// Only OpenCode is known to repaint its whole screen on a real resize, which
-/// hiding its output at the temporary size depends on. It leaves Ctrl+L
+/// hiding its output at the temporary size depends on. It leaves Ctrl+J
 /// unbound, so agentview can take it.
-fn redraws_on_ctrl_l(session_key: &str) -> bool {
+fn redraws_on_ctrl_j(session_key: &str) -> bool {
     session_key.starts_with("opencode:")
 }
 
@@ -1632,7 +1632,7 @@ impl DetachParser {
     fn for_session(session_key: &str) -> Self {
         Self {
             holds_leader: session_key.starts_with("opencode:"),
-            redraws: redraws_on_ctrl_l(session_key),
+            redraws: redraws_on_ctrl_j(session_key),
             ..Self::default()
         }
     }
@@ -1670,7 +1670,7 @@ impl DetachParser {
                         InputAction::Arrow(ArrowDirection::Right, APPLICATION_RIGHT),
                         APPLICATION_RIGHT.len(),
                     ))
-                } else if self.redraws && remaining[0] == CTRL_L {
+                } else if self.redraws && remaining[0] == CTRL_J {
                     Some((InputAction::Redraw, 1))
                 } else {
                     None
@@ -2080,10 +2080,10 @@ mod tests {
     }
 
     #[test]
-    fn opencode_takes_ctrl_l_as_a_redraw_and_other_providers_receive_it() {
+    fn opencode_takes_ctrl_j_as_a_redraw_and_other_providers_receive_it() {
         let mut parser = DetachParser::for_session("opencode:shared");
         assert_eq!(
-            parser.push(b"a\x0cb"),
+            parser.push(b"a\x0ab"),
             vec![
                 InputAction::Forward(b"a".to_vec()),
                 InputAction::Redraw,
@@ -2092,8 +2092,8 @@ mod tests {
         );
         let mut parser = DetachParser::for_session("claude:worker");
         assert_eq!(
-            parser.push(b"\x0c"),
-            vec![InputAction::Forward(b"\x0c".to_vec())]
+            parser.push(b"\x0a"),
+            vec![InputAction::Forward(b"\x0a".to_vec())]
         );
     }
 
@@ -2301,12 +2301,12 @@ mod tests {
     }
 
     #[test]
-    fn only_opencode_sessions_redraw_on_ctrl_l() {
-        assert!(redraws_on_ctrl_l("opencode:host:ses_1"));
-        assert!(redraws_on_ctrl_l("opencode:host:launch-abc"));
-        assert!(!redraws_on_ctrl_l("claude:host:abc"));
-        assert!(!redraws_on_ctrl_l("codex:portable:new"));
-        assert!(!redraws_on_ctrl_l("setup:OpenCode"));
+    fn only_opencode_sessions_redraw_on_ctrl_j() {
+        assert!(redraws_on_ctrl_j("opencode:host:ses_1"));
+        assert!(redraws_on_ctrl_j("opencode:host:launch-abc"));
+        assert!(!redraws_on_ctrl_j("claude:host:abc"));
+        assert!(!redraws_on_ctrl_j("codex:portable:new"));
+        assert!(!redraws_on_ctrl_j("setup:OpenCode"));
     }
 
     #[cfg(unix)]
