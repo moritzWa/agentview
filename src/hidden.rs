@@ -17,7 +17,7 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::domain::{AgentSession, Provider, SessionSnapshot};
-use crate::pins::PinnedSessions;
+use crate::paused::PausedSessions;
 
 const REGISTRY_VERSION: u32 = 1;
 const MAX_SESSION_ID_BYTES: usize = 4096;
@@ -78,12 +78,12 @@ pub struct HiddenSessions {
 }
 
 /// Agents start throwaway sessions (model comparisons, scratch reproductions)
-/// in system temp directories and rarely clean them up. Pinned rows stay
+/// in system temp directories and rarely clean them up. Paused rows stay
 /// visible so a deliberate scratch session can still be kept.
 #[derive(Clone, Debug)]
 struct TemporaryFilter {
     roots: Arc<Vec<PathBuf>>,
-    pins: PinnedSessions,
+    paused: PausedSessions,
 }
 
 impl HiddenSessions {
@@ -106,11 +106,15 @@ impl HiddenSessions {
     }
 
     /// Also filter sessions whose working directory is under one of `roots`,
-    /// unless they are pinned.
-    pub fn hide_temporary_directories(mut self, roots: Vec<PathBuf>, pins: PinnedSessions) -> Self {
+    /// unless they are paused.
+    pub fn hide_temporary_directories(
+        mut self,
+        roots: Vec<PathBuf>,
+        paused: PausedSessions,
+    ) -> Self {
         self.temporary = Some(TemporaryFilter {
             roots: Arc::new(roots),
-            pins,
+            paused,
         });
         self
     }
@@ -145,14 +149,14 @@ impl HiddenSessions {
         let temporary = self
             .temporary
             .as_ref()
-            .map(|filter| (filter.roots.as_slice(), filter.pins.pins()));
+            .map(|filter| (filter.roots.as_slice(), filter.paused.paused()));
         if records.is_empty() && temporary.is_none() {
             return;
         }
         snapshot.sessions.retain(|session| {
             !records.contains_key(&session.id)
-                && !temporary.as_ref().is_some_and(|(roots, pins)| {
-                    !pins.contains_key(&session.id) && is_under_any(&session.cwd, roots)
+                && !temporary.as_ref().is_some_and(|(roots, paused)| {
+                    !paused.contains_key(&session.id) && is_under_any(&session.cwd, roots)
                 })
         });
     }
@@ -513,12 +517,12 @@ mod tests {
     }
 
     #[test]
-    fn temporary_directory_sessions_are_hidden_unless_pinned() {
+    fn temporary_directory_sessions_are_hidden_unless_paused() {
         let directory = private_tempdir();
-        let pins = PinnedSessions::load(directory.path().join("pins.json")).unwrap();
+        let paused = PausedSessions::load(directory.path().join("paused.json")).unwrap();
         let registry = HiddenSessions::load(directory.path().join("hidden.json"))
             .unwrap()
-            .hide_temporary_directories(vec![PathBuf::from("/private/tmp")], pins.clone());
+            .hide_temporary_directories(vec![PathBuf::from("/private/tmp")], paused.clone());
         let in_temp = |id: &str| AgentSession {
             cwd: PathBuf::from("/private/tmp/tt-trace"),
             ..session(id)
@@ -542,7 +546,7 @@ mod tests {
         registry.filter_snapshot(&mut filtered);
         assert_eq!(filtered.sessions, vec![lookalike.clone(), regular.clone()]);
 
-        pins.set("pi:host:kept", true).unwrap();
+        paused.set("pi:host:kept", true).unwrap();
         let mut filtered = snapshot();
         registry.filter_snapshot(&mut filtered);
         assert_eq!(

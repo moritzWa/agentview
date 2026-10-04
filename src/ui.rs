@@ -1127,7 +1127,7 @@ fn help_actions(app: &App) -> Vec<String> {
     actions.push("ctrl+s to switch views".into());
     actions.push("ctrl+l to refresh".into());
     if app.selected_session().is_some() {
-        actions.push("ctrl+t or ctrl+p to pin the session to the top".into());
+        actions.push("ctrl+t or ctrl+p to pause the session".into());
         actions.push("option+up/down to move the session within its group".into());
     }
     if app.selected_session().is_some_and(|session| {
@@ -2624,7 +2624,7 @@ mod tests {
 
         assert!(rendered.contains("shortcuts"));
         assert!(rendered.contains("ctrl+r to rename"));
-        assert!(rendered.contains("ctrl+t or ctrl+p to pin the session to the top"));
+        assert!(rendered.contains("ctrl+t or ctrl+p to pause the session"));
         assert!(rendered.contains("ctrl+m to migrate session"));
         assert!(rendered.contains("ctrl+s to switch views"));
         assert!(rendered.contains("/harness [name] switches harness"));
