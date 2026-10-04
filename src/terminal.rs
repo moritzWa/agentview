@@ -46,6 +46,9 @@ const PASTE_BURST_GAP: Duration = Duration::from_millis(30);
 // A pasted line break has the rest of the clipboard right behind it.
 const PASTE_ENTER_LOOKAHEAD: Duration = Duration::from_millis(8);
 const LAUNCH_DISCOVERY_RETRY_INTERVAL: Duration = Duration::from_millis(250);
+/// How long the selection rests on a row before its hidden native client is
+/// switched to it. Holding an arrow key moves on well within this.
+const NATIVE_PREVIEW_DELAY: Duration = Duration::from_millis(150);
 const LAUNCH_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
 const REVEAL_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -294,6 +297,8 @@ pub fn run_dashboard(
     )?;
     let warm_control = control.clone();
     let _warm_worker = thread::spawn(move || warm_control.warm_native_clients());
+    let mut preview_candidate: Option<(String, Instant)> = None;
+    let mut previewed_row: Option<(String, u64)> = None;
 
     let result = 'dashboard: loop {
         loop {
@@ -538,6 +543,20 @@ pub fn run_dashboard(
         if Instant::now() >= next_live_animation {
             needs_draw |= app.advance_live_animation();
             next_live_animation = Instant::now() + LIVE_SESSION_ANIMATION_INTERVAL;
+        }
+        let selected = app.selected_session().map(|session| session.id.as_str());
+        if preview_candidate.as_ref().map(|(id, _)| id.as_str()) != selected {
+            preview_candidate = selected.map(|id| (id.to_owned(), Instant::now()));
+        }
+        // An open moves the hidden client, so the row is previewed again.
+        if let Some((id, since)) = &preview_candidate {
+            let current = Some((id.clone(), control.preview_generation()));
+            if previewed_row != current && since.elapsed() >= NATIVE_PREVIEW_DELAY {
+                if let Some(session) = app.selected_session() {
+                    control.preview(session);
+                }
+                previewed_row = Some((id.clone(), control.preview_generation()));
+            }
         }
         if Instant::now() >= next_screen_status {
             if !crate::native_session::detached_session_keys().is_empty() {

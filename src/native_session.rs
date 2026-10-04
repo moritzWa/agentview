@@ -40,6 +40,7 @@ const ARROW_RETURN_WINDOW: Duration = Duration::from_millis(1600);
 /// before it counts as the dashboard's removal key.
 const LEADER_HOLD: Duration = Duration::from_millis(350);
 const CTRL_X: u8 = 0x18;
+const CTRL_L: u8 = 0x0c;
 const RETURN_HINT_REFRESH: Duration = Duration::from_millis(100);
 const EMPTY_PROMPT_MAX_COLUMN: u16 = 4;
 const MAX_INITIAL_INPUT_BYTES: usize = 256 * 1024;
@@ -91,8 +92,18 @@ struct DetachedSession {
 #[cfg(unix)]
 struct PtyDrain {
     stop: Arc<AtomicBool>,
+    /// Wakes the drain's poll so a resume does not wait out its timeout.
+    wake: std::fs::File,
     done: thread::JoinHandle<(std::fs::File, vt100::Parser)>,
     contents: Arc<Mutex<String>>,
+}
+
+#[cfg(unix)]
+impl PtyDrain {
+    fn halt(&self) {
+        self.stop.store(true, Ordering::Relaxed);
+        let _ = (&self.wake).write(&[0]);
+    }
 }
 
 #[cfg(unix)]
@@ -763,23 +774,10 @@ fn bridge_session(
     let mut hidden_queries = TerminalQueryScanner::default();
     let mut color_queries = answers_color_queries(session_key).then(TerminalQueryScanner::default);
     let mut pending_input = PendingInput::default();
+    // Resuming shows the saved screen as is: forcing OpenCode to repaint
+    // costs about a quarter second on every open. If the terminal ever
+    // disagrees with OpenCode's diff renderer, Ctrl+L forces the repaint.
     if !fresh {
-        // The physical screen can disagree with what OpenCode's diff renderer
-        // believes it drew, so make it see a real size change and repaint.
-        // Output at the shorter size stays hidden; only the repaint at the
-        // real size reaches the screen.
-        if let Some(size) =
-            current_size.filter(|size| size.ws_row > 1 && forces_redraw_on_resume(session_key))
-        {
-            set_pty_size(
-                master.as_raw_fd(),
-                libc::winsize {
-                    ws_row: size.ws_row - 1,
-                    ..size
-                },
-            )?;
-            redraw_restore_at = Some(Instant::now() + RESUME_REDRAW_HOLD);
-        }
         signal_group(child.id(), libc::SIGWINCH);
     }
     loop {
@@ -865,6 +863,23 @@ fn bridge_session(
                             InputAction::Detach => {
                                 detach = true;
                                 break;
+                            }
+                            InputAction::Redraw => {
+                                // OpenCode ignores a resize to its current
+                                // size, so show it one row shorter first.
+                                // Output at that size stays hidden; only the
+                                // repaint at the real size is shown.
+                                if let Some(size) = current_size.filter(|size| size.ws_row > 1) {
+                                    set_pty_size(
+                                        master.as_raw_fd(),
+                                        libc::winsize {
+                                            ws_row: size.ws_row - 1,
+                                            ..size
+                                        },
+                                    )?;
+                                    signal_group(child.id(), libc::SIGWINCH);
+                                    redraw_restore_at = Some(Instant::now() + RESUME_REDRAW_HOLD);
+                                }
                             }
                         }
                     }
@@ -1002,6 +1017,7 @@ const DRAIN_ERROR_BACKOFF: Duration = Duration::from_millis(50);
 #[cfg(unix)]
 fn start_output_drain(mut master: std::fs::File, mut screen: vt100::Parser) -> Result<PtyDrain> {
     set_nonblocking(master.as_raw_fd(), true)?;
+    let (woken, wake) = wake_pipe()?;
     let stop = Arc::new(AtomicBool::new(false));
     let flag = Arc::clone(&stop);
     let contents = Arc::new(Mutex::new(screen.screen().contents()));
@@ -1029,12 +1045,20 @@ fn start_output_drain(mut master: std::fs::File, mut screen: vt100::Parser) -> R
                     changed = false;
                     last_publish = Instant::now();
                 }
-                let mut descriptor = libc::pollfd {
-                    fd: master.as_raw_fd(),
-                    events: libc::POLLIN,
-                    revents: 0,
-                };
-                let polled = unsafe { libc::poll(&mut descriptor, 1, 50) };
+                let mut descriptors = [
+                    libc::pollfd {
+                        fd: master.as_raw_fd(),
+                        events: libc::POLLIN,
+                        revents: 0,
+                    },
+                    libc::pollfd {
+                        fd: woken.as_raw_fd(),
+                        events: libc::POLLIN,
+                        revents: 0,
+                    },
+                ];
+                let polled = unsafe { libc::poll(descriptors.as_mut_ptr(), 2, 50) };
+                let descriptor = descriptors[0];
                 if polled < 0 {
                     let error = std::io::Error::last_os_error();
                     if error.kind() != std::io::ErrorKind::Interrupted {
@@ -1084,9 +1108,33 @@ fn start_output_drain(mut master: std::fs::File, mut screen: vt100::Parser) -> R
         .context("failed to keep the provider terminal running")?;
     Ok(PtyDrain {
         stop,
+        wake,
         done,
         contents,
     })
+}
+
+/// A close-on-exec pipe, read end first, so provider children never hold it.
+#[cfg(unix)]
+fn wake_pipe() -> Result<(std::fs::File, std::fs::File)> {
+    use std::os::fd::FromRawFd;
+
+    let mut fds = [0; 2];
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error()).context("failed to create a wake pipe");
+    }
+    let (read, write) = unsafe {
+        (
+            std::fs::File::from_raw_fd(fds[0]),
+            std::fs::File::from_raw_fd(fds[1]),
+        )
+    };
+    for fd in fds {
+        if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } != 0 {
+            return Err(std::io::Error::last_os_error()).context("failed to configure a wake pipe");
+        }
+    }
+    Ok((read, write))
 }
 
 /// Feed detached output to the screen and answer the terminal queries a
@@ -1279,7 +1327,7 @@ impl DetachedSession {
             .drain
             .take()
             .context("detached provider terminal has no output drain")?;
-        drain.stop.store(true, Ordering::Relaxed);
+        drain.halt();
         let (master, screen) = drain
             .done
             .join()
@@ -1292,7 +1340,7 @@ impl DetachedSession {
 impl Drop for DetachedSession {
     fn drop(&mut self) {
         if let Some(drain) = self.drain.take() {
-            drain.stop.store(true, Ordering::Relaxed);
+            drain.halt();
             let _ = drain.done.join();
         }
     }
@@ -1406,9 +1454,9 @@ fn absorb_available(
 }
 
 /// Only OpenCode is known to repaint its whole screen on a real resize, which
-/// hiding its output at the temporary size depends on.
-#[cfg(unix)]
-fn forces_redraw_on_resume(session_key: &str) -> bool {
+/// hiding its output at the temporary size depends on. It leaves Ctrl+L
+/// unbound, so agentview can take it.
+fn redraws_on_ctrl_l(session_key: &str) -> bool {
     session_key.starts_with("opencode:")
 }
 
@@ -1555,6 +1603,7 @@ enum InputAction {
     Forward(Vec<u8>),
     Arrow(ArrowDirection, &'static [u8]),
     Detach,
+    Redraw,
 }
 
 const SHIFT_LEFT: &[u8] = b"\x1b[1;2D";
@@ -1578,12 +1627,14 @@ struct DetachParser {
     pending_since: Option<Instant>,
     holds_leader: bool,
     held_leader_since: Option<Instant>,
+    redraws: bool,
 }
 
 impl DetachParser {
     fn for_session(session_key: &str) -> Self {
         Self {
             holds_leader: session_key.starts_with("opencode:"),
+            redraws: redraws_on_ctrl_l(session_key),
             ..Self::default()
         }
     }
@@ -1621,6 +1672,8 @@ impl DetachParser {
                         InputAction::Arrow(ArrowDirection::Right, APPLICATION_RIGHT),
                         APPLICATION_RIGHT.len(),
                     ))
+                } else if self.redraws && remaining[0] == CTRL_L {
+                    Some((InputAction::Redraw, 1))
                 } else {
                     None
                 };
@@ -2029,6 +2082,24 @@ mod tests {
     }
 
     #[test]
+    fn opencode_takes_ctrl_l_as_a_redraw_and_other_providers_receive_it() {
+        let mut parser = DetachParser::for_session("opencode:shared");
+        assert_eq!(
+            parser.push(b"a\x0cb"),
+            vec![
+                InputAction::Forward(b"a".to_vec()),
+                InputAction::Redraw,
+                InputAction::Forward(b"b".to_vec()),
+            ]
+        );
+        let mut parser = DetachParser::for_session("claude:worker");
+        assert_eq!(
+            parser.push(b"\x0c"),
+            vec![InputAction::Forward(b"\x0c".to_vec())]
+        );
+    }
+
+    #[test]
     fn other_providers_receive_ctrl_x_immediately() {
         let mut parser = DetachParser::for_session("claude:worker");
         assert_eq!(
@@ -2138,7 +2209,7 @@ mod tests {
             assert!(Instant::now() < deadline, "{published}");
             thread::sleep(Duration::from_millis(20));
         }
-        drain.stop.store(true, Ordering::Relaxed);
+        drain.halt();
         let (_master, screen) = drain.done.join().unwrap();
         let contents = screen.screen().contents();
         assert!(contents.contains("tick-0"), "{contents}");
@@ -2232,13 +2303,12 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
-    fn only_opencode_sessions_force_a_redraw_on_resume() {
-        assert!(forces_redraw_on_resume("opencode:host:ses_1"));
-        assert!(forces_redraw_on_resume("opencode:host:launch-abc"));
-        assert!(!forces_redraw_on_resume("claude:host:abc"));
-        assert!(!forces_redraw_on_resume("codex:portable:new"));
-        assert!(!forces_redraw_on_resume("setup:OpenCode"));
+    fn only_opencode_sessions_redraw_on_ctrl_l() {
+        assert!(redraws_on_ctrl_l("opencode:host:ses_1"));
+        assert!(redraws_on_ctrl_l("opencode:host:launch-abc"));
+        assert!(!redraws_on_ctrl_l("claude:host:abc"));
+        assert!(!redraws_on_ctrl_l("codex:portable:new"));
+        assert!(!redraws_on_ctrl_l("setup:OpenCode"));
     }
 
     #[cfg(unix)]

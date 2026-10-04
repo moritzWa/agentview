@@ -196,6 +196,14 @@ impl ProviderController for OpenCodeController {
         self.warm_shared_client()
     }
 
+    fn preview_native(
+        &self,
+        session: &AgentSession,
+        still_wanted: &dyn Fn() -> bool,
+    ) -> Result<()> {
+        self.preview_in_shared_client(session, still_wanted)
+    }
+
     fn enrich(&self, snapshot: &mut SessionSnapshot) {
         let Some(supervisor) = &self.supervisor else {
             return;
@@ -373,6 +381,8 @@ struct SharedClient {
     server_pid: u32,
     /// The dashboard row ID of the session it shows.
     showing: String,
+    /// Switched to `showing` while hidden, so nobody has navigated it since.
+    previewed: bool,
 }
 
 fn shared_clients() -> &'static Mutex<BTreeMap<String, SharedClient>> {
@@ -380,13 +390,14 @@ fn shared_clients() -> &'static Mutex<BTreeMap<String, SharedClient>> {
     CLIENTS.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
-fn remember_shared_client(key: &str, server_pid: u32, showing: &str) {
+fn remember_shared_client(key: &str, server_pid: u32, showing: &str, previewed: bool) {
     if let Ok(mut clients) = shared_clients().lock() {
         clients.insert(
             key.to_owned(),
             SharedClient {
                 server_pid,
                 showing: showing.to_owned(),
+                previewed,
             },
         );
     }
@@ -402,12 +413,25 @@ fn shared_client_showing(row_id: &str) -> Option<String> {
         .map(|(key, _)| key.clone())
 }
 
+/// The parked shared TUI a preview switched to `row_id`, and its server's
+/// pid, while that server still runs.
+fn previewed_shared_client(row_id: &str) -> Option<(String, u32)> {
+    let (key, server_pid) = shared_clients().lock().ok().and_then(|clients| {
+        clients
+            .iter()
+            .find(|(_, shared)| shared.previewed && shared.showing == row_id)
+            .map(|(key, shared)| (key.clone(), shared.server_pid))
+    })?;
+    (crate::holds::process_alive(server_pid) && crate::native_session::is_backgrounded(&key))
+        .then_some((key, server_pid))
+}
+
 /// Held while deciding whether a shared TUI exists and starting one, so a
 /// warm-up and an open never start two TUIs under one key.
 static SHARED_CLIENT_GATE: Mutex<()> = Mutex::new(());
 
 /// Starts with `opencode:` so the native session layer gives it OpenCode's
-/// resume redraw and color answers; `shared` cannot be a runtime ID.
+/// Ctrl+L redraw and color answers; `shared` cannot be a runtime ID.
 /// `None` names the one TUI that moves between directories.
 fn shared_client_key(cwd: Option<&Path>) -> String {
     match cwd {
@@ -449,6 +473,17 @@ impl OpenCodeController {
         if crate::native_session::is_backgrounded(&session.id) {
             return Ok(None);
         }
+        // Each server check below costs about 60 ms; a preview already made
+        // them against a server that is still running.
+        let gate = SHARED_CLIENT_GATE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((key, server_pid)) = previewed_shared_client(&session.id) {
+            remember_shared_client(&key, server_pid, &session.id, false);
+            drop(gate);
+            return self.show_shared_client(&key, None, session).map(Some);
+        }
+        drop(gate);
         let cwd = match self.owned_session(session)? {
             Some(owned) => owned.cwd,
             None => session.cwd.clone(),
@@ -484,7 +519,12 @@ impl OpenCodeController {
             let _ = crate::native_session::terminate(&key);
         }
         let start = if switched {
-            remember_shared_client(&key, started_against.unwrap_or_default(), &session.id);
+            remember_shared_client(
+                &key,
+                started_against.unwrap_or_default(),
+                &session.id,
+                false,
+            );
             None
         } else {
             let Some((command, server_pid)) = supervisor.shared_client_command(
@@ -495,22 +535,33 @@ impl OpenCodeController {
             else {
                 return Ok(None);
             };
-            remember_shared_client(&key, server_pid, &session.id);
+            remember_shared_client(&key, server_pid, &session.id, false);
             Some(command)
         };
         // The TUI is now recorded, so a warm-up will leave it alone while it
         // runs in front.
         drop(gate);
+        self.show_shared_client(&key, start, session).map(Some)
+    }
+
+    /// Bring the shared TUI `key` to the front, starting it with `start`
+    /// when it is not parked, and forget it once it exits.
+    fn show_shared_client(
+        &self,
+        key: &str,
+        start: Option<Command>,
+        session: &AgentSession,
+    ) -> Result<ControlOutcome> {
         let exit = match start {
-            None => crate::native_session::resume(&key)?,
-            Some(command) => crate::native_session::run(command, &key)?,
+            None => crate::native_session::resume(key)?,
+            Some(command) => crate::native_session::run(command, key)?,
         };
         if !matches!(exit, crate::native_session::NativeSessionExit::Backgrounded) {
             if let Ok(mut clients) = shared_clients().lock() {
-                clients.remove(&key);
+                clients.remove(key);
             }
         }
-        native_outcome(exit, &session.provider_session_id, &session.name).map(Some)
+        native_outcome(exit, &session.provider_session_id, &session.name)
     }
 
     /// Start the TUI shared by every directory behind the dashboard, so the
@@ -542,7 +593,65 @@ impl OpenCodeController {
             return Ok(());
         };
         crate::native_session::start_in_background(command, &key)?;
-        remember_shared_client(&key, server_pid, "");
+        remember_shared_client(&key, server_pid, "", false);
+        Ok(())
+    }
+
+    /// Switch the parked shared TUI to `session` while it is hidden, so an
+    /// open paints the session at once instead of the one shown before.
+    /// Never starts a server or a TUI. It must finish well inside the time a
+    /// selection rests before Enter, so it reuses what the warm-up or the
+    /// last open learned about the server instead of checking it again.
+    fn preview_in_shared_client(
+        &self,
+        session: &AgentSession,
+        still_wanted: &dyn Fn() -> bool,
+    ) -> Result<()> {
+        let Some(supervisor) = self.supervisor.as_ref() else {
+            return Ok(());
+        };
+        if session.provider != Provider::OpenCode
+            || session.runtime != Runtime::Host
+            || crate::native_session::is_backgrounded(&session.id)
+        {
+            return Ok(());
+        }
+        let Some((server_pid, reach)) = supervisor.known_client_reach() else {
+            return Ok(());
+        };
+        let cwd = supervisor
+            .owned_session_cwd(&session.provider_session_id)?
+            .unwrap_or_else(|| session.cwd.clone());
+        if reach == SharedClientReach::None
+            || !crate::holds::process_alive(server_pid)
+            || !cwd.is_dir()
+        {
+            return Ok(());
+        }
+        let (key, client) = shared_client_for(reach, &cwd);
+        let _gate = SHARED_CLIENT_GATE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !still_wanted() || !crate::native_session::is_backgrounded(&key) {
+            return Ok(());
+        }
+        let current = shared_clients().lock().ok().and_then(|clients| {
+            clients.get(&key).map(|shared| {
+                (
+                    shared.server_pid,
+                    shared.previewed && shared.showing == session.id,
+                )
+            })
+        });
+        match current {
+            Some((pid, false)) if pid == server_pid => {}
+            _ => return Ok(()),
+        }
+        let selected_on =
+            supervisor.select_in_shared_client(&session.provider_session_id, &cwd, &client)?;
+        if selected_on == server_pid {
+            remember_shared_client(&key, server_pid, &session.id, true);
+        }
         Ok(())
     }
 

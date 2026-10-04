@@ -3,7 +3,9 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{bail, Context, Result};
@@ -212,6 +214,16 @@ pub trait ProviderController: Send + Sync {
         Ok(())
     }
 
+    /// Show `session` in a hidden native client so opening it later paints
+    /// it at once. Skips the work once `still_wanted` turns false.
+    fn preview_native(
+        &self,
+        _session: &AgentSession,
+        _still_wanted: &dyn Fn() -> bool,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     /// Record a persisted session as one the dashboard lists, so discovery
     /// returns it without `--include-external` and beyond the history window.
     fn adopt(&self, _session: &RestorableSession) -> Result<()> {
@@ -221,6 +233,10 @@ pub trait ProviderController: Send + Sync {
         )
     }
 }
+
+/// Bumped by every preview and open, so a background preview that has not
+/// started yet can tell it was superseded.
+static PREVIEW_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone)]
 pub struct ControlHub {
@@ -635,6 +651,7 @@ impl ControlHub {
     }
 
     pub fn open(&self, session: &AgentSession) -> Result<ControlOutcome> {
+        PREVIEW_GENERATION.fetch_add(1, Ordering::SeqCst);
         self.ensure_provider_io()?;
         let controller = self.controller(&session.provider)?;
         if self
@@ -664,6 +681,32 @@ impl ControlHub {
         }
         sessions.sort_by_key(|session| std::cmp::Reverse(session.updated_at_ms));
         (sessions, errors)
+    }
+
+    /// Show `session` in its provider's hidden native client in the
+    /// background. A later preview or any open supersedes one still waiting.
+    pub fn preview(&self, session: &AgentSession) {
+        let generation = PREVIEW_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+        if self.ensure_provider_io().is_err() {
+            return;
+        }
+        let Ok(controller) = self.controller(&session.provider) else {
+            return;
+        };
+        let controller = Arc::clone(controller);
+        let session = session.clone();
+        let _ = thread::Builder::new()
+            .name("native-preview".into())
+            .spawn(move || {
+                let still_wanted = || PREVIEW_GENERATION.load(Ordering::SeqCst) == generation;
+                let _ = controller.preview_native(&session, &still_wanted);
+            });
+    }
+
+    /// Changes with every preview and open, so the dashboard can tell that
+    /// a hidden native client may have moved since it last previewed.
+    pub fn preview_generation(&self) -> u64 {
+        PREVIEW_GENERATION.load(Ordering::SeqCst)
     }
 
     /// Start every provider's native client behind the dashboard. A client
