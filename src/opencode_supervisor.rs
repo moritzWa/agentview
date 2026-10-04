@@ -387,6 +387,26 @@ impl OpenCodeSupervisor {
         Ok(record.pid)
     }
 
+    /// The server pid and reach [`Self::shared_client_reach`] last found,
+    /// without checking the server again.
+    pub fn known_client_reach(&self) -> Option<(u32, SharedClientReach)> {
+        *self.client_targeting.lock().ok()?
+    }
+
+    /// The directory recorded for an owned session, read from the state file
+    /// without contacting the server.
+    pub fn owned_session_cwd(&self, session_id: &str) -> Result<Option<PathBuf>> {
+        let _lock = StateLock::acquire(&self.lock_path)?;
+        Ok(
+            load_record(&self.record_path, &self.state_dir)?.and_then(|record| {
+                record
+                    .sessions
+                    .get(session_id)
+                    .map(|owned| owned.cwd.clone())
+            }),
+        )
+    }
+
     /// The live server's pid, which changes when the server restarts.
     pub fn live_server_pid(&self) -> Result<Option<u32>> {
         let _lock = StateLock::acquire(&self.lock_path)?;
