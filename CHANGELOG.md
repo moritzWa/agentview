@@ -10,6 +10,11 @@ and released versions are intended to follow Semantic Versioning.
 
 ### Added
 
+- Claude Code sessions stay on the dashboard as completed after their process
+  exits, read from the transcripts under `~/.claude/projects`, and opening one
+  runs `claude --resume` in its folder. A running interactive Claude session
+  that is waiting for a prompt shows as completed instead of unknown.
+
 - Codex, Claude Code, Devin, and the other CLIs agentview opens now show a
   reply as working as soon as their window does, and a permission prompt as
   needing input, read from the screen of the window agentview keeps behind
