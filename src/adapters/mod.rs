@@ -19,10 +19,11 @@ mod opencode;
 mod opencode_live;
 mod pi;
 mod qwen;
+mod screen_status;
 mod session_migrate_native;
 mod terminal_harness;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -260,11 +261,45 @@ pub fn apply_background_screens(snapshot: &mut SessionSnapshot) -> bool {
     if crate::native_session::detached_session_keys().is_empty() {
         return false;
     }
-    apply_screen_states(snapshot, |session| match session.provider {
+    apply_screen_states(snapshot, background_screen_state)
+}
+
+/// Host rows whose held screen shows a running turn now. A row that leaves
+/// this set has just finished or stopped on the user, which discovery
+/// would otherwise only report on its next pass.
+pub fn background_screen_working(snapshot: &SessionSnapshot) -> BTreeSet<String> {
+    if crate::native_session::detached_session_keys().is_empty() {
+        return BTreeSet::new();
+    }
+    snapshot
+        .sessions
+        .iter()
+        .filter(|session| session.runtime == Runtime::Host)
+        .filter(|session| {
+            background_screen_state(session)
+                .is_some_and(|(state, _)| state == SessionState::Working)
+        })
+        .map(|session| session.id.clone())
+        .collect()
+}
+
+fn background_screen_state(session: &AgentSession) -> Option<(SessionState, &'static str)> {
+    match session.provider {
         Provider::OpenCode => opencode::background_screen_state(session),
         Provider::Cursor => cursor_history::background_screen_state(session),
-        _ => None,
-    })
+        // A shell's screen says nothing about an agent's turn.
+        Provider::Terminal => None,
+        _ => {
+            let (_, screen) = crate::native_session::background_screen_contents(&session.id)?;
+            screen_status::screen_state(&screen).or_else(|| {
+                // The held TUI is the process running this thread, so one
+                // showing no turn is idle, however recently it wrote.
+                (session.provider == Provider::Codex
+                    && session.raw_state.as_deref() == Some("notLoaded"))
+                .then_some((SessionState::Completed, "notLoaded"))
+            })
+        }
+    }
 }
 
 fn apply_screen_states(

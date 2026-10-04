@@ -10,6 +10,14 @@ and released versions are intended to follow Semantic Versioning.
 
 ### Added
 
+- Codex, Claude Code, Devin, and the other CLIs agentview opens now show a
+  reply as working as soon as their window does, and a permission prompt as
+  needing input, read from the screen of the window agentview keeps behind
+  the dashboard, as OpenCode and Cursor already did. When a window stops
+  showing a running turn, the dashboard refreshes at once instead of at the
+  next interval. Codex sessions that no Codex process has loaded show as
+  completed after two quiet minutes instead of as unknown.
+
 - A long paste into the new-task composer or a reply shows as
   `[Pasted ~N lines]`, as in OpenCode, and the full text is sent on submit.
 

@@ -62,6 +62,9 @@ const LIVE_SESSION_ANIMATION_INTERVAL: Duration = Duration::from_millis(550);
 /// Held frontends publish their screen every 250 ms; checking more often
 /// keeps a reply's "working" within one publish of the keypress.
 const SCREEN_STATUS_INTERVAL: Duration = Duration::from_millis(100);
+/// How long after a held screen stops showing a running turn to refresh, so
+/// the provider has written the finished turn that discovery reads.
+const SCREEN_IDLE_REFRESH_DELAY: Duration = Duration::from_millis(300);
 const LAUNCH_SPINNER: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -287,6 +290,8 @@ pub fn run_dashboard(
     let mut next_launch_animation = Instant::now();
     let mut next_live_animation = Instant::now() + LIVE_SESSION_ANIMATION_INTERVAL;
     let mut next_screen_status = Instant::now();
+    let mut screen_working = std::collections::BTreeSet::<String>::new();
+    let mut refresh_after_screen_idle: Option<Instant> = None;
     let mut needs_draw = true;
     let mut input_burst = InputBurst::default();
     let mut event_reader = MetaArrowReader::default();
@@ -562,6 +567,11 @@ pub fn run_dashboard(
             if !crate::native_session::detached_session_keys().is_empty() {
                 needs_draw |= app.update_snapshot(crate::adapters::apply_background_screens);
             }
+            let working = crate::adapters::background_screen_working(&app.snapshot);
+            if screen_working.iter().any(|id| !working.contains(id)) {
+                refresh_after_screen_idle = Some(Instant::now() + SCREEN_IDLE_REFRESH_DELAY);
+            }
+            screen_working = working;
             next_screen_status = Instant::now() + SCREEN_STATUS_INTERVAL;
         }
         if let Some(scheme) = scheme_watcher.as_ref().and_then(SchemeWatcher::take_change) {
@@ -908,6 +918,17 @@ pub fn run_dashboard(
                 &mut refresh_in_flight,
             )?;
             pending_launch_retry_at = None;
+            last_refresh = Instant::now();
+        }
+        // A refresh already in flight may have read the turn before it ended,
+        // so this waits for it and then asks again.
+        if !refresh_in_flight && refresh_after_screen_idle.is_some_and(|at| Instant::now() >= at) {
+            refresh_after_screen_idle = None;
+            schedule_refresh(
+                &refresh_tx,
+                &discovery_request_for_pending_launch(&current_request, pending_launch.as_ref()),
+                &mut refresh_in_flight,
+            )?;
             last_refresh = Instant::now();
         }
         if !refresh_in_flight && last_refresh.elapsed() >= refresh_interval {
