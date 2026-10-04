@@ -349,7 +349,14 @@ fn normalize_thread(thread: CodexThread, runtime: Runtime) -> AgentSession {
         .and_then(Value::as_str)
         .unwrap_or("unknown")
         .to_owned();
-    let state = map_status(&thread.status);
+    let state = match map_status(&thread.status) {
+        SessionState::Unknown
+            if raw_state == "notLoaded" && quiet_since(updated_at, SystemTime::now()) =>
+        {
+            SessionState::Completed
+        }
+        state => state,
+    };
     let source = thread
         .source
         .get("type")
@@ -463,6 +470,18 @@ fn map_status(status: &Value) -> SessionState {
     }
 }
 
+/// A thread no App Server has loaded is either finished or running in a
+/// terminal outside agentview, whose turn keeps writing to it. Quiet for
+/// this long, it has finished; a held screen still shows a long silent tool
+/// call as working.
+const NOT_LOADED_QUIET: Duration = Duration::from_secs(120);
+
+fn quiet_since(updated_at: i64, now: SystemTime) -> bool {
+    unix_seconds(updated_at)
+        .and_then(|updated| now.duration_since(updated).ok())
+        .is_some_and(|quiet| quiet >= NOT_LOADED_QUIET)
+}
+
 fn unix_seconds(seconds: i64) -> Option<SystemTime> {
     u64::try_from(seconds)
         .ok()
@@ -571,6 +590,27 @@ for line in sys.stdin:
             map_status(&json!({"type": "notLoaded"})),
             SessionState::Unknown
         );
+    }
+
+    #[test]
+    fn a_quiet_not_loaded_thread_is_completed_and_a_recent_one_unknown() {
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let thread = |updated_at: i64| {
+            json!({"thread": {
+                "id": "history", "cwd": "/repo", "createdAt": 1, "updatedAt": updated_at,
+                "preview": "Fix it", "status": {"type": "notLoaded"}, "source": "cli"
+            }})
+        };
+        let state = |updated_at| {
+            parse_codex_thread_read(&thread(updated_at), Runtime::Host)
+                .unwrap()
+                .state
+        };
+        assert_eq!(state(now - 3_600), SessionState::Completed);
+        assert_eq!(state(now - 10), SessionState::Unknown);
     }
 
     #[test]
