@@ -1117,8 +1117,6 @@ fn start_output_drain(mut master: std::fs::File, mut screen: vt100::Parser) -> R
 /// A close-on-exec pipe, read end first, so provider children never hold it.
 #[cfg(unix)]
 fn wake_pipe() -> Result<(std::fs::File, std::fs::File)> {
-    use std::os::fd::FromRawFd;
-
     let mut fds = [0; 2];
     if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
         return Err(std::io::Error::last_os_error()).context("failed to create a wake pipe");
