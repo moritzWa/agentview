@@ -344,11 +344,11 @@ impl ProviderController for OpenCodeController {
                 .current_dir(&session.cwd);
             command
         };
-        native_outcome(
-            crate::native_session::run(command, &session.id)?,
-            &session.provider_session_id,
-            &session.name,
-        )
+        let exit = crate::native_session::run(command, &session.id)?;
+        if matches!(exit, crate::native_session::NativeSessionExit::Backgrounded) {
+            self.pause_speech(&session.cwd);
+        }
+        native_outcome(exit, &session.provider_session_id, &session.name)
     }
 }
 
@@ -559,10 +559,10 @@ impl OpenCodeController {
             None => crate::native_session::resume(key)?,
             Some(command) => crate::native_session::run(command, key)?,
         };
-        if !matches!(exit, crate::native_session::NativeSessionExit::Backgrounded) {
-            if let Ok(mut clients) = shared_clients().lock() {
-                clients.remove(key);
-            }
+        if matches!(exit, crate::native_session::NativeSessionExit::Backgrounded) {
+            self.pause_speech(&session.cwd);
+        } else if let Ok(mut clients) = shared_clients().lock() {
+            clients.remove(key);
         }
         native_outcome(exit, &session.provider_session_id, &session.name)
     }
@@ -656,6 +656,15 @@ impl OpenCodeController {
             remember_shared_client(&key, server_pid, &session.id, true);
         }
         Ok(())
+    }
+
+    /// A backgrounded TUI keeps running, so without this a TUI reading an
+    /// answer aloud (the opencode-read-aloud plugin) would keep talking over
+    /// the dashboard. Pausing keeps its place for when the session is reopened.
+    fn pause_speech(&self, cwd: &Path) {
+        if let Some(supervisor) = self.supervisor.as_ref() {
+            let _ = supervisor.run_tui_command(cwd, "speech.pause");
+        }
     }
 
     fn owned_session(&self, session: &AgentSession) -> Result<Option<ManagedOpenCodeSession>> {
