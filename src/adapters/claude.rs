@@ -6,6 +6,7 @@ use std::time::{Duration, SystemTime};
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
+use super::claude_history::ClaudeHistory;
 use super::{DiscoveryRequest, SessionSource};
 use crate::domain::{AgentSession, Capability, Provider, Runtime, SessionKind, SessionState};
 use crate::process::{CancellableProcessRunner, CommandRequest, CommandRunner};
@@ -37,6 +38,7 @@ pub struct ClaudeSource {
     invocation: Invocation,
     runtime: Runtime,
     runner: Arc<dyn CommandRunner>,
+    history: Option<ClaudeHistory>,
 }
 
 impl ClaudeSource {
@@ -46,6 +48,7 @@ impl ClaudeSource {
             invocation: Invocation::host(executable),
             runtime: Runtime::Host,
             runner: Arc::new(CancellableProcessRunner::default()),
+            history: ClaudeHistory::host(),
         }
     }
 
@@ -65,6 +68,7 @@ impl ClaudeSource {
                 image: image.into(),
             },
             runner: Arc::new(CancellableProcessRunner::default()),
+            history: None,
         }
     }
 
@@ -80,6 +84,7 @@ impl ClaudeSource {
             invocation,
             runtime,
             runner,
+            history: None,
         }
     }
 }
@@ -109,7 +114,39 @@ impl SessionSource for ClaudeSource {
             );
         }
 
-        let sessions = parse_claude_sessions(output.stdout_text()?, self.runtime.clone())?;
+        let mut sessions = parse_claude_sessions(output.stdout_text()?, self.runtime.clone())?;
+        if let Some(history) = self.history.as_ref() {
+            let mut ended = history.sessions(request.history_limit.max(1));
+            // `claude agents` names a terminal session after its folder
+            // (`repo-6b`); its transcript has the title and latest prompt.
+            for session in &mut sessions {
+                let Some(transcript) = ended
+                    .iter()
+                    .find(|ended| ended.provider_session_id == session.provider_session_id)
+                else {
+                    continue;
+                };
+                if session.kind == SessionKind::Interactive {
+                    session.name = transcript.name.clone();
+                    session.summary = transcript.summary.clone();
+                }
+                session.updated_at = session.updated_at.or(transcript.updated_at);
+            }
+            let live = sessions
+                .iter()
+                .map(|session| session.provider_session_id.clone())
+                .collect::<BTreeSet<_>>();
+            ended.retain(|session| !live.contains(&session.provider_session_id));
+            if !request.include_completed {
+                ended.clear();
+            }
+            sessions.extend(ended.into_iter().filter(|session| {
+                request
+                    .cwd
+                    .as_ref()
+                    .map_or(true, |cwd| session.cwd.starts_with(cwd))
+            }));
+        }
         Ok(sessions
             .into_iter()
             .filter(|session| {
@@ -208,6 +245,9 @@ fn map_state(state: Option<&str>, status: Option<&str>) -> SessionState {
         Some("ready") | Some("ready_for_review") => SessionState::ReadyForReview,
         Some("done") | Some("completed") | Some("stopped") => SessionState::Completed,
         Some(_) | None if status == Some("blocked") => SessionState::NeedsInput,
+        // A terminal session reports only a status.
+        None if status == Some("busy") => SessionState::Working,
+        None if status == Some("idle") => SessionState::Completed,
         Some(_) | None => SessionState::Unknown,
     }
 }
@@ -257,6 +297,13 @@ mod tests {
             sessions[0].capabilities,
             BTreeSet::from([Capability::Inspect])
         );
+    }
+
+    #[test]
+    fn terminal_sessions_reporting_only_a_status_are_not_unknown() {
+        assert_eq!(map_state(None, Some("busy")), SessionState::Working);
+        assert_eq!(map_state(None, Some("idle")), SessionState::Completed);
+        assert_eq!(map_state(None, Some("blocked")), SessionState::NeedsInput);
     }
 
     #[test]

@@ -1198,9 +1198,19 @@ impl ProviderController for ClaudeController {
                 if yolo {
                     command.arg("--dangerously-skip-permissions");
                 }
-                command
-                    .args(["attach", &short_claude_id(&session.provider_session_id)])
-                    .current_dir(&session.cwd);
+                if session.raw_state.as_deref()
+                    == Some(crate::adapters::claude_history::HISTORY_RAW_STATE)
+                {
+                    // No process runs an ended session to attach to, and Claude
+                    // finds a transcript only from the folder it was started in.
+                    if !session.cwd.is_dir() {
+                        bail!("{} no longer exists", session.cwd.display());
+                    }
+                    command.args(["--resume", &session.provider_session_id]);
+                } else {
+                    command.args(["attach", &short_claude_id(&session.provider_session_id)]);
+                }
+                command.current_dir(&session.cwd);
                 let exit = if yolo {
                     crate::native_session::run_yolo(command, &session.id, "Claude Code")?
                 } else {

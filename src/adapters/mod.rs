@@ -1,5 +1,6 @@
 mod antigravity;
 mod claude;
+pub(crate) mod claude_history;
 mod codex;
 mod copilot;
 mod copilot_managed;
