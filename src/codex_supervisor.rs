@@ -117,10 +117,10 @@ struct PendingQuestion {
 /// the dashboard process. Each dashboard connection speaks the App Server's
 /// WebSocket protocol directly over that socket.
 /// Persisted PID identity is verified before reuse. Normal dashboard lifecycle
-/// never signals a PID loaded from disk; explicit [`Self::shutdown_server`]
-/// cleanup uses a stable Linux pidfd before signaling. macOS deliberately does
-/// not expose explicit supervisor shutdown until an equivalent stable signaling
-/// primitive is available; normal launch, reconnect, and control remain durable.
+/// never signals a PID loaded from disk. Explicit [`Self::shutdown_server`]
+/// cleanup and replacing a server left behind by a Codex update signal only
+/// the exact verified process: through a stable pidfd on Linux, and on macOS
+/// after revalidating its start time and argv immediately before each signal.
 pub struct CodexSupervisor {
     codex_bin: String,
     state_dir: PathBuf,
@@ -1112,9 +1112,9 @@ impl CodexSupervisor {
         let mut replacement = self.start_endpoint()?;
         replacement.threads = record.threads.clone();
         save_record(&self.record_path, &replacement)?;
-        // Without a pidfd (macOS) the outdated server is left idle rather than
-        // signalled by a numeric PID that could be reused.
-        if cfg!(target_os = "linux") && self.response_lease.is_some() {
+        // A still-running outdated server keeps its threads loaded, and Codex
+        // refuses to open a thread another App Server holds.
+        if self.response_lease.is_some() {
             let _ = stop_exact_server(&record, || Ok(()));
         }
         Ok(replacement)
@@ -2210,10 +2210,45 @@ fn stop_exact_server(
         let _ = unsafe { libc::waitpid(record.pid as i32, &mut status, libc::WNOHANG) };
         Ok(true)
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        // macOS has no pidfd. Revalidate the persisted start time and argv
+        // immediately before every signal so a reused PID is never signalled.
+        if !verify_process(record)? {
+            return Ok(false);
+        }
+        before_signal()?;
+        for (signal, wait) in [
+            (libc::SIGTERM, Duration::from_secs(5)),
+            (libc::SIGKILL, Duration::from_secs(2)),
+        ] {
+            if !verify_process(record)? {
+                return Ok(true);
+            }
+            if unsafe { libc::kill(record.pid as libc::pid_t, signal) } != 0 {
+                let error = std::io::Error::last_os_error();
+                if error.raw_os_error() == Some(libc::ESRCH) {
+                    return Ok(true);
+                }
+                return Err(error).context("failed to stop exact Codex App Server");
+            }
+            let deadline = Instant::now() + wait;
+            while Instant::now() < deadline {
+                let mut status = 0;
+                let _ =
+                    unsafe { libc::waitpid(record.pid as libc::pid_t, &mut status, libc::WNOHANG) };
+                if !verify_process(record)? {
+                    return Ok(true);
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+        }
+        bail!("timed out waiting for exact Codex App Server to exit")
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = (record, before_signal);
-        bail!("durable Codex App Server shutdown currently requires Linux")
+        bail!("durable Codex App Server shutdown requires Linux or macOS")
     }
 }
 
@@ -2967,9 +3002,7 @@ mod tests {
             replacement.threads.keys().collect::<Vec<_>>(),
             vec!["owned-thread"]
         );
-        if cfg!(target_os = "linux") {
-            assert!(!verify_process(&original).unwrap());
-        }
+        assert!(!verify_process(&original).unwrap());
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]

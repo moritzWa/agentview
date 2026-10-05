@@ -53,6 +53,10 @@ and released versions are intended to follow Semantic Versioning.
 
 ### Fixed
 
+- Codex sessions keep working after Codex updates itself. agentview restarts
+  its background Codex App Server once the installed Codex version changes and
+  no owned turn is running, and stops the outdated server on Linux and macOS,
+  which otherwise kept threads loaded so Codex refused to open them.
 - Pressing Left at an empty prompt in an opened Claude Code session returns
   to the dashboard instead of opening Claude's own agent view, including in
   background sessions agentview opens with `claude attach`.
