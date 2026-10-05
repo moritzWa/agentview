@@ -213,6 +213,7 @@ fn render_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Paragraph::new(lines).style(Style::default().bg(palette().bg).fg(palette().fg)),
         area,
     );
+    render_claude_usage(frame, app, area);
 }
 
 fn render_session_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
@@ -914,6 +915,36 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
             .style(Style::default().bg(palette().bg).fg(palette().dim))
             .alignment(Alignment::Left),
         area,
+    );
+}
+
+/// Right end of the header's title row, which is otherwise empty.
+fn render_claude_usage(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    const TITLE_ROOM: usize = 30;
+    let Some((text, alert)) = app
+        .claude_usage
+        .as_ref()
+        .map(|usage| usage.summary(crate::claude_usage::now()))
+    else {
+        return;
+    };
+    let width = display_width(&text) + 1;
+    if area.height == 0 || TITLE_ROOM + width > usize::from(area.width) {
+        return;
+    }
+    let style = if alert {
+        Style::default().fg(palette().attention)
+    } else {
+        Style::default().fg(palette().dim)
+    };
+    frame.render_widget(
+        Paragraph::new(Span::styled(text, style)).style(Style::default().bg(palette().bg)),
+        Rect {
+            x: area.x + area.width - width as u16,
+            width: width as u16,
+            height: 1,
+            ..area
+        },
     );
 }
 
@@ -2817,6 +2848,31 @@ mod tests {
         assert!(!rendered.contains("new task"));
         assert!(rendered.contains("tab harness"));
         assert!(rendered.contains("shift+tab model"));
+    }
+
+    #[test]
+    fn header_shows_claude_usage_when_known() {
+        let mut app = App::new(SessionSnapshot::default());
+        app.claude_usage = Some(crate::claude_usage::Usage {
+            five_hour: Some(crate::claude_usage::Window {
+                percent: 38.0,
+                resets_at: None,
+            }),
+            seven_day: None,
+        });
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+
+        let first_row = buffer_text(terminal.backend().buffer())
+            .lines()
+            .next()
+            .unwrap()
+            .to_owned();
+        assert!(
+            first_row.trim_end().ends_with("claude 5h 38%"),
+            "{first_row}"
+        );
     }
 
     #[test]

@@ -274,6 +274,8 @@ pub fn run_dashboard(
     app.color_scheme = color_scheme;
     crate::theme::set_terminal_scheme(color_scheme);
     let scheme_watcher = SchemeWatcher::spawn(theme_preference);
+    let usage_watcher = crate::claude_usage::UsageWatcher::spawn();
+    let mut usage_minute = 0;
     let mut terminal = TerminalSession::enter()?;
     let initial_size = terminal.terminal.size()?;
     app.set_session_page_size(session_page_size_for_terminal(initial_size.height));
@@ -583,6 +585,18 @@ pub fn run_dashboard(
                 crate::theme::set_terminal_scheme(scheme);
                 needs_draw = true;
             }
+        }
+        if let Some(usage) = usage_watcher
+            .as_ref()
+            .and_then(crate::claude_usage::UsageWatcher::take_update)
+        {
+            needs_draw |= app.claude_usage.as_ref() != Some(&usage);
+            app.claude_usage = Some(usage);
+        }
+        let minute = crate::claude_usage::now() / 60;
+        if app.claude_usage.is_some() && minute != usage_minute {
+            usage_minute = minute;
+            needs_draw = true;
         }
         if needs_draw {
             terminal.terminal.draw(|frame| ui::render(frame, &app))?;

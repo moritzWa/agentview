@@ -284,6 +284,7 @@ pub struct App {
     pub refreshed_at: SystemTime,
     pub should_quit: bool,
     pub color_scheme: ColorScheme,
+    pub claude_usage: Option<crate::claude_usage::Usage>,
 }
 
 impl App {
@@ -376,6 +377,7 @@ impl App {
             refreshed_at: SystemTime::now(),
             should_quit: false,
             color_scheme: ColorScheme::Dark,
+            claude_usage: None,
         };
         app.rebuild_snapshot_cache();
         app.reconcile_selection();
