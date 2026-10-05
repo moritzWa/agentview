@@ -2739,10 +2739,18 @@ fn real_tty_renders_actionable_request_and_confirmation_states() {
 
     // Filter selects the approval session directly, making approval affordances
     // deterministic without depending on the number of section headers.
+    // Typed text echoes in the filter itself, so wait for the editor before
+    // Enter and for it to close before Space; an Enter sent in the same burst
+    // as the text can be lost.
     app.send(CTRL_F);
     app.send(b"approval-needed");
+    app.wait_for("typed filter", |screen| {
+        screen.contains("filter approval-needed") && screen.contains("enter to apply")
+    });
     app.send(ENTER);
-    app.wait_for("approval row", |screen| screen.contains("approval-needed"));
+    app.wait_for("approval row", |screen| {
+        screen.contains("approval-needed") && !screen.contains("enter to apply")
+    });
     app.send(b" ");
     let approval = app.wait_for("approval peek", |screen| {
         screen.contains("approval-needed · Codex")
