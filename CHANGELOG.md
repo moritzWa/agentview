@@ -53,6 +53,10 @@ and released versions are intended to follow Semantic Versioning.
 
 ### Fixed
 
+- Pressing Left at an empty prompt in an opened Claude Code session returns
+  to the dashboard instead of opening Claude's own agent view, including in
+  background sessions agentview opens with `claude attach`.
+
 - Pasting more than about a kilobyte into an opened session no longer drops
   you back to the dashboard with the rest of the paste in the composer. Input
   now waits until the session reads it, which also covers long tasks typed
