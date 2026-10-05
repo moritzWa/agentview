@@ -46,7 +46,7 @@ pub(super) fn default_path(provider: &Provider) -> Result<PathBuf> {
             })),
         Provider::Devin => Ok(devin_path(
             &home,
-            std::env::var_os("XDG_DATA_HOME").map(PathBuf::from),
+            crate::fs_util::xdg_home("XDG_DATA_HOME").map(PathBuf::from),
         )),
         _ => bail!("not a SQLite harness"),
     }
@@ -86,7 +86,7 @@ fn app_data(home: &Path) -> PathBuf {
             .map(PathBuf::from)
             .unwrap_or_else(|| home.join("AppData/Roaming"))
     } else {
-        std::env::var_os("XDG_DATA_HOME")
+        crate::fs_util::xdg_home("XDG_DATA_HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| home.join(".local/share"))
     }

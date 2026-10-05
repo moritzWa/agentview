@@ -284,7 +284,7 @@ pub fn default_antigravity_last_conversations_path() -> Result<PathBuf> {
 }
 
 pub fn default_antigravity_ownership_path() -> Result<PathBuf> {
-    if let Some(state_home) = std::env::var_os("XDG_STATE_HOME") {
+    if let Some(state_home) = crate::fs_util::xdg_home("XDG_STATE_HOME") {
         return Ok(PathBuf::from(state_home).join("agentview/antigravity/sessions.json"));
     }
     let home = std::env::var_os("HOME").context("HOME is not set")?;
@@ -292,7 +292,7 @@ pub fn default_antigravity_ownership_path() -> Result<PathBuf> {
 }
 
 pub fn default_antigravity_model_cache_path() -> Result<PathBuf> {
-    if let Some(cache_home) = std::env::var_os("XDG_CACHE_HOME") {
+    if let Some(cache_home) = crate::fs_util::xdg_home("XDG_CACHE_HOME") {
         return Ok(PathBuf::from(cache_home).join("agentview/antigravity/models.json"));
     }
     let home = std::env::var_os("HOME").context("HOME is not set")?;

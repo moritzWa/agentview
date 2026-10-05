@@ -141,7 +141,7 @@ pub fn default_kimi_data_root() -> Result<PathBuf> {
 }
 
 pub fn default_kimi_ownership_path() -> Result<PathBuf> {
-    if let Some(state_home) = std::env::var_os("XDG_STATE_HOME") {
+    if let Some(state_home) = crate::fs_util::xdg_home("XDG_STATE_HOME") {
         return Ok(PathBuf::from(state_home).join("agentview/kimi-owned.json"));
     }
     let home = std::env::var_os("HOME").context("HOME is not set")?;

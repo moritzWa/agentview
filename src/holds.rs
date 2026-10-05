@@ -28,7 +28,7 @@ struct Hold {
 }
 
 pub fn default_holds_dir() -> Option<PathBuf> {
-    if let Some(state_home) = std::env::var_os("XDG_STATE_HOME") {
+    if let Some(state_home) = crate::fs_util::xdg_home("XDG_STATE_HOME") {
         return Some(PathBuf::from(state_home).join("agentview").join("holds"));
     }
     let home = std::env::var_os("HOME")?;

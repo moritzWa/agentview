@@ -128,7 +128,7 @@ impl MuseOwnership {
 }
 
 pub fn default_muse_data_root() -> Result<PathBuf> {
-    if let Some(data_home) = std::env::var_os("XDG_DATA_HOME") {
+    if let Some(data_home) = crate::fs_util::xdg_home("XDG_DATA_HOME") {
         return Ok(PathBuf::from(data_home).join("muse"));
     }
     let home = std::env::var_os("HOME").context("HOME is not set")?;
@@ -136,7 +136,7 @@ pub fn default_muse_data_root() -> Result<PathBuf> {
 }
 
 pub fn default_muse_ownership_path() -> Result<PathBuf> {
-    if let Some(state_home) = std::env::var_os("XDG_STATE_HOME") {
+    if let Some(state_home) = crate::fs_util::xdg_home("XDG_STATE_HOME") {
         return Ok(PathBuf::from(state_home).join("agentview/muse-owned.json"));
     }
     let home = std::env::var_os("HOME").context("HOME is not set")?;

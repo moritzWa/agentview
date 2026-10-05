@@ -59,6 +59,12 @@ and released versions are intended to follow Semantic Versioning.
 
 ### Fixed
 
+- An idle Devin, Hermes Agent, MastraCode, or other native harness session
+  held in the background shows as completed instead of working. Its screen
+  decides: a turn in progress still shows as working.
+- An empty or relative `XDG_STATE_HOME`, `XDG_DATA_HOME`, `XDG_CONFIG_HOME`,
+  or `XDG_CACHE_HOME` is ignored as the XDG spec requires, instead of putting
+  agentview's state under the directory it was started in.
 - Codex sessions keep working after Codex updates itself. agentview restarts
   its background Codex App Server once the installed Codex version changes and
   no owned turn is running, and stops the outdated server on Linux and macOS,

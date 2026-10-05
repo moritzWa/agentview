@@ -275,7 +275,7 @@ pub struct MigrationRegistry {
 
 impl MigrationRegistry {
     pub fn load_default() -> Result<Self> {
-        let path = if let Some(state_home) = std::env::var_os("XDG_STATE_HOME") {
+        let path = if let Some(state_home) = crate::fs_util::xdg_home("XDG_STATE_HOME") {
             PathBuf::from(state_home)
                 .join("agentview")
                 .join("migrations.json")

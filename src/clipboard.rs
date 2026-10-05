@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const IMAGE_EXTENSIONS: [&str; 6] = ["png", "jpg", "jpeg", "gif", "webp", "heic"];
 
 pub fn default_image_dir() -> Result<PathBuf> {
-    if let Some(state_home) = std::env::var_os("XDG_STATE_HOME") {
+    if let Some(state_home) = crate::fs_util::xdg_home("XDG_STATE_HOME") {
         return Ok(PathBuf::from(state_home).join("agentview").join("images"));
     }
     let home = std::env::var_os("HOME").context("HOME is not set")?;

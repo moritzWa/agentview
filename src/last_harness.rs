@@ -55,7 +55,7 @@ impl LastHarness {
 }
 
 pub fn default_last_harness_path() -> Result<PathBuf> {
-    if let Some(state_home) = std::env::var_os("XDG_STATE_HOME") {
+    if let Some(state_home) = crate::fs_util::xdg_home("XDG_STATE_HOME") {
         return Ok(PathBuf::from(state_home)
             .join("agentview")
             .join("last-harness.json"));

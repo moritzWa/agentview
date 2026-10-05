@@ -47,7 +47,7 @@ impl SessionMigrateNativeOwnership {
     pub fn load_default(provider: Provider) -> Result<Arc<Self>> {
         require_supported(&provider)?;
         let slug = provider_slug(&provider);
-        let path = if let Some(state_home) = std::env::var_os("XDG_STATE_HOME") {
+        let path = if let Some(state_home) = crate::fs_util::xdg_home("XDG_STATE_HOME") {
             PathBuf::from(state_home).join(format!("agentview/{slug}-owned.json"))
         } else {
             let home = std::env::var_os("HOME").context("HOME is not set")?;
@@ -570,7 +570,7 @@ fn default_data_root(provider: &Provider) -> Result<PathBuf> {
         Provider::Grok => Ok(std::env::var_os("GROK_HOME")
             .map(PathBuf::from)
             .unwrap_or(home()?.join(".grok"))),
-        Provider::KiloCode => Ok(std::env::var_os("XDG_DATA_HOME")
+        Provider::KiloCode => Ok(crate::fs_util::xdg_home("XDG_DATA_HOME")
             .map(PathBuf::from)
             .unwrap_or(home()?.join(".local/share"))
             .join("kilo")),

@@ -125,14 +125,11 @@ fn sqlite_harnesses_launch_foreground_detach_rename_and_resume_together() {
     for name in ["hermes-renamed", "mastracode-renamed", "devin-renamed"] {
         assert!(screen.contains(name), "{screen}");
     }
-    for (index, (provider, label)) in [
+    for (provider, label) in [
         ("hermes", "Hermes Agent"),
         ("mastracode", "MastraCode"),
         ("devin", "Devin"),
-    ]
-    .into_iter()
-    .enumerate()
-    {
+    ] {
         app.send(format!("/filter {provider}-renamed\r").as_bytes());
         app.wait_for("select exact provider to stop", |s| {
             s.contains(&format!("filter: {provider}-renamed"))
@@ -140,7 +137,10 @@ fn sqlite_harnesses_launch_foreground_detach_rename_and_resume_together() {
         app.send(b"\x18");
         app.wait_for("only the owned native frontend stops", |s| {
             s.contains(&format!("stopped {label} session"))
-                && s.contains(&format!("{} working", 2 - index))
+        });
+        // The hint appears once discovery no longer offers to stop the row.
+        app.wait_for("stopped row offers to hide", |s| {
+            s.contains("ctrl+x again to hide")
         });
         app.send(b"\x18");
         app.wait_for("second Ctrl+X hides locally", |s| {

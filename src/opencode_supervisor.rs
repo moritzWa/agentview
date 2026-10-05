@@ -1667,7 +1667,7 @@ fn random_secret() -> Result<String> {
 }
 
 fn default_state_dir() -> Result<PathBuf> {
-    if let Some(path) = std::env::var_os("XDG_STATE_HOME") {
+    if let Some(path) = crate::fs_util::xdg_home("XDG_STATE_HOME") {
         return Ok(PathBuf::from(path).join("agentview/opencode"));
     }
     let home = std::env::var_os("HOME").context("HOME is not set")?;

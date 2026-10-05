@@ -293,15 +293,25 @@ fn background_screen_state(session: &AgentSession) -> Option<(SessionState, &'st
         Provider::Terminal => None,
         _ => {
             let (_, screen) = crate::native_session::background_screen_contents(&session.id)?;
-            screen_status::screen_state(&screen).or_else(|| {
-                // The held TUI is the process running this thread, so one
-                // showing no turn is idle, however recently it wrote.
-                (session.provider == Provider::Codex
-                    && session.raw_state.as_deref() == Some("notLoaded"))
-                .then_some((SessionState::Completed, "notLoaded"))
-            })
+            held_screen_state(session, &screen)
         }
     }
+}
+
+fn held_screen_state(session: &AgentSession, screen: &str) -> Option<(SessionState, &'static str)> {
+    screen_status::screen_state(screen).or_else(|| {
+        // The held TUI is the process running this thread, so one showing no
+        // turn is idle, however recently it wrote.
+        let raw_state = session.raw_state.as_deref().unwrap_or_default();
+        if session.provider == Provider::Codex && raw_state == "notLoaded" {
+            return Some((SessionState::Completed, "notLoaded"));
+        }
+        // Native harnesses report a held session as working only because it
+        // is held; nothing else says a turn is running.
+        raw_state
+            .starts_with("backgrounded")
+            .then_some((SessionState::Completed, "idle"))
+    })
 }
 
 fn apply_screen_states(
@@ -821,5 +831,55 @@ mod tests {
         assert_eq!(order, sorted);
 
         assert!(!apply_screen_states(&mut snapshot, working));
+    }
+
+    #[test]
+    fn an_idle_held_native_harness_is_not_working() {
+        let session = |provider, raw_state: &str| AgentSession {
+            id: "devin:host:s".into(),
+            provider_session_id: "s".into(),
+            provider,
+            runtime: Runtime::Host,
+            kind: SessionKind::Managed,
+            name: "MANGO".into(),
+            cwd: PathBuf::from("/workspace"),
+            state: SessionState::Working,
+            summary: String::new(),
+            raw_state: Some(raw_state.into()),
+            pid: None,
+            started_at: None,
+            updated_at: None,
+            pull_requests: None,
+            capabilities: BTreeSet::new(),
+        };
+        let idle = [
+            " MANGO",
+            "──────────── (bypass permissions on) ─",
+            "❭ Ask Devin to build features, fix bugs, or work on your code",
+            "────────────",
+            "SWE-2 High                Context: 19k / 262k tokens (7%)",
+        ]
+        .join("\n");
+        let running = [
+            "⠀⢰ Running tools · 12s (esc twice to interrupt)",
+            "❭ Guide Devin while it works",
+        ]
+        .join("\n");
+        let devin = session(Provider::Devin, "backgrounded; model=swe-2");
+
+        assert_eq!(
+            held_screen_state(&devin, &idle),
+            Some((SessionState::Completed, "idle"))
+        );
+        assert_eq!(
+            held_screen_state(&devin, &running),
+            Some((SessionState::Working, "running turn"))
+        );
+        // Claude Code can keep a background task running behind an idle
+        // composer, so its discovery state stands.
+        assert_eq!(
+            held_screen_state(&session(Provider::Claude, "running"), &idle),
+            None
+        );
     }
 }

@@ -70,7 +70,7 @@ impl OpenCodeOwnership {
 }
 
 pub fn default_opencode_ownership_path() -> Result<PathBuf> {
-    if let Some(state_home) = std::env::var_os("XDG_STATE_HOME") {
+    if let Some(state_home) = crate::fs_util::xdg_home("XDG_STATE_HOME") {
         return Ok(PathBuf::from(state_home).join("agentview/opencode-owned.json"));
     }
     let home = std::env::var_os("HOME").context("HOME is not set")?;

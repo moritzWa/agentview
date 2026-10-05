@@ -360,7 +360,7 @@ impl ManagedDockerService {
 }
 
 pub fn default_managed_docker_registry_path() -> Result<PathBuf> {
-    if let Some(state_home) = std::env::var_os("XDG_STATE_HOME") {
+    if let Some(state_home) = crate::fs_util::xdg_home("XDG_STATE_HOME") {
         return Ok(PathBuf::from(state_home)
             .join("agentview")
             .join("managed-docker")

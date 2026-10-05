@@ -259,7 +259,7 @@ pub fn is_under_any(path: &Path, roots: &[PathBuf]) -> bool {
 }
 
 pub fn default_hidden_sessions_path() -> Result<PathBuf> {
-    if let Some(state_home) = std::env::var_os("XDG_STATE_HOME") {
+    if let Some(state_home) = crate::fs_util::xdg_home("XDG_STATE_HOME") {
         return Ok(PathBuf::from(state_home)
             .join("agentview")
             .join("hidden-sessions.json"));

@@ -8,6 +8,13 @@ use serde::Serialize;
 
 static TEMPORARY_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
+/// An XDG base directory variable such as `XDG_STATE_HOME`. The spec says an
+/// empty or relative value is invalid and must be ignored; using it would put
+/// state under whatever directory agentview happened to start in.
+pub(crate) fn xdg_home(name: &str) -> Option<std::ffi::OsString> {
+    std::env::var_os(name).filter(|value| Path::new(value).is_absolute())
+}
+
 /// Write a small owner-only JSON state file through a temporary sibling so a
 /// crash never leaves it truncated. A missing parent is created owner-only.
 pub(crate) fn write_private_json(path: &Path, value: &impl Serialize) -> Result<()> {
@@ -98,7 +105,22 @@ pub(crate) fn replace_file(source: &Path, destination: &Path) -> io::Result<()> 
 mod tests {
     use std::fs;
 
-    use super::replace_file;
+    use super::{replace_file, xdg_home};
+
+    #[test]
+    fn xdg_home_ignores_empty_and_relative_values() {
+        std::env::set_var("AGENTVIEW_TEST_XDG_EMPTY", "");
+        std::env::set_var("AGENTVIEW_TEST_XDG_RELATIVE", "state");
+        std::env::set_var("AGENTVIEW_TEST_XDG_ABSOLUTE", "/var/state");
+
+        assert_eq!(xdg_home("AGENTVIEW_TEST_XDG_EMPTY"), None);
+        assert_eq!(xdg_home("AGENTVIEW_TEST_XDG_RELATIVE"), None);
+        assert_eq!(xdg_home("AGENTVIEW_TEST_XDG_UNSET"), None);
+        assert_eq!(
+            xdg_home("AGENTVIEW_TEST_XDG_ABSOLUTE"),
+            Some("/var/state".into())
+        );
+    }
 
     #[test]
     fn replaces_an_existing_file() {

@@ -122,7 +122,7 @@ impl PausedSessions {
 /// Paused sessions were once called pinned; the file keeps that name so
 /// existing pauses survive.
 pub fn default_paused_sessions_path() -> Result<PathBuf> {
-    if let Some(state_home) = std::env::var_os("XDG_STATE_HOME") {
+    if let Some(state_home) = crate::fs_util::xdg_home("XDG_STATE_HOME") {
         return Ok(PathBuf::from(state_home)
             .join("agentview")
             .join("pinned-sessions.json"));

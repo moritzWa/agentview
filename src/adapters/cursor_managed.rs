@@ -727,7 +727,7 @@ impl SessionSource for CursorSource {
 }
 
 pub fn default_cursor_state_dir() -> Result<PathBuf> {
-    if let Some(state_home) = std::env::var_os("XDG_STATE_HOME") {
+    if let Some(state_home) = crate::fs_util::xdg_home("XDG_STATE_HOME") {
         return Ok(PathBuf::from(state_home).join("agentview/cursor"));
     }
     let home = std::env::var_os("HOME").context("HOME is not set")?;

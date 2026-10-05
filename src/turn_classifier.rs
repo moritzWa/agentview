@@ -237,7 +237,7 @@ fn now_ms() -> u64 {
 }
 
 fn default_store_path() -> Option<PathBuf> {
-    let state_home = std::env::var_os("XDG_STATE_HOME")
+    let state_home = crate::fs_util::xdg_home("XDG_STATE_HOME")
         .map(PathBuf::from)
         .or_else(|| {
             std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state"))
@@ -285,7 +285,7 @@ fn openrouter_api_key() -> Option<String> {
     {
         return Some(key.trim().to_owned());
     }
-    let config_home = std::env::var_os("XDG_CONFIG_HOME")
+    let config_home = crate::fs_util::xdg_home("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))?;
     let key = std::fs::read_to_string(config_home.join("agentview/openrouter-api-key")).ok()?;
