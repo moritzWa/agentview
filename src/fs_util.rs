@@ -111,14 +111,15 @@ mod tests {
     fn xdg_home_ignores_empty_and_relative_values() {
         std::env::set_var("AGENTVIEW_TEST_XDG_EMPTY", "");
         std::env::set_var("AGENTVIEW_TEST_XDG_RELATIVE", "state");
-        std::env::set_var("AGENTVIEW_TEST_XDG_ABSOLUTE", "/var/state");
+        let absolute = std::env::temp_dir().join("state");
+        std::env::set_var("AGENTVIEW_TEST_XDG_ABSOLUTE", &absolute);
 
         assert_eq!(xdg_home("AGENTVIEW_TEST_XDG_EMPTY"), None);
         assert_eq!(xdg_home("AGENTVIEW_TEST_XDG_RELATIVE"), None);
         assert_eq!(xdg_home("AGENTVIEW_TEST_XDG_UNSET"), None);
         assert_eq!(
             xdg_home("AGENTVIEW_TEST_XDG_ABSOLUTE"),
-            Some("/var/state".into())
+            Some(absolute.into_os_string())
         );
     }
 
