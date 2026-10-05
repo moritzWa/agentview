@@ -26,6 +26,7 @@ pub mod terminal;
 pub mod theme;
 pub mod turn_classifier;
 pub mod ui;
+pub mod usage;
 
 #[cfg(test)]
 pub(crate) mod test_support {

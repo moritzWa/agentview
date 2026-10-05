@@ -213,6 +213,7 @@ fn render_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Paragraph::new(lines).style(Style::default().bg(palette().bg).fg(palette().fg)),
         area,
     );
+    render_usage(frame, app, area);
 }
 
 fn render_session_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
@@ -914,6 +915,56 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
             .style(Style::default().bg(palette().bg).fg(palette().dim))
             .alignment(Alignment::Left),
         area,
+    );
+}
+
+/// Right end of the header's title row, which is otherwise empty.
+fn render_usage(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    const TITLE_ROOM: usize = 30;
+    const SEPARATOR: &str = "  │  ";
+    let now = crate::usage::now();
+    let mut entries = app
+        .usage
+        .iter()
+        .map(|usage| usage.summary(now))
+        .collect::<Vec<_>>();
+    let line_width = |entries: &[(String, bool)]| {
+        entries
+            .iter()
+            .map(|(text, _)| display_width(text))
+            .sum::<usize>()
+            + display_width(SEPARATOR) * entries.len().saturating_sub(1)
+            + 1
+    };
+    while !entries.is_empty() && TITLE_ROOM + line_width(&entries) > usize::from(area.width) {
+        entries.pop();
+    }
+    if area.height == 0 || entries.is_empty() {
+        return;
+    }
+    let width = line_width(&entries);
+    let spans = entries
+        .into_iter()
+        .enumerate()
+        .flat_map(|(index, (text, alert))| {
+            let style = Style::default().fg(if alert {
+                palette().attention
+            } else {
+                palette().dim
+            });
+            let separator =
+                (index > 0).then(|| Span::styled(SEPARATOR, Style::default().fg(palette().dim)));
+            separator.into_iter().chain([Span::styled(text, style)])
+        })
+        .collect::<Vec<_>>();
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)).style(Style::default().bg(palette().bg)),
+        Rect {
+            x: area.x + area.width - width as u16,
+            width: width as u16,
+            height: 1,
+            ..area
+        },
     );
 }
 
@@ -2817,6 +2868,35 @@ mod tests {
         assert!(!rendered.contains("new task"));
         assert!(rendered.contains("tab harness"));
         assert!(rendered.contains("shift+tab model"));
+    }
+
+    #[test]
+    fn header_shows_one_usage_entry_per_provider_and_drops_extras_when_narrow() {
+        let usage = |provider, percent| crate::usage::Usage {
+            provider,
+            windows: vec![crate::usage::Window {
+                label: "5h",
+                percent,
+                resets_at: None,
+            }],
+        };
+        let mut app = App::new(SessionSnapshot::default());
+        app.usage = vec![usage("claude", 38.0), usage("codex", 4.0)];
+        let first_row = |width| {
+            let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            buffer_text(terminal.backend().buffer())
+                .lines()
+                .next()
+                .unwrap()
+                .trim_end()
+                .to_owned()
+        };
+
+        let wide = first_row(100);
+        assert!(wide.ends_with("claude 5h 38%  │  codex 5h 4%"), "{wide}");
+        let narrow = first_row(50);
+        assert!(narrow.ends_with("claude 5h 38%"), "{narrow}");
     }
 
     #[test]
