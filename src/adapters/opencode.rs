@@ -940,7 +940,13 @@ impl SessionSource for OpenCodeSource {
             // Persisted history that no live process holds is completed.
             // Avoid starting the potentially enormous global database query
             // when completed sessions are hidden and nothing runs OpenCode.
-            if request.include_completed || !holders.is_empty() {
+            let server = self
+                .supervisor
+                .as_ref()
+                .filter(|_| self.runtime == Runtime::Host);
+            let server_live = server
+                .is_some_and(|supervisor| supervisor.live_server_pid().ok().flatten().is_some());
+            if request.include_completed || !holders.is_empty() || server_live {
                 let history_limit = request.history_limit.max(1);
                 let scope = if external {
                     Scope::Recent {
@@ -954,7 +960,15 @@ impl SessionSource for OpenCodeSource {
                 } else {
                     Scope::Only(owned.clone())
                 };
-                let mut history = self.normalize_with_live_state(self.query(&scope)?, &holders);
+                let records = self.query(&scope)?;
+                let unfinished = unfinished_directories(&records);
+                let mut history = self.normalize_with_live_state(records, &holders);
+                if let Some(supervisor) = server.filter(|_| server_live && !unfinished.is_empty()) {
+                    match supervisor.server_activity(&unfinished) {
+                        Ok(activity) => apply_server_activity(&mut history, &activity, &owned),
+                        Err(error) => warnings.push(format!("OpenCode server status: {error:#}")),
+                    }
+                }
                 if request.history_oldest_first {
                     history.sort_by_key(|session| session.updated_at);
                 } else {
@@ -1275,6 +1289,56 @@ fn apply_live_state(
     session.state = state;
     session.raw_state = Some(raw_state.into());
     session.pid = Some(pid);
+}
+
+/// Directories of sessions whose newest turn, or a subagent's, has not
+/// finished: the only ones a server can be running a turn in.
+fn unfinished_directories(records: &[OpenCodeRecord]) -> BTreeSet<PathBuf> {
+    records
+        .iter()
+        .filter(|record| {
+            record.child.is_some()
+                || record.last.as_ref().is_some_and(|last| {
+                    matches!(
+                        (last.role.as_deref(), last.completed),
+                        (Some("assistant"), None) | (Some("user"), _)
+                    )
+                })
+        })
+        .map(|record| record.directory.clone())
+        .collect()
+}
+
+/// A session the dashboard's server runs without owning it, because it was
+/// opened in the shared TUI, has no process of its own to probe; the server's
+/// status is the only live evidence. Owned sessions get theirs from the
+/// supervisor directly.
+fn apply_server_activity(
+    sessions: &mut [AgentSession],
+    activity: &crate::opencode_supervisor::ServerActivity,
+    owned: &BTreeSet<String>,
+) {
+    for session in sessions
+        .iter_mut()
+        .filter(|session| !owned.contains(&session.provider_session_id))
+    {
+        let id = &session.provider_session_id;
+        if !activity.running.contains(id) {
+            continue;
+        }
+        let (state, raw_state) = if activity.permissions.contains(id) {
+            (SessionState::NeedsInput, "permission requested")
+        } else if activity.questions.contains(id) {
+            (SessionState::NeedsInput, "question asked")
+        } else {
+            (SessionState::Working, "server busy")
+        };
+        session.state = state;
+        session.raw_state = Some(raw_state.into());
+        if let Some(pid) = activity.server_pid {
+            session.pid = Some(pid);
+        }
+    }
 }
 
 /// The state the TUI this dashboard holds for `session` shows now, for the
@@ -1643,6 +1707,56 @@ mod tests {
             assert_eq!(request, &self.expected);
             Ok(self.output.lock().unwrap().take().unwrap())
         }
+    }
+
+    #[test]
+    fn the_server_marks_sessions_it_runs_for_the_shared_tui_working() {
+        let input = r#"[
+          {"id": "ses_busy", "title": "t", "updated": 2, "created": 1, "projectId": "g", "directory": "/work"},
+          {"id": "ses_ask", "title": "t", "updated": 2, "created": 1, "projectId": "g", "directory": "/work"},
+          {"id": "ses_idle", "title": "t", "updated": 2, "created": 1, "projectId": "g", "directory": "/work"},
+          {"id": "ses_owned", "title": "t", "updated": 2, "created": 1, "projectId": "g", "directory": "/work"}
+        ]"#;
+        let mut sessions = parse_opencode_session_list(input, Runtime::Host).unwrap();
+        let activity = crate::opencode_supervisor::ServerActivity {
+            server_pid: Some(42),
+            running: ["ses_busy", "ses_ask", "ses_owned"].map(String::from).into(),
+            questions: ["ses_ask".to_owned()].into(),
+            permissions: BTreeSet::new(),
+        };
+        apply_server_activity(&mut sessions, &activity, &["ses_owned".to_owned()].into());
+        let state = |id: &str| {
+            let session = sessions
+                .iter()
+                .find(|session| session.provider_session_id == id)
+                .unwrap();
+            (session.state, session.raw_state.clone().unwrap_or_default())
+        };
+        assert_eq!(state("ses_busy"), (SessionState::Working, "server busy".into()));
+        assert_eq!(state("ses_ask"), (SessionState::NeedsInput, "question asked".into()));
+        assert_eq!(state("ses_idle").0, SessionState::Completed);
+        assert_eq!(state("ses_owned").0, SessionState::Completed);
+    }
+
+    #[test]
+    fn only_directories_with_an_unfinished_turn_are_asked_about() {
+        let records: Vec<OpenCodeRecord> = serde_json::from_str(
+            r#"[
+              {"id": "a", "title": "t", "updated": 2, "created": 1, "projectId": "g", "directory": "/running",
+               "last": {"role": "assistant", "created": 5}},
+              {"id": "b", "title": "t", "updated": 2, "created": 1, "projectId": "g", "directory": "/done",
+               "last": {"role": "assistant", "created": 5, "completed": 6}},
+              {"id": "c", "title": "t", "updated": 2, "created": 1, "projectId": "g", "directory": "/sent",
+               "last": {"role": "user", "created": 5}},
+              {"id": "d", "title": "t", "updated": 2, "created": 1, "projectId": "g", "directory": "/child",
+               "last": {"role": "assistant", "created": 5, "completed": 6}, "child": 7}
+            ]"#,
+        )
+        .unwrap();
+        assert_eq!(
+            unfinished_directories(&records),
+            ["/running", "/sent", "/child"].map(PathBuf::from).into()
+        );
     }
 
     #[test]

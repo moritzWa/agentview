@@ -84,6 +84,15 @@ pub struct ManagedOpenCodeSession {
     pub updated_at_ms: u64,
 }
 
+/// Top-level and subagent sessions the live server has a turn in flight for.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ServerActivity {
+    pub server_pid: Option<u32>,
+    pub running: BTreeSet<String>,
+    pub questions: BTreeSet<String>,
+    pub permissions: BTreeSet<String>,
+}
+
 /// Reconnectable controller for one agentview-owned authenticated OpenCode server.
 pub struct OpenCodeSupervisor {
     executable: String,
@@ -421,6 +430,45 @@ impl OpenCodeSupervisor {
             &with_directory_query("/tui/publish", cwd),
             Some(&body),
         )
+    }
+
+    /// Turns the live server is running in `directories`, for sessions this
+    /// dashboard did not start but opened in its shared TUI: no `opencode`
+    /// process of their own holds them, so only the server knows they run.
+    /// Never starts a server.
+    pub fn server_activity(&self, directories: &BTreeSet<PathBuf>) -> Result<ServerActivity> {
+        let _lock = StateLock::acquire(&self.lock_path)?;
+        let mut activity = ServerActivity::default();
+        let Some(record) = self.live_record_locked()? else {
+            return Ok(activity);
+        };
+        activity.server_pid = Some(record.pid);
+        for directory in directories.iter().filter(|path| path.is_dir()) {
+            let Ok(statuses) = self.request_json(
+                &record,
+                "GET",
+                &with_directory_query("/session/status", directory),
+                None,
+            ) else {
+                continue;
+            };
+            let running = running_session_ids(&statuses);
+            if running.is_empty() {
+                continue;
+            }
+            for (route, blocked) in [
+                ("/question", &mut activity.questions),
+                ("/permission", &mut activity.permissions),
+            ] {
+                if let Ok(requests) =
+                    self.request_json(&record, "GET", &with_directory_query(route, directory), None)
+                {
+                    blocked.extend(request_session_ids(&requests));
+                }
+            }
+            activity.running.extend(running);
+        }
+        Ok(activity)
     }
 
     /// The live server's pid, which changes when the server restarts.
