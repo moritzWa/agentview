@@ -691,6 +691,11 @@ fn stored_to_agent(
         .as_deref()
         .map(|model| format!("{lifecycle}; model={}", sanitize(model, 160, "unknown")))
         .unwrap_or_else(|| lifecycle.into());
+    // Kilo lists only titles, and a session without replies falls back to its
+    // name; neither is the agent's last message.
+    if provider != &Provider::KiloCode && record.summary != record.name {
+        crate::last_message::remember(&id, &record.summary);
+    }
     Ok(AgentSession {
         id,
         provider_session_id: record.session_id,

@@ -5,18 +5,18 @@
 //! When an OpenRouter key is configured, the transcript tail of each recently
 //! idle session is labelled once by a small hosted model. The verdict is cached
 //! until the session's summary changes, so a turn costs at most one request.
+//! Verdicts are kept on disk so a restarted dashboard shows them at once.
 
-use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, BTreeSet};
-use std::hash::{Hash, Hasher};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime};
 
 use anyhow::{bail, Context, Result};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::control::ControlHub;
@@ -36,7 +36,7 @@ approval, credentials, or clarification, or says it is blocked.\n\
 DONE: the agent finished or reported results without needing anything; optional offers \
 like 'let me know if you want more' are DONE.";
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Verdict {
     NeedsInput,
     Done,
@@ -50,16 +50,24 @@ pub struct TurnClassifier {
     inspect: Arc<Inspect>,
     ask: Arc<Ask>,
     cache: Arc<Mutex<Cache>>,
+    store: Option<Arc<PathBuf>>,
 }
 
 #[derive(Default)]
 struct Cache {
     /// Session ID to the turn it was labelled for and the label.
-    verdicts: BTreeMap<String, (u64, Verdict)>,
+    verdicts: BTreeMap<String, Labelled>,
     in_flight: BTreeSet<String>,
     /// A turn whose request failed is not retried until the turn changes.
     failed: BTreeMap<String, u64>,
     last_error: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+struct Labelled {
+    turn: u64,
+    verdict: Verdict,
+    labelled_at_ms: u64,
 }
 
 impl TurnClassifier {
@@ -71,7 +79,17 @@ impl TurnClassifier {
             inspect: Arc::new(inspect),
             ask: Arc::new(ask),
             cache: Arc::new(Mutex::new(Cache::default())),
+            store: None,
         }
+    }
+
+    /// Keep verdicts in `path`, starting from the ones already there.
+    pub fn with_store(mut self, path: PathBuf) -> Self {
+        if let Ok(mut cache) = self.cache.lock() {
+            cache.verdicts = read_store(&path);
+        }
+        self.store = Some(Arc::new(path));
+        self
     }
 
     /// A classifier backed by OpenRouter, or `None` when no key is configured,
@@ -88,10 +106,14 @@ impl TurnClassifier {
             .filter(|model| !model.trim().is_empty())
             .unwrap_or_else(|| DEFAULT_MODEL.into());
         let control = control.clone();
-        Some(Self::new(
+        let classifier = Self::new(
             move |session| control.inspect(session),
             move |tail| ask_openrouter(&key, &model, tail),
-        ))
+        );
+        Some(match default_store_path() {
+            Some(path) => classifier.with_store(path),
+            None => classifier,
+        })
     }
 
     /// Apply cached verdicts to idle sessions and start labelling new turns in
@@ -108,8 +130,8 @@ impl TurnClassifier {
             }
             let turn = turn_hash(session);
             match cache.verdicts.get(&session.id) {
-                Some((labelled, verdict)) if *labelled == turn => {
-                    session.state = match verdict {
+                Some(labelled) if labelled.turn == turn => {
+                    session.state = match labelled.verdict {
                         Verdict::NeedsInput => SessionState::NeedsInput,
                         Verdict::Done => SessionState::Completed,
                     };
@@ -135,17 +157,26 @@ impl TurnClassifier {
         for (session, turn) in pending {
             let classifier = self.clone();
             thread::spawn(move || {
-                let result = (classifier.inspect)(&session)
-                    .and_then(|transcript| (classifier.ask)(tail(&transcript, TAIL_CHARS)));
+                let result = crate::last_message::get(&session.id)
+                    .map_or_else(|| (classifier.inspect)(&session), Ok)
+                    .and_then(|transcript| (classifier.ask)(tail(&transcript, TAIL_CHARS)))
+                    .map(|verdict| Labelled {
+                        turn,
+                        verdict,
+                        labelled_at_ms: now_ms(),
+                    });
+                if let (Ok(labelled), Some(path)) = (&result, &classifier.store) {
+                    let _ = record_in_store(path, &session.id, *labelled);
+                }
                 let Ok(mut cache) = classifier.cache.lock() else {
                     return;
                 };
                 cache.in_flight.remove(&session.id);
                 match result {
-                    Ok(verdict) => {
+                    Ok(labelled) => {
                         cache.failed.remove(&session.id);
                         cache.last_error = None;
-                        cache.verdicts.insert(session.id, (turn, verdict));
+                        cache.verdicts.insert(session.id, labelled);
                     }
                     Err(error) => {
                         cache.last_error = Some(format!("{error:#}"));
@@ -178,15 +209,62 @@ fn eligible(session: &AgentSession, now: SystemTime) -> bool {
         _ => false,
     };
     idle && session.provider != Provider::Terminal
-        && session.capabilities.contains(&Capability::Inspect)
+        && (session.capabilities.contains(&Capability::Inspect)
+            || crate::last_message::get(&session.id).is_some())
         && !session.summary.trim().is_empty()
         && session.age(now).is_some_and(|age| age <= RECENT)
 }
 
+/// Some summaries stay the thread's first prompt across turns, so the latest
+/// reply identifies the turn too. FNV-1a, because stored verdicts must match
+/// across builds and `DefaultHasher` is free to change between Rust releases.
 fn turn_hash(session: &AgentSession) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    session.summary.hash(&mut hasher);
-    hasher.finish()
+    let reply = crate::last_message::get(&session.id).unwrap_or_default();
+    session
+        .summary
+        .bytes()
+        .chain([0])
+        .chain(reply.bytes())
+        .fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+        })
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as u64)
+}
+
+fn default_store_path() -> Option<PathBuf> {
+    let state_home = std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state"))
+        })?;
+    Some(state_home.join("agentview/turn-verdicts.json"))
+}
+
+/// Verdicts for turns young enough to still be classified; older ones would
+/// never be looked up again.
+fn read_store(path: &Path) -> BTreeMap<String, Labelled> {
+    let cutoff = now_ms().saturating_sub(RECENT.as_millis() as u64);
+    std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<BTreeMap<String, Labelled>>(&bytes).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(_, labelled)| labelled.labelled_at_ms >= cutoff)
+        .collect()
+}
+
+/// Merge one verdict into the file, which other dashboards may be writing too.
+fn record_in_store(path: &Path, session_id: &str, labelled: Labelled) -> Result<()> {
+    static WRITING: Mutex<()> = Mutex::new(());
+    let _writing = WRITING.lock();
+    let mut verdicts = read_store(path);
+    verdicts.insert(session_id.to_owned(), labelled);
+    crate::fs_util::write_private_json(path, &verdicts)
 }
 
 fn tail(text: &str, max_chars: usize) -> &str {
@@ -406,6 +484,67 @@ mod tests {
         assert_eq!(last.sessions[0].state, SessionState::NeedsInput);
         assert!(last.warnings.is_empty());
         assert_eq!(asked.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn a_restarted_dashboard_reuses_stored_verdicts() {
+        let dir = std::env::temp_dir().join(format!("av-verdicts-{}", std::process::id()));
+        let path = dir.join("turn-verdicts.json");
+        let _ = std::fs::remove_dir_all(&dir);
+        let asked = Arc::new(AtomicUsize::new(0));
+        let classifier_asking = |asked: &Arc<AtomicUsize>| {
+            let counter = Arc::clone(asked);
+            TurnClassifier::new(
+                |session| Ok(session.summary.clone()),
+                move |_| {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    Ok(Verdict::NeedsInput)
+                },
+            )
+            .with_store(path.clone())
+        };
+        let session = || snapshot(vec![idle("one", SessionState::Completed, "", "Which?")]);
+
+        let first = classifier_asking(&asked);
+        first.apply(&mut session());
+        first.wait_for_idle();
+
+        let restarted = classifier_asking(&asked);
+        let mut shown = session();
+        restarted.apply(&mut shown);
+        assert_eq!(shown.sessions[0].state, SessionState::NeedsInput);
+        restarted.wait_for_idle();
+        assert_eq!(asked.load(Ordering::SeqCst), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_recorded_last_message_is_labelled_without_transcript_access() {
+        let classifier = TurnClassifier::new(
+            |_| bail!("no transcript access"),
+            |tail| {
+                Ok(if tail.ends_with("Which branch?") {
+                    Verdict::NeedsInput
+                } else {
+                    Verdict::Done
+                })
+            },
+        );
+        let mut session = idle(
+            "codex:host:no-inspect",
+            SessionState::Completed,
+            "idle",
+            "I looked",
+        );
+        session.capabilities.clear();
+        crate::last_message::remember(&session.id, "I looked at both. Which branch?");
+        let next = || snapshot(vec![session.clone()]);
+        classifier.apply(&mut next());
+        classifier.wait_for_idle();
+        let mut shown = next();
+        classifier.apply(&mut shown);
+        assert_eq!(shown.sessions[0].state, SessionState::NeedsInput);
+        assert!(shown.warnings.is_empty());
     }
 
     #[test]

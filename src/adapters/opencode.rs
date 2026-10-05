@@ -8,6 +8,7 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
 use super::native_owned::{poll_unique, NativeOwnership};
+use super::opencode_background::BackgroundShells;
 use super::opencode_live::{self, Candidate, Holder, LastMessage};
 use super::{DiscoveryRequest, SessionSource, SourceDiscovery};
 use crate::control::{
@@ -114,6 +115,7 @@ pub struct OpenCodeSource {
     discover_external_history: bool,
     probe: HolderProbe,
     ownership: Option<Arc<OpenCodeOwnership>>,
+    background_shells: Option<Arc<BackgroundShells>>,
 }
 
 /// Read-only history control plus optional exact owned-server lifecycle.
@@ -233,6 +235,14 @@ impl ProviderController for OpenCodeController {
         apply_holds(snapshot.sessions.iter_mut().filter(|session| {
             session.provider == Provider::OpenCode && session.runtime == Runtime::Host
         }));
+        if let Some(shells) = &self.source.background_shells {
+            apply_background_shells(
+                snapshot.sessions.iter_mut().filter(|session| {
+                    session.provider == Provider::OpenCode && session.runtime == Runtime::Host
+                }),
+                &shells.last(),
+            );
+        }
     }
 
     fn launch(&self, request: &LaunchRequest) -> Result<ControlOutcome> {
@@ -289,6 +299,14 @@ impl ProviderController for OpenCodeController {
                 .context("managed OpenCode control is not configured")?
                 .inspect(&session.provider_session_id);
         }
+        let supervisor = self.supervisor.as_ref();
+        if let Some(supervisor) = supervisor.filter(|_| session.runtime == Runtime::Host) {
+            if let Ok(transcript) =
+                supervisor.read_transcript(&session.provider_session_id, &session.cwd)
+            {
+                return Ok(transcript);
+            }
+        }
         self.source.inspect(session)
     }
 
@@ -344,11 +362,11 @@ impl ProviderController for OpenCodeController {
                 .current_dir(&session.cwd);
             command
         };
-        native_outcome(
-            crate::native_session::run(command, &session.id)?,
-            &session.provider_session_id,
-            &session.name,
-        )
+        let exit = crate::native_session::run(command, &session.id)?;
+        if matches!(exit, crate::native_session::NativeSessionExit::Backgrounded) {
+            self.pause_speech(&session.cwd);
+        }
+        native_outcome(exit, &session.provider_session_id, &session.name)
     }
 }
 
@@ -559,10 +577,10 @@ impl OpenCodeController {
             None => crate::native_session::resume(key)?,
             Some(command) => crate::native_session::run(command, key)?,
         };
-        if !matches!(exit, crate::native_session::NativeSessionExit::Backgrounded) {
-            if let Ok(mut clients) = shared_clients().lock() {
-                clients.remove(key);
-            }
+        if matches!(exit, crate::native_session::NativeSessionExit::Backgrounded) {
+            self.pause_speech(&session.cwd);
+        } else if let Ok(mut clients) = shared_clients().lock() {
+            clients.remove(key);
         }
         native_outcome(exit, &session.provider_session_id, &session.name)
     }
@@ -650,12 +668,24 @@ impl OpenCodeController {
             Some((pid, false)) if pid == server_pid => {}
             _ => return Ok(()),
         }
+        // The TUI repaints the new session before the switch returns; until
+        // then its screen must not speak for the row it showed before.
+        remember_shared_client(&key, server_pid, "", true);
         let selected_on =
             supervisor.select_in_shared_client(&session.provider_session_id, &cwd, &client)?;
         if selected_on == server_pid {
             remember_shared_client(&key, server_pid, &session.id, true);
         }
         Ok(())
+    }
+
+    /// A backgrounded TUI keeps running, so without this a TUI reading an
+    /// answer aloud (the opencode-read-aloud plugin) would keep talking over
+    /// the dashboard. Pausing keeps its place for when the session is reopened.
+    fn pause_speech(&self, cwd: &Path) {
+        if let Some(supervisor) = self.supervisor.as_ref() {
+            let _ = supervisor.run_tui_command(cwd, "speech.pause");
+        }
     }
 
     fn owned_session(&self, session: &AgentSession) -> Result<Option<ManagedOpenCodeSession>> {
@@ -768,6 +798,7 @@ impl OpenCodeSource {
             supervisor: None,
             discover_external_history: true,
             ownership: None,
+            background_shells: Some(Arc::new(BackgroundShells::host())),
         }
     }
 
@@ -782,6 +813,7 @@ impl OpenCodeSource {
             supervisor: Some(supervisor),
             discover_external_history: true,
             ownership: None,
+            background_shells: Some(Arc::new(BackgroundShells::host())),
         }
     }
 
@@ -800,6 +832,7 @@ impl OpenCodeSource {
             supervisor: Some(supervisor),
             discover_external_history: false,
             ownership: None,
+            background_shells: Some(Arc::new(BackgroundShells::host())),
         }
     }
 
@@ -823,6 +856,7 @@ impl OpenCodeSource {
             discover_external_history: true,
             probe: Arc::new(Vec::new),
             ownership: None,
+            background_shells: None,
         }
     }
 
@@ -889,6 +923,7 @@ impl OpenCodeSource {
             discover_external_history: true,
             probe: Arc::new(Vec::new),
             ownership: None,
+            background_shells: None,
         }
     }
 
@@ -909,6 +944,39 @@ impl SessionSource for OpenCodeSource {
     }
 
     fn discover_with_warnings(&self, request: &DiscoveryRequest) -> Result<SourceDiscovery> {
+        let Some(shells) = &self.background_shells else {
+            return self.discover_sessions(request);
+        };
+        let (discovery, running) = std::thread::scope(|scope| {
+            let running = scope.spawn(|| {
+                shells.running(self.runner.as_ref(), &|query| {
+                    let output = self
+                        .runner
+                        .run(&self.db_command(query, Duration::from_secs(8)))?;
+                    if output.status != 0 {
+                        bail!(
+                            "OpenCode background shell lookup exited with status {}",
+                            output.status
+                        );
+                    }
+                    Ok(output.stdout_text()?.to_owned())
+                })
+            });
+            let discovery = self.discover_sessions(request);
+            (discovery, running.join().unwrap_or_default())
+        });
+        let mut discovery = discovery?;
+        apply_background_shells(discovery.sessions.iter_mut(), &running);
+        Ok(discovery)
+    }
+
+    fn cancel(&self) {
+        self.runner.cancel();
+    }
+}
+
+impl OpenCodeSource {
+    fn discover_sessions(&self, request: &DiscoveryRequest) -> Result<SourceDiscovery> {
         let mut sessions = BTreeMap::new();
         let mut warnings = Vec::new();
         let external = self.discover_external_history && request.include_external;
@@ -928,7 +996,13 @@ impl SessionSource for OpenCodeSource {
             // Persisted history that no live process holds is completed.
             // Avoid starting the potentially enormous global database query
             // when completed sessions are hidden and nothing runs OpenCode.
-            if request.include_completed || !holders.is_empty() {
+            let server = self
+                .supervisor
+                .as_ref()
+                .filter(|_| self.runtime == Runtime::Host);
+            let server_live = server
+                .is_some_and(|supervisor| supervisor.live_server_pid().ok().flatten().is_some());
+            if request.include_completed || !holders.is_empty() || server_live {
                 let history_limit = request.history_limit.max(1);
                 let scope = if external {
                     Scope::Recent {
@@ -942,7 +1016,15 @@ impl SessionSource for OpenCodeSource {
                 } else {
                     Scope::Only(owned.clone())
                 };
-                let mut history = self.normalize_with_live_state(self.query(&scope)?, &holders);
+                let records = self.query(&scope)?;
+                let unfinished = unfinished_directories(&records);
+                let mut history = self.normalize_with_live_state(records, &holders);
+                if let Some(supervisor) = server.filter(|_| server_live && !unfinished.is_empty()) {
+                    match supervisor.server_activity(&unfinished) {
+                        Ok(activity) => apply_server_activity(&mut history, &activity, &owned),
+                        Err(error) => warnings.push(format!("OpenCode server status: {error:#}")),
+                    }
+                }
                 if request.history_oldest_first {
                     history.sort_by_key(|session| session.updated_at);
                 } else {
@@ -1001,10 +1083,6 @@ impl SessionSource for OpenCodeSource {
             sessions: sessions.into_values().collect(),
             warnings,
         })
-    }
-
-    fn cancel(&self) {
-        self.runner.cancel();
     }
 }
 
@@ -1265,6 +1343,56 @@ fn apply_live_state(
     session.pid = Some(pid);
 }
 
+/// Directories of sessions whose newest turn, or a subagent's, has not
+/// finished: the only ones a server can be running a turn in.
+fn unfinished_directories(records: &[OpenCodeRecord]) -> BTreeSet<PathBuf> {
+    records
+        .iter()
+        .filter(|record| {
+            record.child.is_some()
+                || record.last.as_ref().is_some_and(|last| {
+                    matches!(
+                        (last.role.as_deref(), last.completed),
+                        (Some("assistant"), None) | (Some("user"), _)
+                    )
+                })
+        })
+        .map(|record| record.directory.clone())
+        .collect()
+}
+
+/// A session the dashboard's server runs without owning it, because it was
+/// opened in the shared TUI, has no process of its own to probe; the server's
+/// status is the only live evidence. Owned sessions get theirs from the
+/// supervisor directly.
+fn apply_server_activity(
+    sessions: &mut [AgentSession],
+    activity: &crate::opencode_supervisor::ServerActivity,
+    owned: &BTreeSet<String>,
+) {
+    for session in sessions
+        .iter_mut()
+        .filter(|session| !owned.contains(&session.provider_session_id))
+    {
+        let id = &session.provider_session_id;
+        if !activity.running.contains(id) {
+            continue;
+        }
+        let (state, raw_state) = if activity.permissions.contains(id) {
+            (SessionState::NeedsInput, "permission requested")
+        } else if activity.questions.contains(id) {
+            (SessionState::NeedsInput, "question asked")
+        } else {
+            (SessionState::Working, "server busy")
+        };
+        session.state = state;
+        session.raw_state = Some(raw_state.into());
+        if let Some(pid) = activity.server_pid {
+            session.pid = Some(pid);
+        }
+    }
+}
+
 /// The state the TUI this dashboard holds for `session` shows now, for the
 /// dashboard to apply between discoveries.
 pub(super) fn background_screen_state(
@@ -1288,6 +1416,17 @@ fn apply_holds<'a>(sessions: impl Iterator<Item = &'a mut AgentSession>) {
         {
             apply_hold(session, &reason);
         }
+    }
+}
+
+fn apply_background_shells<'a>(
+    sessions: impl Iterator<Item = &'a mut AgentSession>,
+    running: &BTreeSet<String>,
+) {
+    for session in sessions.filter(|session| {
+        session.state != SessionState::Working && running.contains(&session.provider_session_id)
+    }) {
+        apply_hold(session, "shell");
     }
 }
 
@@ -1634,6 +1773,64 @@ mod tests {
     }
 
     #[test]
+    fn the_server_marks_sessions_it_runs_for_the_shared_tui_working() {
+        let input = r#"[
+          {"id": "ses_busy", "title": "t", "updated": 2, "created": 1, "projectId": "g", "directory": "/work"},
+          {"id": "ses_ask", "title": "t", "updated": 2, "created": 1, "projectId": "g", "directory": "/work"},
+          {"id": "ses_idle", "title": "t", "updated": 2, "created": 1, "projectId": "g", "directory": "/work"},
+          {"id": "ses_owned", "title": "t", "updated": 2, "created": 1, "projectId": "g", "directory": "/work"}
+        ]"#;
+        let mut sessions = parse_opencode_session_list(input, Runtime::Host).unwrap();
+        let activity = crate::opencode_supervisor::ServerActivity {
+            server_pid: Some(42),
+            running: ["ses_busy", "ses_ask", "ses_owned"]
+                .map(String::from)
+                .into(),
+            questions: ["ses_ask".to_owned()].into(),
+            permissions: BTreeSet::new(),
+        };
+        apply_server_activity(&mut sessions, &activity, &["ses_owned".to_owned()].into());
+        let state = |id: &str| {
+            let session = sessions
+                .iter()
+                .find(|session| session.provider_session_id == id)
+                .unwrap();
+            (session.state, session.raw_state.clone().unwrap_or_default())
+        };
+        assert_eq!(
+            state("ses_busy"),
+            (SessionState::Working, "server busy".into())
+        );
+        assert_eq!(
+            state("ses_ask"),
+            (SessionState::NeedsInput, "question asked".into())
+        );
+        assert_eq!(state("ses_idle").0, SessionState::Completed);
+        assert_eq!(state("ses_owned").0, SessionState::Completed);
+    }
+
+    #[test]
+    fn only_directories_with_an_unfinished_turn_are_asked_about() {
+        let records: Vec<OpenCodeRecord> = serde_json::from_str(
+            r#"[
+              {"id": "a", "title": "t", "updated": 2, "created": 1, "projectId": "g", "directory": "/running",
+               "last": {"role": "assistant", "created": 5}},
+              {"id": "b", "title": "t", "updated": 2, "created": 1, "projectId": "g", "directory": "/done",
+               "last": {"role": "assistant", "created": 5, "completed": 6}},
+              {"id": "c", "title": "t", "updated": 2, "created": 1, "projectId": "g", "directory": "/sent",
+               "last": {"role": "user", "created": 5}},
+              {"id": "d", "title": "t", "updated": 2, "created": 1, "projectId": "g", "directory": "/child",
+               "last": {"role": "assistant", "created": 5, "completed": 6}, "child": 7}
+            ]"#,
+        )
+        .unwrap();
+        assert_eq!(
+            unfinished_directories(&records),
+            ["/running", "/sent", "/child"].map(PathBuf::from).into()
+        );
+    }
+
+    #[test]
     fn a_previewed_shared_client_does_not_speak_for_the_selected_row() {
         let key = "opencode:shared:/preview-test";
         let row = "opencode:host:ses_preview_test";
@@ -1667,6 +1864,27 @@ mod tests {
         session.raw_state = Some("permission requested".into());
         apply_hold(&mut session, "CI on PR 8");
         assert_eq!(session.state, SessionState::NeedsInput);
+    }
+
+    #[test]
+    fn a_live_background_shell_keeps_only_its_session_working() {
+        let input = r#"[{"id": "ses_watch", "title": "t", "updated": 2, "created": 1,
+          "projectId": "global", "directory": "/work"},
+          {"id": "ses_idle", "title": "t", "updated": 2, "created": 1,
+          "projectId": "global", "directory": "/work"},
+          {"id": "ses_turn", "title": "t", "updated": 2, "created": 1,
+          "projectId": "global", "directory": "/work"}]"#;
+        let mut sessions = parse_opencode_session_list(input, Runtime::Host).unwrap();
+        sessions[0].state = SessionState::NeedsInput;
+        sessions[0].raw_state = Some("waiting at prompt".into());
+        sessions[2].state = SessionState::Working;
+        sessions[2].raw_state = Some("running turn".into());
+        let running = BTreeSet::from(["ses_watch".to_owned(), "ses_turn".to_owned()]);
+        apply_background_shells(sessions.iter_mut(), &running);
+        assert_eq!(sessions[0].state, SessionState::Working);
+        assert_eq!(sessions[0].raw_state.as_deref(), Some("background: shell"));
+        assert_eq!(sessions[1].state, SessionState::Completed);
+        assert_eq!(sessions[2].raw_state.as_deref(), Some("running turn"));
     }
 
     #[test]

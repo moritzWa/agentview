@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
@@ -36,6 +36,8 @@ pub struct CodexSource {
     runtime: Runtime,
     owned_only: bool,
     connection: Mutex<Option<AppServerClient>>,
+    /// Update time of each thread whose latest reply was last read.
+    replies_read: Mutex<HashMap<String, SystemTime>>,
 }
 
 impl CodexSource {
@@ -46,6 +48,7 @@ impl CodexSource {
             runtime: Runtime::Host,
             owned_only: false,
             connection: Mutex::new(None),
+            replies_read: Mutex::default(),
         }
     }
 
@@ -56,6 +59,7 @@ impl CodexSource {
             runtime: Runtime::Host,
             owned_only: false,
             connection: Mutex::new(None),
+            replies_read: Mutex::default(),
         }
     }
 
@@ -67,6 +71,7 @@ impl CodexSource {
             runtime: Runtime::Host,
             owned_only: true,
             connection: Mutex::new(None),
+            replies_read: Mutex::default(),
         }
     }
 
@@ -87,6 +92,7 @@ impl CodexSource {
             },
             owned_only: false,
             connection: Mutex::new(None),
+            replies_read: Mutex::default(),
         }
     }
 
@@ -188,6 +194,7 @@ impl CodexSource {
                     .map(|cwd| session.cwd.starts_with(cwd))
                     .unwrap_or(true)
         });
+        self.read_recent_replies(transport, &records);
         let warnings = cursor
             .is_some()
             .then(|| {
@@ -203,7 +210,49 @@ impl CodexSource {
             warnings,
         })
     }
+
+    /// `thread/list` carries only each thread's first prompt. Read the latest
+    /// reply of threads that finished a turn recently, once per update, so the
+    /// needs-input classifier can judge them.
+    fn read_recent_replies(&self, transport: &mut AppServerClient, sessions: &[AgentSession]) {
+        let Ok(mut replies_read) = self.replies_read.lock() else {
+            return;
+        };
+        let now = SystemTime::now();
+        let changed = sessions
+            .iter()
+            .filter(|session| session.state == SessionState::Completed)
+            .filter_map(|session| Some((session, session.updated_at?)))
+            .filter(|(_, updated)| {
+                now.duration_since(*updated)
+                    .is_ok_and(|age| age <= RECENT_REPLY)
+            })
+            .filter(|(session, updated)| replies_read.get(&session.id) != Some(updated))
+            .take(MAX_REPLY_READS)
+            .collect::<Vec<_>>();
+        for (session, updated) in changed {
+            replies_read.insert(session.id.clone(), updated);
+            let Ok(response) = transport.request(
+                "thread/read",
+                json!({"threadId": session.provider_session_id, "includeTurns": true}),
+            ) else {
+                continue;
+            };
+            if let Some(message) = response
+                .pointer("/thread/turns")
+                .and_then(Value::as_array)
+                .and_then(|turns| latest_agent_message(turns))
+            {
+                crate::last_message::remember(&session.id, message);
+            }
+        }
+    }
 }
+
+/// Matches the window in which the needs-input classifier labels idle turns.
+const RECENT_REPLY: Duration = Duration::from_secs(24 * 60 * 60);
+/// Bounds the extra reads one refresh can add; the rest follow on later ones.
+const MAX_REPLY_READS: usize = 4;
 
 impl SessionSource for CodexSource {
     fn label(&self) -> &str {
@@ -334,8 +383,10 @@ fn parse_codex_thread_read(input: &Value, runtime: Runtime) -> Result<AgentSessi
 }
 
 fn normalize_thread(thread: CodexThread, runtime: Runtime) -> AgentSession {
-    let latest_summary =
-        latest_agent_message(&thread.turns).unwrap_or_else(|| thread.preview.clone());
+    let latest_message = latest_agent_message(&thread.turns);
+    let latest_summary = latest_message
+        .map(|text| truncate_words(text, 160))
+        .unwrap_or_else(|| thread.preview.clone());
     // Some App Server releases leave thread.updatedAt at the first turn even
     // though thread/read returns newer turns. Turn completion/start timestamps
     // are provider data and provide the accurate recency without parsing
@@ -394,9 +445,13 @@ fn normalize_thread(thread: CodexThread, runtime: Runtime) -> AgentSession {
     // The summary remains observable, but transcript/control capabilities are
     // granted only after the host supervisor proves exact ownership.
     let capabilities = BTreeSet::new();
+    let id = format!("codex:{runtime_id}:{}", thread.id);
+    if let Some(message) = latest_message {
+        crate::last_message::remember(&id, message);
+    }
 
     AgentSession {
-        id: format!("codex:{runtime_id}:{}", thread.id),
+        id,
         provider_session_id: thread.id,
         provider: Provider::Codex,
         runtime,
@@ -414,7 +469,7 @@ fn normalize_thread(thread: CodexThread, runtime: Runtime) -> AgentSession {
     }
 }
 
-fn latest_agent_message(turns: &[Value]) -> Option<String> {
+fn latest_agent_message(turns: &[Value]) -> Option<&str> {
     turns
         .iter()
         .rev()
@@ -426,7 +481,6 @@ fn latest_agent_message(turns: &[Value]) -> Option<String> {
                 .flatten()
                 .map(str::trim)
                 .filter(|text| !text.is_empty())
-                .map(|text| truncate_words(text, 160))
         })
 }
 
