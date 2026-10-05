@@ -2540,7 +2540,10 @@ mod tests {
             .lines()
             .find(|line| line.contains('›'))
             .expect("selected picker row");
-        assert!(row.contains(&format!("{} │", format_age(Some(Duration::ZERO)))), "{row}");
+        assert!(
+            row.contains(&format!("{} │", format_age(Some(Duration::ZERO)))),
+            "{row}"
+        );
         assert!(row.trim_end().ends_with('│'), "{row}");
     }
 

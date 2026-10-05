@@ -10,6 +10,12 @@ and released versions are intended to follow Semantic Versioning.
 
 ### Added
 
+- An OpenCode session whose Cursor model left a command running in the
+  background, such as a watcher the agent reports back from, shows as working
+  until that command exits, instead of as done or waiting for input.
+  agentview finds these from the logs `cursor-opencode-provider` writes to the
+  temp directory.
+
 - Claude Code sessions stay on the dashboard as completed after their process
   exits, read from the transcripts under `~/.claude/projects`, and opening one
   runs `claude --resume` in its folder. A running interactive Claude session

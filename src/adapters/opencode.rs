@@ -8,6 +8,7 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
 use super::native_owned::{poll_unique, NativeOwnership};
+use super::opencode_background::BackgroundShells;
 use super::opencode_live::{self, Candidate, Holder, LastMessage};
 use super::{DiscoveryRequest, SessionSource, SourceDiscovery};
 use crate::control::{
@@ -114,6 +115,7 @@ pub struct OpenCodeSource {
     discover_external_history: bool,
     probe: HolderProbe,
     ownership: Option<Arc<OpenCodeOwnership>>,
+    background_shells: Option<Arc<BackgroundShells>>,
 }
 
 /// Read-only history control plus optional exact owned-server lifecycle.
@@ -233,6 +235,14 @@ impl ProviderController for OpenCodeController {
         apply_holds(snapshot.sessions.iter_mut().filter(|session| {
             session.provider == Provider::OpenCode && session.runtime == Runtime::Host
         }));
+        if let Some(shells) = &self.source.background_shells {
+            apply_background_shells(
+                snapshot.sessions.iter_mut().filter(|session| {
+                    session.provider == Provider::OpenCode && session.runtime == Runtime::Host
+                }),
+                &shells.last(),
+            );
+        }
     }
 
     fn launch(&self, request: &LaunchRequest) -> Result<ControlOutcome> {
@@ -788,6 +798,7 @@ impl OpenCodeSource {
             supervisor: None,
             discover_external_history: true,
             ownership: None,
+            background_shells: Some(Arc::new(BackgroundShells::host())),
         }
     }
 
@@ -802,6 +813,7 @@ impl OpenCodeSource {
             supervisor: Some(supervisor),
             discover_external_history: true,
             ownership: None,
+            background_shells: Some(Arc::new(BackgroundShells::host())),
         }
     }
 
@@ -820,6 +832,7 @@ impl OpenCodeSource {
             supervisor: Some(supervisor),
             discover_external_history: false,
             ownership: None,
+            background_shells: Some(Arc::new(BackgroundShells::host())),
         }
     }
 
@@ -843,6 +856,7 @@ impl OpenCodeSource {
             discover_external_history: true,
             probe: Arc::new(Vec::new),
             ownership: None,
+            background_shells: None,
         }
     }
 
@@ -909,6 +923,7 @@ impl OpenCodeSource {
             discover_external_history: true,
             probe: Arc::new(Vec::new),
             ownership: None,
+            background_shells: None,
         }
     }
 
@@ -929,6 +944,39 @@ impl SessionSource for OpenCodeSource {
     }
 
     fn discover_with_warnings(&self, request: &DiscoveryRequest) -> Result<SourceDiscovery> {
+        let Some(shells) = &self.background_shells else {
+            return self.discover_sessions(request);
+        };
+        let (discovery, running) = std::thread::scope(|scope| {
+            let running = scope.spawn(|| {
+                shells.running(self.runner.as_ref(), &|query| {
+                    let output = self
+                        .runner
+                        .run(&self.db_command(query, Duration::from_secs(8)))?;
+                    if output.status != 0 {
+                        bail!(
+                            "OpenCode background shell lookup exited with status {}",
+                            output.status
+                        );
+                    }
+                    Ok(output.stdout_text()?.to_owned())
+                })
+            });
+            let discovery = self.discover_sessions(request);
+            (discovery, running.join().unwrap_or_default())
+        });
+        let mut discovery = discovery?;
+        apply_background_shells(discovery.sessions.iter_mut(), &running);
+        Ok(discovery)
+    }
+
+    fn cancel(&self) {
+        self.runner.cancel();
+    }
+}
+
+impl OpenCodeSource {
+    fn discover_sessions(&self, request: &DiscoveryRequest) -> Result<SourceDiscovery> {
         let mut sessions = BTreeMap::new();
         let mut warnings = Vec::new();
         let external = self.discover_external_history && request.include_external;
@@ -1035,10 +1083,6 @@ impl SessionSource for OpenCodeSource {
             sessions: sessions.into_values().collect(),
             warnings,
         })
-    }
-
-    fn cancel(&self) {
-        self.runner.cancel();
     }
 }
 
@@ -1372,6 +1416,17 @@ fn apply_holds<'a>(sessions: impl Iterator<Item = &'a mut AgentSession>) {
         {
             apply_hold(session, &reason);
         }
+    }
+}
+
+fn apply_background_shells<'a>(
+    sessions: impl Iterator<Item = &'a mut AgentSession>,
+    running: &BTreeSet<String>,
+) {
+    for session in sessions.filter(|session| {
+        session.state != SessionState::Working && running.contains(&session.provider_session_id)
+    }) {
+        apply_hold(session, "shell");
     }
 }
 
@@ -1809,6 +1864,27 @@ mod tests {
         session.raw_state = Some("permission requested".into());
         apply_hold(&mut session, "CI on PR 8");
         assert_eq!(session.state, SessionState::NeedsInput);
+    }
+
+    #[test]
+    fn a_live_background_shell_keeps_only_its_session_working() {
+        let input = r#"[{"id": "ses_watch", "title": "t", "updated": 2, "created": 1,
+          "projectId": "global", "directory": "/work"},
+          {"id": "ses_idle", "title": "t", "updated": 2, "created": 1,
+          "projectId": "global", "directory": "/work"},
+          {"id": "ses_turn", "title": "t", "updated": 2, "created": 1,
+          "projectId": "global", "directory": "/work"}]"#;
+        let mut sessions = parse_opencode_session_list(input, Runtime::Host).unwrap();
+        sessions[0].state = SessionState::NeedsInput;
+        sessions[0].raw_state = Some("waiting at prompt".into());
+        sessions[2].state = SessionState::Working;
+        sessions[2].raw_state = Some("running turn".into());
+        let running = BTreeSet::from(["ses_watch".to_owned(), "ses_turn".to_owned()]);
+        apply_background_shells(sessions.iter_mut(), &running);
+        assert_eq!(sessions[0].state, SessionState::Working);
+        assert_eq!(sessions[0].raw_state.as_deref(), Some("background: shell"));
+        assert_eq!(sessions[1].state, SessionState::Completed);
+        assert_eq!(sessions[2].raw_state.as_deref(), Some("running turn"));
     }
 
     #[test]
