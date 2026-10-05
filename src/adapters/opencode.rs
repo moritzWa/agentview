@@ -404,12 +404,15 @@ fn remember_shared_client(key: &str, server_pid: u32, showing: &str, previewed: 
 }
 
 /// The native key of the shared TUI showing this dashboard row, if any.
+/// A preview only switched the hidden TUI while the row was selected; its
+/// screen may still be loading or painting the previous session, so it is not
+/// evidence of the row's state.
 fn shared_client_showing(row_id: &str) -> Option<String> {
     shared_clients()
         .lock()
         .ok()?
         .iter()
-        .find(|(_, shared)| shared.showing == row_id)
+        .find(|(_, shared)| !shared.previewed && shared.showing == row_id)
         .map(|(key, _)| key.clone())
 }
 
@@ -1628,6 +1631,18 @@ mod tests {
             assert_eq!(request, &self.expected);
             Ok(self.output.lock().unwrap().take().unwrap())
         }
+    }
+
+    #[test]
+    fn a_previewed_shared_client_does_not_speak_for_the_selected_row() {
+        let key = "opencode:shared:/preview-test";
+        let row = "opencode:host:ses_preview_test";
+        remember_shared_client(key, 1, row, true);
+        assert_eq!(shared_client_showing(row), None);
+
+        remember_shared_client(key, 1, row, false);
+        assert_eq!(shared_client_showing(row).as_deref(), Some(key));
+        shared_clients().lock().unwrap().remove(key);
     }
 
     #[test]
