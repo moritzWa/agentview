@@ -437,6 +437,9 @@ fn owned_antigravity_session(
     let id = format!("antigravity:host:{}", record.conversation_id);
     let backgrounded = crate::native_session::is_backgrounded(&id);
     let transcript = read_antigravity_transcript(brain_path, &record.conversation_id).ok();
+    if let Some(reply) = transcript.as_ref().and_then(|t| t.last_reply.as_deref()) {
+        crate::last_message::remember(&id, reply);
+    }
     let workspace_name = record
         .workspace
         .file_name()
@@ -521,6 +524,7 @@ fn pending_antigravity_session(pending: &PendingAntigravityConversation) -> Agen
 
 struct AntigravityTranscript {
     summary: Option<String>,
+    last_reply: Option<String>,
     updated_at: Option<SystemTime>,
     user_text: String,
 }
@@ -552,6 +556,7 @@ fn read_antigravity_transcript(
     }
     let input = String::from_utf8(bytes).context("Antigravity transcript is not UTF-8")?;
     let mut summary = None;
+    let mut last_reply = None;
     let mut user_text = String::new();
     for line in input.lines() {
         let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
@@ -568,11 +573,13 @@ fn read_antigravity_transcript(
             let normalized = compact_antigravity_text(content, 240);
             if !normalized.is_empty() {
                 summary = Some(normalized);
+                last_reply = Some(content.to_owned());
             }
         }
     }
     Ok(AntigravityTranscript {
         summary,
+        last_reply,
         updated_at: metadata.modified().ok(),
         user_text,
     })

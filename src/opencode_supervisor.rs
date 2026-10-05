@@ -277,8 +277,29 @@ impl OpenCodeSupervisor {
             &format!("/session/{}/message", url_path_segment(session_id)),
             &owned.cwd,
         );
-        let messages = self.request_json(&record, "GET", &path, None)?;
+        self.render_latest_messages(&record, &path)
+    }
+
+    /// A session too long for one response keeps its latest messages.
+    fn render_latest_messages(&self, record: &ServerRecord, path: &str) -> Result<String> {
+        let messages = self
+            .request_json(record, "GET", path, None)
+            .or_else(|_| self.request_json(record, "GET", &format!("{path}&limit=50"), None))?;
         render_messages(&messages)
+    }
+
+    /// Read-only transcript of any session the live server can load, for
+    /// sessions this dashboard opened without starting them. `opencode export`
+    /// loses everything past its first 64 KiB when stdout is a pipe. Never
+    /// starts a server.
+    pub fn read_transcript(&self, session_id: &str, cwd: &Path) -> Result<String> {
+        let _lock = StateLock::acquire(&self.lock_path)?;
+        let record = self.required_live_record_locked()?;
+        let path = with_directory_query(
+            &format!("/session/{}/message", url_path_segment(session_id)),
+            cwd,
+        );
+        self.render_latest_messages(&record, &path)
     }
 
     pub fn reply(&self, session_id: &str, prompt: &str) -> Result<()> {
@@ -460,9 +481,12 @@ impl OpenCodeSupervisor {
                 ("/question", &mut activity.questions),
                 ("/permission", &mut activity.permissions),
             ] {
-                if let Ok(requests) =
-                    self.request_json(&record, "GET", &with_directory_query(route, directory), None)
-                {
+                if let Ok(requests) = self.request_json(
+                    &record,
+                    "GET",
+                    &with_directory_query(route, directory),
+                    None,
+                ) {
                     blocked.extend(request_session_ids(&requests));
                 }
             }
