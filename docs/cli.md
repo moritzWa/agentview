@@ -370,6 +370,23 @@ or permission prompt are listed rather than resumed, since that prompt does not
 survive the restart and only you can answer it. If the restart fails partway,
 running the command again resumes the sessions it recorded.
 
+Rebooting needs no command. When the dashboard next starts the server and the
+machine has booted since the previous server started, agentview reads the
+OpenCode database for top-level sessions whose last reply began on that server
+and never completed, and resumes them the same way. A finished or interrupted
+reply always records its completion, and a server killed by shutdown never
+does. agentview only does this after a reboot: if the server merely crashed, a
+standalone OpenCode window could still be running one of those turns.
+
+To stop the server without restarting it:
+
+```console
+agentview opencode stop
+```
+
+It records the running turns as `restart` does, and the next server start
+resumes them.
+
 Open windows reconnect but keep running the OpenCode build and TUI plugins they
 started with. The dashboard keeps one OpenCode window per folder and switches
 it between that folder's sessions with `/tui/select-session`, addressed to that

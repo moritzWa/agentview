@@ -164,6 +164,9 @@ enum OpenCodeCommand {
     /// Restart the server on the same port and send `continue` to every
     /// session whose turn the restart interrupted.
     Restart,
+    /// Stop the server and remember the turns it cut off; the next server
+    /// start sends them `continue`. A reboot is detected without this.
+    Stop,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Subcommand)]
@@ -1193,6 +1196,37 @@ fn run_opencode_command(command: &OpenCodeCommand, cli: &Cli) -> Result<()> {
             {
                 let _ = cli;
                 bail!("restarting the OpenCode server requires Linux or macOS")
+            }
+        }
+        OpenCodeCommand::Stop => {
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            {
+                let report =
+                    OpenCodeSupervisor::host(cli.opencode_bin.clone())?.stop_server_for_resume()?;
+                if cli.json {
+                    serde_json::to_writer_pretty(io::stdout().lock(), &report)?;
+                    println!();
+                    return Ok(());
+                }
+                match report.previous_pid {
+                    Some(pid) => println!("Stopped the OpenCode server (pid {pid})."),
+                    None => println!("No OpenCode server was running."),
+                }
+                for id in &report.saved {
+                    println!("Resumes on next start: {}", sanitize_cli_text(id));
+                }
+                for id in &report.awaiting_input {
+                    println!(
+                        "Not resumed, it was waiting for your answer: {}",
+                        sanitize_cli_text(id)
+                    );
+                }
+                Ok(())
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+            {
+                let _ = cli;
+                bail!("stopping the OpenCode server requires Linux or macOS")
             }
         }
     }

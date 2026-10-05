@@ -621,14 +621,52 @@ impl OpenCodeSupervisor {
         report.same_port = previous
             .as_ref()
             .is_some_and(|endpoint| endpoint.port == record.port);
+        self.resume_turns(&record, pending, &mut report)?;
+        Ok(report)
+    }
 
+    /// Stop the owned server and remember which top-level turns it cut off,
+    /// so the next server start sends them `continue`. Sessions blocked on a
+    /// question or permission prompt are reported instead.
+    pub fn stop_server_for_resume(&self) -> Result<OpenCodeStopReport> {
+        let _lock = StateLock::acquire(&self.lock_path)?;
+        let pending_path = self.state_dir.join(RESTART_PENDING_FILE);
+        let mut pending = load_pending_turns(&pending_path)?;
+        let mut report = OpenCodeStopReport::default();
+        let Some(record) = self.live_record_locked()? else {
+            report.saved = pending.into_iter().map(|turn| turn.id).collect();
+            return Ok(report);
+        };
+        let (interrupted, awaiting_input) = self.interrupted_turns(&record)?;
+        for turn in interrupted {
+            if !pending.iter().any(|known| known.id == turn.id) {
+                pending.push(turn);
+            }
+        }
+        save_pending_turns(&pending_path, &pending)?;
+        stop_server(&record, RESTART_GRACE, true)?;
+        report.previous_pid = Some(record.pid);
+        report.awaiting_input = awaiting_input;
+        report.saved = pending.into_iter().map(|turn| turn.id).collect();
+        Ok(report)
+    }
+
+    /// Send `continue` to each turn, keeping the ones that fail in the resume
+    /// list so the next start or restart retries them.
+    fn resume_turns(
+        &self,
+        record: &ServerRecord,
+        pending: Vec<InterruptedTurn>,
+        report: &mut OpenCodeRestartReport,
+    ) -> Result<()> {
+        let pending_path = self.state_dir.join(RESTART_PENDING_FILE);
         let mut unresumed = Vec::new();
         for turn in pending {
             let path = with_directory_query(
                 &format!("/session/{}/prompt_async", url_path_segment(&turn.id)),
                 &turn.cwd,
             );
-            match self.request_empty(&record, "POST", &path, Some(&resume_prompt_body(&turn))) {
+            match self.request_empty(record, "POST", &path, Some(&resume_prompt_body(&turn))) {
                 Ok(()) => report.resumed.push(turn.id),
                 Err(error) => {
                     report.failed.push((turn.id.clone(), format!("{error:#}")));
@@ -638,14 +676,75 @@ impl OpenCodeSupervisor {
         }
         if unresumed.is_empty() {
             match fs::remove_file(&pending_path) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error).context("failed to clear restart resume list"),
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error).context("failed to clear restart resume list"),
             }
         } else {
-            save_pending_turns(&pending_path, &unresumed)?;
+            save_pending_turns(&pending_path, &unresumed)
         }
-        Ok(report)
+    }
+
+    /// Turns a server that is no longer running left behind: the saved resume
+    /// list, plus, when the machine rebooted since that server started, every
+    /// top-level turn whose reply never completed. A reboot leaves no process
+    /// that could still be running such a turn, so resuming cannot run it
+    /// twice; after a crash without a reboot, a standalone TUI might be.
+    fn turns_left_by_stopped_server(
+        &self,
+        previous: Option<&ServerRecord>,
+        report: &mut OpenCodeRestartReport,
+    ) -> Result<Vec<InterruptedTurn>> {
+        let mut pending = load_pending_turns(&self.state_dir.join(RESTART_PENDING_FILE))?;
+        let Some(previous) = previous else {
+            return Ok(pending);
+        };
+        if !boot_time_ms().is_some_and(|booted| booted > previous.created_at_ms) {
+            return Ok(pending);
+        }
+        report.previous_pid = Some(previous.pid);
+        for (id, cwd, awaiting_input) in
+            unfinished_top_level_turns(&self.executable, previous.created_at_ms)
+        {
+            if awaiting_input {
+                report.awaiting_input.push(id);
+            } else if !pending.iter().any(|known| known.id == id) {
+                pending.push(InterruptedTurn {
+                    id,
+                    cwd,
+                    agent: None,
+                    provider_id: None,
+                    model_id: None,
+                    variant: None,
+                });
+            }
+        }
+        Ok(pending)
+    }
+
+    /// Fill in the agent and model of turns found without a server, from the
+    /// last user message the new server returns.
+    fn with_turn_settings(
+        &self,
+        record: &ServerRecord,
+        turns: Vec<InterruptedTurn>,
+    ) -> Vec<InterruptedTurn> {
+        turns
+            .into_iter()
+            .map(|turn| {
+                if turn.agent.is_some() || turn.model_id.is_some() {
+                    return turn;
+                }
+                let path = with_directory_query(
+                    &format!("/session/{}/message", url_path_segment(&turn.id)),
+                    &turn.cwd,
+                );
+                let messages = self
+                    .request_json(record, "GET", &format!("{path}&limit=20"), None)
+                    .unwrap_or(Value::Null);
+                interrupted_turn(turn.id, turn.cwd, &messages)
+            })
+            .collect()
     }
 
     /// Top-level sessions with a turn in flight on this server, split into
@@ -738,11 +837,20 @@ impl OpenCodeSupervisor {
                 return Ok(record.clone());
             }
         }
-        self.start_server(
+        let mut report = OpenCodeRestartReport::default();
+        let pending = self.turns_left_by_stopped_server(previous.as_ref(), &mut report)?;
+        let record = self.start_server(
             &self.executable,
             previous.map(|record| record.sessions).unwrap_or_default(),
             None,
-        )
+        )?;
+        if !pending.is_empty() {
+            let pending = self.with_turn_settings(&record, pending);
+            // Turns that fail to resume stay in the resume list; they must not
+            // keep the dashboard from starting.
+            let _ = self.resume_turns(&record, pending, &mut report);
+        }
+        Ok(record)
     }
 
     /// Start a server, on `endpoint`'s port and credentials when given so
@@ -1073,6 +1181,16 @@ pub struct OpenCodeRestartReport {
     pub failed: Vec<(String, String)>,
 }
 
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenCodeStopReport {
+    pub previous_pid: Option<u32>,
+    /// Sessions the next server start sends `continue`.
+    pub saved: Vec<String>,
+    /// Sessions that were blocked on a question or permission prompt.
+    pub awaiting_input: Vec<String>,
+}
+
 fn running_session_ids(statuses: &Value) -> Vec<String> {
     statuses
         .as_object()
@@ -1170,6 +1288,82 @@ fn recent_session_directories(executable: &str) -> Vec<PathBuf> {
         .filter(|line| !line.is_empty())
         .map(PathBuf::from)
         .collect()
+}
+
+/// Top-level sessions whose latest message is a reply started at or after
+/// `since` that never completed, with whether it stopped on a question. A
+/// finished or aborted reply records `time.completed`; a killed server never
+/// gets to.
+fn unfinished_top_level_turns(executable: &str, since: u64) -> Vec<(String, PathBuf, bool)> {
+    let query = format!(
+        "select s.id, s.directory, exists (select 1 from part p where p.message_id = m.id \
+         and json_extract(p.data, '$.type') = 'tool' and json_extract(p.data, '$.tool') = 'question' \
+         and json_extract(p.data, '$.state.status') in ('pending', 'running')) as awaiting_input \
+         from session s join message m on m.id = (select id from message where session_id = s.id \
+         order by time_created desc, id desc limit 1) \
+         where s.parent_id is null and s.time_archived is null and m.time_created >= {since} \
+         and json_extract(m.data, '$.role') = 'assistant' \
+         and json_extract(m.data, '$.time.completed') is null"
+    );
+    let Ok(output) = Command::new(executable)
+        .args(["db", &query, "--format", "tsv"])
+        .stdin(std::process::Stdio::null())
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .skip(1)
+        .filter_map(|line| {
+            let mut fields = line.split('\t');
+            let id = fields.next()?.trim();
+            let directory = fields.next()?.trim();
+            let awaiting_input = fields.next()?.trim() == "1";
+            (!id.is_empty() && !directory.is_empty())
+                .then(|| (id.to_owned(), PathBuf::from(directory), awaiting_input))
+        })
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+fn boot_time_ms() -> Option<u64> {
+    let mut boot = libc::timeval {
+        tv_sec: 0,
+        tv_usec: 0,
+    };
+    let mut size = std::mem::size_of::<libc::timeval>();
+    let name = c"kern.boottime";
+    let result = unsafe {
+        libc::sysctlbyname(
+            name.as_ptr(),
+            (&mut boot as *mut libc::timeval).cast(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    (result == 0 && boot.tv_sec > 0).then(|| boot.tv_sec as u64 * 1000 + boot.tv_usec as u64 / 1000)
+}
+
+#[cfg(target_os = "linux")]
+fn boot_time_ms() -> Option<u64> {
+    fs::read_to_string("/proc/stat")
+        .ok()?
+        .lines()
+        .find_map(|line| line.strip_prefix("btime "))?
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .map(|seconds| seconds * 1000)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn boot_time_ms() -> Option<u64> {
+    None
 }
 
 fn load_pending_turns(path: &Path) -> Result<Vec<InterruptedTurn>> {

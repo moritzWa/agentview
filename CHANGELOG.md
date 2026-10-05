@@ -36,6 +36,11 @@ and released versions are intended to follow Semantic Versioning.
   port, so open OpenCode windows reconnect, and sends `continue` to every
   session whose turn the restart cut off.
 
+- After a reboot, the first OpenCode server the dashboard starts sends
+  `continue` to every top-level session whose reply the shutdown cut off,
+  found in the OpenCode database. `agentview opencode stop` stops the server
+  and leaves the same resume for its next start.
+
 - Opening OpenCode sessions reuses one OpenCode window per folder, switching it
   to the chosen session instead of starting a window per session (2 to 3
   seconds and about 300 MB each). After `agentview opencode restart`, the next

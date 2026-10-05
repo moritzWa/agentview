@@ -95,6 +95,148 @@ fn restart_keeps_the_endpoint_and_resumes_only_interrupted_top_level_turns() {
     supervisor.shutdown_server().unwrap();
 }
 
+/// Launch one owned session, then kill the server the way a reboot or crash
+/// does, leaving `ses_cut` and `ses_asked` with replies that never completed.
+fn server_killed_mid_turn(directory: &Path) -> (OpenCodeSupervisor, u32) {
+    let fake = directory.join("fake-opencode");
+    write_fake_opencode(&fake);
+    let supervisor =
+        OpenCodeSupervisor::with_state_dir(fake.display().to_string(), directory.join("state"))
+            .unwrap();
+    let launched = supervisor.launch("owned task", directory).unwrap();
+    let cwd = directory.display().to_string();
+    update_state(directory, |state| {
+        for id in ["ses_cut", "ses_asked"] {
+            state["sessions"][id] = json!({"id": id, "directory": cwd, "title": id, "time": {"created": 1, "updated": 2}});
+            state["messages"][id] = json!([]);
+        }
+        state["messages"]["ses_cut"] = json!([
+            {"info": {"role": "user", "agent": "plan", "model": {"providerID": "x", "modelID": "y"}, "time": {"created": 20}}, "parts": []},
+            {"info": {"role": "assistant", "time": {"created": 21}}, "parts": []}
+        ]);
+        state["unfinished"] = json!([["ses_cut", cwd, 0], ["ses_asked", cwd, 1]]);
+        state["prompts"] = json!([]);
+    });
+    supervisor.shutdown_server().unwrap();
+    (supervisor, launched.server_pid)
+}
+
+fn update_state(directory: &Path, change: impl FnOnce(&mut Value)) {
+    let path = directory.join("server-state.json");
+    let mut state: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    change(&mut state);
+    fs::write(&path, serde_json::to_vec(&state).unwrap()).unwrap();
+}
+
+fn read_state(directory: &Path) -> Value {
+    serde_json::from_slice(&fs::read(directory.join("server-state.json")).unwrap()).unwrap()
+}
+
+#[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "the Python fake server misses the 10s readiness window on hosted macOS runners"
+)]
+fn starting_after_a_reboot_resumes_turns_the_dead_server_left_unfinished() {
+    let directory = tempdir().unwrap();
+    let (supervisor, first_pid) = server_killed_mid_turn(directory.path());
+    let record_path = directory.path().join("state/server.json");
+    let mut record: Value = serde_json::from_slice(&fs::read(&record_path).unwrap()).unwrap();
+    record["createdAtMs"] = json!(1);
+    fs::write(&record_path, serde_json::to_vec(&record).unwrap()).unwrap();
+
+    let reach = supervisor.shared_client_reach().unwrap();
+    assert_eq!(reach, SharedClientReach::None);
+
+    let state = read_state(directory.path());
+    let new_pid = supervisor.live_server_pid().unwrap().unwrap();
+    assert_ne!(new_pid, first_pid);
+    assert!(
+        state["db_queries"][0]
+            .as_str()
+            .unwrap()
+            .contains("m.time_created >= 1 "),
+        "the scan must start at the dead server's start: {}",
+        state["db_queries"]
+    );
+    assert_eq!(
+        state["prompts"],
+        json!([{
+            "session": "ses_cut",
+            "server": new_pid,
+            "body": {
+                "parts": [{"type": "text", "text": "continue"}],
+                "agent": "plan",
+                "model": {"providerID": "x", "modelID": "y"}
+            }
+        }]),
+        "only the cut-off turn resumes, never the one waiting on a question"
+    );
+    assert!(!directory.path().join("state/restart-pending.json").exists());
+
+    supervisor.shutdown_server().unwrap();
+    update_state(directory.path(), |state| state["prompts"] = json!([]));
+    supervisor.shared_client_reach().unwrap();
+    assert_eq!(
+        read_state(directory.path())["prompts"],
+        json!([]),
+        "a turn resumed once is not resumed again by the next start"
+    );
+    supervisor.shutdown_server().unwrap();
+}
+
+#[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "the Python fake server misses the 10s readiness window on hosted macOS runners"
+)]
+fn starting_after_a_crash_without_a_reboot_leaves_unfinished_turns_alone() {
+    let directory = tempdir().unwrap();
+    let (supervisor, _) = server_killed_mid_turn(directory.path());
+
+    supervisor.shared_client_reach().unwrap();
+
+    let state = read_state(directory.path());
+    assert_eq!(
+        state["prompts"],
+        json!([]),
+        "a standalone TUI may still be running these turns"
+    );
+    assert!(state.get("db_queries").is_none());
+    supervisor.shutdown_server().unwrap();
+}
+
+#[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "the Python fake server misses the 10s readiness window on hosted macOS runners"
+)]
+fn stop_remembers_running_turns_and_the_next_start_resumes_them() {
+    let directory = tempdir().unwrap();
+    let fake = directory.path().join("fake-opencode");
+    write_fake_opencode(&fake);
+    let supervisor = OpenCodeSupervisor::with_state_dir(
+        fake.display().to_string(),
+        directory.path().join("state"),
+    )
+    .unwrap();
+    let launched = supervisor.launch("owned task", directory.path()).unwrap();
+    update_state(directory.path(), |state| state["prompts"] = json!([]));
+
+    let report = supervisor.stop_server_for_resume().unwrap();
+    assert_eq!(report.previous_pid, Some(launched.server_pid));
+    assert_eq!(report.saved, ["ses_owned"]);
+    assert!(supervisor.live_server_pid().unwrap().is_none());
+
+    supervisor.shared_client_reach().unwrap();
+    let new_pid = supervisor.live_server_pid().unwrap().unwrap();
+    let state = read_state(directory.path());
+    assert_eq!(state["prompts"][0]["session"], "ses_owned");
+    assert_eq!(state["prompts"][0]["server"], json!(new_pid));
+    assert!(!directory.path().join("state/restart-pending.json").exists());
+    supervisor.shutdown_server().unwrap();
+}
+
 #[test]
 #[cfg_attr(
     target_os = "macos",
@@ -260,13 +402,22 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-if len(sys.argv) < 2 or sys.argv[1] != "serve":
-    if len(sys.argv) > 1 and sys.argv[1] == "db":
-        print("directory")
-    raise SystemExit(0)
-
 state_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "server-state.json")
 lock = threading.Lock()
+
+if len(sys.argv) < 2 or sys.argv[1] != "serve":
+    if len(sys.argv) > 2 and sys.argv[1] == "db" and "time.completed" in sys.argv[2]:
+        with open(state_path) as handle:
+            state = json.load(handle)
+        state.setdefault("db_queries", []).append(sys.argv[2])
+        with open(state_path, "w") as handle:
+            json.dump(state, handle)
+        print("id\tdirectory\tawaiting_input")
+        for row in state.get("unfinished", []):
+            print("\t".join(str(field) for field in row))
+    elif len(sys.argv) > 1 and sys.argv[1] == "db":
+        print("directory")
+    raise SystemExit(0)
 
 def load():
     try:
