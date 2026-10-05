@@ -842,7 +842,9 @@ fn bridge_session(
                                 pending_input.write_all(&bytes)?;
                             }
                             InputAction::Arrow(direction, bytes) => {
-                                if return_gesture.should_detach(direction, &screen) {
+                                if return_gesture.should_detach(direction, &screen)
+                                    || return_gesture.takes_left_over(direction, &screen)
+                                {
                                     detach = true;
                                     break;
                                 }
@@ -1752,16 +1754,37 @@ struct ReturnGesture {
     armed: Option<ArmedReturn>,
     hint_visible: bool,
     immediate_left: bool,
+    replaces_agents_view: bool,
 }
+
+/// Claude shows one of these footers exactly when Left would leave for its
+/// own agents view: a foreground session opens it, an attached background
+/// session goes back to it.
+const CLAUDE_AGENTS_HINTS: &[&str] = &["← for agents", "← to go back", "← again to go back"];
 
 impl ReturnGesture {
     /// OpenCode has no view of its own behind Left at the input boundary, so
     /// one Left that reaches it returns to the dashboard without a second press.
+    /// Claude's Left at an empty prompt opens its agents view, which agentview
+    /// stands in for, so that Left never reaches Claude.
     fn for_session(session_key: &str) -> Self {
         Self {
             immediate_left: session_key.starts_with("opencode:"),
+            replaces_agents_view: session_key.starts_with("claude:"),
             ..Self::default()
         }
+    }
+
+    fn takes_left_over(&self, direction: ArrowDirection, screen: &vt100::Parser) -> bool {
+        if !self.replaces_agents_view || direction != ArrowDirection::Left {
+            return false;
+        }
+        let (rows, cols) = screen.screen().size();
+        screen
+            .screen()
+            .rows(0, cols)
+            .skip(usize::from(rows.saturating_sub(4)))
+            .any(|row| CLAUDE_AGENTS_HINTS.iter().any(|hint| row.contains(hint)))
     }
 
     fn begin_probe(
@@ -2468,5 +2491,42 @@ mod tests {
         let mut screen = vt100::Parser::new(40, 120, 0);
         screen.process(b"\x1b[21;27H\x1b[?25h");
         assert!(!settled_left("claude:host:abc", &mut screen, b""));
+    }
+
+    fn claude_prompt(footer: &str) -> vt100::Parser {
+        let mut screen = vt100::Parser::new(10, 120, 0);
+        screen.process(
+            format!("\x1b[8;1H❯ \x1b[2mTry \"fix lint\"\x1b[0m\x1b[10;1H  {footer}\x1b[8;3H")
+                .as_bytes(),
+        );
+        screen
+    }
+
+    #[test]
+    fn claude_left_at_an_empty_prompt_returns_instead_of_opening_its_agents_view() {
+        let screen = claude_prompt("⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents");
+        let gesture = ReturnGesture::for_session("claude:host:abc");
+        assert!(gesture.takes_left_over(ArrowDirection::Left, &screen));
+        assert!(!gesture.takes_left_over(ArrowDirection::Right, &screen));
+        assert!(!ReturnGesture::for_session("codex:host:abc")
+            .takes_left_over(ArrowDirection::Left, &screen));
+    }
+
+    #[test]
+    fn claude_left_in_an_attached_background_session_returns_to_the_dashboard() {
+        let gesture = ReturnGesture::for_session("claude:host:abc");
+        for footer in [
+            "? for shortcuts · ← to go back",
+            "Press ← again to go back to agents",
+        ] {
+            assert!(gesture.takes_left_over(ArrowDirection::Left, &claude_prompt(footer)));
+        }
+    }
+
+    #[test]
+    fn claude_left_with_a_draft_still_moves_the_cursor() {
+        let screen = claude_prompt("⏵⏵ bypass permissions on (shift+tab to cycle)");
+        assert!(!ReturnGesture::for_session("claude:host:abc")
+            .takes_left_over(ArrowDirection::Left, &screen));
     }
 }
