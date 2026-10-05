@@ -407,6 +407,22 @@ impl OpenCodeSupervisor {
         )
     }
 
+    /// Run a TUI command in the TUIs attached to the live server for `cwd`.
+    /// A TUI that does not know the command ignores it.
+    pub fn run_tui_command(&self, cwd: &Path, command: &str) -> Result<()> {
+        let _lock = StateLock::acquire(&self.lock_path)?;
+        let Some(record) = self.live_record_locked()? else {
+            return Ok(());
+        };
+        let body = json!({ "type": "tui.command.execute", "properties": { "command": command } });
+        self.request_empty(
+            &record,
+            "POST",
+            &with_directory_query("/tui/publish", cwd),
+            Some(&body),
+        )
+    }
+
     /// The live server's pid, which changes when the server restarts.
     pub fn live_server_pid(&self) -> Result<Option<u32>> {
         let _lock = StateLock::acquire(&self.lock_path)?;
