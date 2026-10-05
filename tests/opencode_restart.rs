@@ -159,6 +159,14 @@ fn starting_after_a_reboot_resumes_turns_the_dead_server_left_unfinished() {
         "the scan must start at the dead server's start: {}",
         state["db_queries"]
     );
+    assert!(
+        state["db_queries"][0]
+            .as_str()
+            .unwrap()
+            .contains("m.time_created < "),
+        "the scan must stop at the boot, before replies a TUI runs now: {}",
+        state["db_queries"]
+    );
     assert_eq!(
         state["prompts"],
         json!([{

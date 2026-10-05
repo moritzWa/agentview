@@ -699,12 +699,12 @@ impl OpenCodeSupervisor {
         let Some(previous) = previous else {
             return Ok(pending);
         };
-        if !boot_time_ms().is_some_and(|booted| booted > previous.created_at_ms) {
+        let Some(booted) = boot_time_ms().filter(|booted| *booted > previous.created_at_ms) else {
             return Ok(pending);
-        }
+        };
         report.previous_pid = Some(previous.pid);
         for (id, cwd, awaiting_input) in
-            unfinished_top_level_turns(&self.executable, previous.created_at_ms)
+            unfinished_top_level_turns(&self.executable, previous.created_at_ms, booted)
         {
             if awaiting_input {
                 report.awaiting_input.push(id);
@@ -1290,11 +1290,15 @@ fn recent_session_directories(executable: &str) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Top-level sessions whose latest message is a reply started at or after
-/// `since` that never completed, with whether it stopped on a question. A
+/// Top-level sessions whose latest message is a reply started between `since`
+/// and `until` that never completed, with whether it stopped on a question. A
 /// finished or aborted reply records `time.completed`; a killed server never
-/// gets to.
-fn unfinished_top_level_turns(executable: &str, since: u64) -> Vec<(String, PathBuf, bool)> {
+/// gets to. Replies started after `until` (the boot) are live in a TUI.
+fn unfinished_top_level_turns(
+    executable: &str,
+    since: u64,
+    until: u64,
+) -> Vec<(String, PathBuf, bool)> {
     let query = format!(
         "select s.id, s.directory, exists (select 1 from part p where p.message_id = m.id \
          and json_extract(p.data, '$.type') = 'tool' and json_extract(p.data, '$.tool') = 'question' \
@@ -1302,7 +1306,7 @@ fn unfinished_top_level_turns(executable: &str, since: u64) -> Vec<(String, Path
          from session s join message m on m.id = (select id from message where session_id = s.id \
          order by time_created desc, id desc limit 1) \
          where s.parent_id is null and s.time_archived is null and m.time_created >= {since} \
-         and json_extract(m.data, '$.role') = 'assistant' \
+         and m.time_created < {until} and json_extract(m.data, '$.role') = 'assistant' \
          and json_extract(m.data, '$.time.completed') is null"
     );
     let Ok(output) = Command::new(executable)
@@ -2046,17 +2050,20 @@ fn verify_server(record: &ServerRecord) -> Result<bool> {
     if record.process_start_token.is_empty() || record.process_cmdline.is_empty() {
         return Ok(false);
     }
-    if process_state(record.pid)?.as_deref() == Some("Z") {
-        return Ok(false);
+    match process_state(record.pid) {
+        Ok(state) if state.as_deref() == Some("Z") => return Ok(false),
+        Ok(_) => {}
+        Err(error) if is_missing_process(&error) || is_foreign_process(&error) => return Ok(false),
+        Err(error) => return Err(error),
     }
     let start = match process_start_token(record.pid) {
         Ok(value) => value,
-        Err(error) if is_missing_process(&error) => return Ok(false),
+        Err(error) if is_missing_process(&error) || is_foreign_process(&error) => return Ok(false),
         Err(error) => return Err(error),
     };
     let cmdline = match process_cmdline(record.pid) {
         Ok(value) => value,
-        Err(error) if is_missing_process(&error) => return Ok(false),
+        Err(error) if is_missing_process(&error) || is_foreign_process(&error) => return Ok(false),
         Err(error) => return Err(error),
     };
     Ok(start == record.process_start_token && cmdline == record.process_cmdline)
@@ -2176,6 +2183,16 @@ fn is_missing_process(error: &anyhow::Error) -> bool {
     error
         .downcast_ref::<std::io::Error>()
         .map(|error| error.kind() == std::io::ErrorKind::NotFound)
+        .unwrap_or(false)
+}
+
+/// The kernel refuses to describe another user's process. The server runs as
+/// this user, so a recorded pid that answers this way was reused, typically by
+/// a root daemon after a reboot.
+fn is_foreign_process(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<std::io::Error>()
+        .map(|error| error.kind() == std::io::ErrorKind::PermissionDenied)
         .unwrap_or(false)
 }
 
@@ -2686,5 +2703,24 @@ mod tests {
             std::env::current_exe().unwrap().to_str().unwrap()
         ));
         assert!(!record_uses_executable(&record, "/bin/sh"));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_recorded_pid_reused_by_a_root_process_is_not_a_live_server() {
+        let record = ServerRecord {
+            version: RECORD_VERSION,
+            pid: 1,
+            process_start_token: "1.000000".into(),
+            process_cmdline: b"opencode\0serve\0".to_vec(),
+            executable: "opencode".into(),
+            port: 4242,
+            username: "opencode".into(),
+            password: "x".repeat(64),
+            created_at_ms: 1,
+            sessions: BTreeMap::new(),
+        };
+
+        assert!(!verify_server(&record).unwrap());
     }
 }
