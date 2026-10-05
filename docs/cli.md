@@ -639,7 +639,7 @@ when `XDG_STATE_HOME` is unset, the current implementation stores:
 | `copilot/` | Exact agentview-created Copilot IDs, workspaces, titles, latest bounded summaries, provider timestamps, and registry lock. No credentials or full transcripts. |
 | `cursor-owned.json` | Exact Cursor chat IDs this dashboard created outside Linux, so their rows are listed without `--include-external`. |
 | `hidden-sessions.json` | Reversible local suppression records; provider history and live processes are not changed. |
-| `pinned-sessions.json` | Local pin records (session ID and pin time) for the dashboard's Pinned group. Pins never change the provider session. |
+| `pinned-sessions.json` | Local pause records (session ID and pause time) for the dashboard's Paused group; the file keeps its older name. Pauses never change the provider session. |
 | `managed-docker/owners.json` | Exact external proof for managed-container lifecycle. |
 
 These files contain authority metadata and should not be shared between users.
