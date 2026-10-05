@@ -302,6 +302,20 @@ impl OpenCodeSupervisor {
         self.render_latest_messages(&record, &path)
     }
 
+    /// The title OpenCode holds for a session the live server can load. Never
+    /// starts a server.
+    pub fn session_title(&self, session_id: &str, cwd: &Path) -> Result<String> {
+        let _lock = StateLock::acquire(&self.lock_path)?;
+        let record = self.required_live_record_locked()?;
+        let path = with_directory_query(&format!("/session/{}", url_path_segment(session_id)), cwd);
+        let session = self.request_json(&record, "GET", &path, None)?;
+        session
+            .get("title")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .context("OpenCode returned a session without a title")
+    }
+
     pub fn reply(&self, session_id: &str, prompt: &str) -> Result<()> {
         let prompt = prompt.trim();
         if prompt.is_empty() {
@@ -1483,6 +1497,19 @@ fn provider_session_metadata(value: &Value, session_id: &str) -> Result<Option<(
     Ok(Some((title.to_owned(), updated_at_ms)))
 }
 
+/// Whether the terminal title an OpenCode TUI set is the one it shows for a
+/// session titled `session_title`: `OpenCode` for a placeholder title, else
+/// the title, cut short with `…` when long.
+pub fn tui_shows_title(session_title: &str, terminal_title: &str) -> bool {
+    if is_default_title(session_title) {
+        return terminal_title == "OpenCode";
+    }
+    match terminal_title.strip_suffix('…') {
+        Some(shortened) if !shortened.is_empty() => session_title.starts_with(shortened),
+        _ => terminal_title == session_title,
+    }
+}
+
 /// OpenCode's placeholder title (`New session - <ISO timestamp>`), which it
 /// replaces with a generated one after the first turn.
 fn is_default_title(title: &str) -> bool {
@@ -2196,6 +2223,24 @@ mod tests {
     fn encodes_basic_auth_and_url_components() {
         assert_eq!(base64_encode(b"opencode:secret"), "b3BlbmNvZGU6c2VjcmV0");
         assert_eq!(url_path_segment("ses_/ ?"), "ses_%2F%20%3F");
+    }
+
+    #[test]
+    fn matches_the_terminal_title_the_tui_sets_for_a_session() {
+        let long = "Optimizing Session Switching Performance in AV";
+        assert!(tui_shows_title(
+            long,
+            "Optimizing Session Switching Performa…"
+        ));
+        assert!(tui_shows_title("Fix bug", "Fix bug"));
+        assert!(!tui_shows_title("Fix bug", "Fix other bug"));
+        assert!(!tui_shows_title(long, "Optimizing Session Status…"));
+        assert!(!tui_shows_title("Fix bug", "…"));
+        assert!(tui_shows_title(
+            "New session - 2026-10-01T17:42:05.123Z",
+            "OpenCode"
+        ));
+        assert!(!tui_shows_title("Fix bug", "OpenCode"));
     }
 
     #[test]

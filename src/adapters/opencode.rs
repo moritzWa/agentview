@@ -34,6 +34,12 @@ use crate::process::{CancellableProcessRunner, CommandRequest, CommandRunner};
 const GLOBAL_SESSION_ROWS: &str = "SELECT json_object('id', s.id, 'title', s.title, 'created', s.time_created, 'updated', s.time_updated, 'projectId', s.project_id, 'directory', s.directory, 'last', json((SELECT json_object('role', json_extract(m.data, '$.role'), 'created', m.time_created, 'completed', json_extract(m.data, '$.time.completed'), 'question', EXISTS (SELECT 1 FROM part p WHERE p.message_id = m.id AND json_extract(p.data, '$.tool') = 'question' AND json_extract(p.data, '$.state.status') IN ('pending', 'running'))) FROM message m WHERE m.session_id = s.id ORDER BY m.time_created DESC, m.id DESC LIMIT 1)), 'child', (SELECT MAX(m.time_created) FROM session c JOIN message m ON m.id = (SELECT m2.id FROM message m2 WHERE m2.session_id = c.id ORDER BY m2.time_created DESC, m2.id DESC LIMIT 1) WHERE c.parent_id = s.id AND (json_extract(m.data, '$.role') = 'user' OR json_extract(m.data, '$.time.completed') IS NULL))) AS record FROM session s WHERE s.parent_id IS NULL";
 const MAX_MODEL_CATALOG_BYTES: usize = 4 * 1024 * 1024;
 const LAUNCH_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(8);
+/// How long a shared TUI switched on Enter may take to draw the session
+/// before it is shown anyway; a preview in the background may wait longer.
+const SHARED_CLIENT_OPEN_WAIT: Duration = Duration::from_millis(1_000);
+const SHARED_CLIENT_PREVIEW_WAIT: Duration = Duration::from_millis(3_000);
+/// Quiet after the title changes, so the frame that set it has finished.
+const SHARED_CLIENT_SETTLE: Duration = Duration::from_millis(40);
 const MAX_RESTORABLE_SESSIONS: usize = 2_000;
 /// How far back the restore picker searches message text. Older sessions are
 /// still listed and found by name, folder, or ID.
@@ -479,6 +485,28 @@ fn shared_client_for(reach: SharedClientReach, cwd: &Path) -> (String, String) {
     (shared_client_key(scope), shared_client_id(scope))
 }
 
+/// Wait until the shared TUI `key`, switched to `session` while hidden, has
+/// drawn it: the TUI sets the session's title once its messages are on screen.
+fn wait_for_shared_client(
+    supervisor: &OpenCodeSupervisor,
+    key: &str,
+    session: &AgentSession,
+    cwd: &Path,
+    timeout: Duration,
+    still_wanted: &dyn Fn() -> bool,
+) -> bool {
+    let Ok(title) = supervisor.session_title(&session.provider_session_id, cwd) else {
+        return false;
+    };
+    crate::native_session::wait_for_background_title(
+        key,
+        &|shown| crate::opencode_supervisor::tui_shows_title(&title, shown),
+        SHARED_CLIENT_SETTLE,
+        timeout,
+        still_wanted,
+    )
+}
+
 impl OpenCodeController {
     /// Show `session` in the TUI this dashboard keeps for every directory, or
     /// per directory when the server cannot move one TUI between them,
@@ -561,6 +589,16 @@ impl OpenCodeController {
         // The TUI is now recorded, so a warm-up will leave it alone while it
         // runs in front.
         drop(gate);
+        if switched {
+            wait_for_shared_client(
+                supervisor,
+                &key,
+                session,
+                &cwd,
+                SHARED_CLIENT_OPEN_WAIT,
+                &|| true,
+            );
+        }
         self.show_shared_client(&key, start, session).map(Some)
     }
 
@@ -672,7 +710,18 @@ impl OpenCodeController {
         remember_shared_client(&key, server_pid, "", true);
         let selected_on =
             supervisor.select_in_shared_client(&session.provider_session_id, &cwd, &client)?;
-        if selected_on == server_pid {
+        // Until it is drawn, an open must not take this TUI as already showing
+        // the session. One that never matches its title is still taken as
+        // switched once the wait runs out.
+        let drawn = wait_for_shared_client(
+            supervisor,
+            &key,
+            session,
+            &cwd,
+            SHARED_CLIENT_PREVIEW_WAIT,
+            still_wanted,
+        );
+        if selected_on == server_pid && (drawn || still_wanted()) {
             remember_shared_client(&key, server_pid, &session.id, true);
         }
         Ok(())

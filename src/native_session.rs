@@ -96,6 +96,9 @@ struct PtyDrain {
     wake: std::fs::File,
     done: thread::JoinHandle<(std::fs::File, vt100::Parser)>,
     contents: Arc<Mutex<String>>,
+    /// The terminal title and when output last arrived, kept current on every
+    /// read rather than every [`SCREEN_PUBLISH_INTERVAL`].
+    title: Arc<Mutex<(String, Instant)>>,
 }
 
 #[cfg(unix)]
@@ -384,6 +387,54 @@ pub fn background_screen_contents(session_key: &str) -> Option<(u32, String)> {
     {
         let _ = session_key;
         None
+    }
+}
+
+/// Wait until the frontend behind the dashboard sets a terminal title that
+/// `matches` and then writes nothing for `settle`, so a frontend switched while
+/// hidden is not shown on the screen it painted before. `false` when `timeout`
+/// passes first, `still_wanted` turns false, or the frontend is not held.
+pub fn wait_for_background_title(
+    session_key: &str,
+    matches: &dyn Fn(&str) -> bool,
+    settle: Duration,
+    timeout: Duration,
+    still_wanted: &dyn Fn() -> bool,
+) -> bool {
+    #[cfg(unix)]
+    {
+        let title = {
+            let session_key = &current_key(session_key);
+            let Some(registry) = DETACHED.get().and_then(|registry| registry.lock().ok()) else {
+                return false;
+            };
+            match registry
+                .get(session_key)
+                .and_then(|session| session.drain.as_ref())
+            {
+                Some(drain) => Arc::clone(&drain.title),
+                None => return false,
+            }
+        };
+        let deadline = Instant::now() + timeout;
+        loop {
+            let ready = title
+                .lock()
+                .map(|slot| matches(&slot.0) && slot.1.elapsed() >= settle)
+                .unwrap_or(false);
+            if ready {
+                return true;
+            }
+            if Instant::now() >= deadline || !still_wanted() {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (session_key, matches, settle, timeout, still_wanted);
+        false
     }
 }
 
@@ -1024,6 +1075,11 @@ fn start_output_drain(mut master: std::fs::File, mut screen: vt100::Parser) -> R
     let flag = Arc::clone(&stop);
     let contents = Arc::new(Mutex::new(screen.screen().contents()));
     let published = Arc::clone(&contents);
+    let title = Arc::new(Mutex::new((
+        screen.screen().title().to_owned(),
+        Instant::now(),
+    )));
+    let latest_title = Arc::clone(&title);
     let done = thread::Builder::new()
         .name("native-pty-drain".into())
         .spawn(move || {
@@ -1095,6 +1151,13 @@ fn start_output_drain(mut master: std::fs::File, mut screen: vt100::Parser) -> R
                         }
                     }
                 }
+                if let Ok(mut slot) = latest_title.lock() {
+                    let current = screen.screen().title();
+                    if slot.0 != current {
+                        current.clone_into(&mut slot.0);
+                    }
+                    slot.1 = Instant::now();
+                }
             }
             loop {
                 match master.read(&mut bytes) {
@@ -1113,6 +1176,7 @@ fn start_output_drain(mut master: std::fs::File, mut screen: vt100::Parser) -> R
         wake,
         done,
         contents,
+        title,
     })
 }
 
@@ -2348,6 +2412,51 @@ mod tests {
             },
         );
         pid
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn waits_for_a_hidden_frontend_to_set_the_title_and_settle() {
+        let key = "provider:host:background-title";
+        detach_for_test(
+            key,
+            "printf '\\033]0;Old\\007'; sleep 0.3; printf '\\033]0;New\\007frame'; sleep 5",
+        );
+        let started = Instant::now();
+        let is_new = |title: &str| title == "New";
+        assert!(wait_for_background_title(
+            key,
+            &is_new,
+            Duration::from_millis(40),
+            Duration::from_secs(5),
+            &|| true,
+        ));
+        assert!(started.elapsed() >= Duration::from_millis(300));
+        let is_other = |title: &str| title == "Other";
+        assert!(!wait_for_background_title(
+            key,
+            &is_other,
+            Duration::from_millis(40),
+            Duration::from_millis(100),
+            &|| true,
+        ));
+        let cancelled = Instant::now();
+        assert!(!wait_for_background_title(
+            key,
+            &is_other,
+            Duration::from_millis(40),
+            Duration::from_secs(5),
+            &|| false,
+        ));
+        assert!(cancelled.elapsed() < Duration::from_secs(1));
+        assert!(!wait_for_background_title(
+            "provider:host:not-held",
+            &is_new,
+            Duration::ZERO,
+            Duration::from_secs(5),
+            &|| true,
+        ));
+        terminate(key).unwrap();
     }
 
     #[test]
