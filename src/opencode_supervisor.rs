@@ -239,7 +239,7 @@ impl OpenCodeSupervisor {
                 &owned.cwd,
             );
             let summary = self
-                .request_json(&record, "GET", &path, None)
+                .request_json(&record, "GET", &format!("{path}&limit=20"), None)
                 .ok()
                 .and_then(|messages| latest_assistant_summary(&messages));
             refreshed.insert(owned.id.clone(), (title, summary, updated_at_ms));

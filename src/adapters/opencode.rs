@@ -505,10 +505,9 @@ impl OpenCodeController {
             return self.show_shared_client(&key, None, session).map(Some);
         }
         drop(gate);
-        let cwd = match self.owned_session(session)? {
-            Some(owned) => owned.cwd,
-            None => session.cwd.clone(),
-        };
+        let cwd = supervisor
+            .owned_session_cwd(&session.provider_session_id)?
+            .unwrap_or_else(|| session.cwd.clone());
         if !cwd.is_dir() {
             return Ok(None);
         }
