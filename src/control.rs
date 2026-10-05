@@ -224,6 +224,13 @@ pub trait ProviderController: Send + Sync {
         Ok(())
     }
 
+    /// Whether the hidden native client a preview switches has drawn
+    /// `session`. `None` when opening it does not go through such a client,
+    /// so the dashboard opens it at once.
+    fn native_open_ready(&self, _session: &AgentSession) -> Option<bool> {
+        None
+    }
+
     /// Record a persisted session as one the dashboard lists, so discovery
     /// returns it without `--include-external` and beyond the history window.
     fn adopt(&self, _session: &RestorableSession) -> Result<()> {
@@ -701,6 +708,18 @@ impl ControlHub {
                 let still_wanted = || PREVIEW_GENERATION.load(Ordering::SeqCst) == generation;
                 let _ = controller.preview_native(&session, &still_wanted);
             });
+    }
+
+    /// Whether `session`'s hidden native client has drawn it, so an open can
+    /// wait on the dashboard instead of showing the screen it painted before.
+    /// `None` when there is nothing to wait for.
+    pub fn native_open_ready(&self, session: &AgentSession) -> Option<bool> {
+        if self.ensure_provider_io().is_err() {
+            return None;
+        }
+        self.controller(&session.provider)
+            .ok()?
+            .native_open_ready(session)
     }
 
     /// Changes with every preview and open, so the dashboard can tell that

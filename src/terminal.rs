@@ -51,9 +51,21 @@ const LAUNCH_DISCOVERY_RETRY_INTERVAL: Duration = Duration::from_millis(250);
 const NATIVE_PREVIEW_DELAY: Duration = Duration::from_millis(150);
 const LAUNCH_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
 const REVEAL_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long an open waits on the dashboard for the hidden native client to
+/// draw the session before it is shown anyway.
+const DEFERRED_OPEN_TIMEOUT: Duration = Duration::from_secs(2);
+/// How often the dashboard checks whether a deferred open can go ahead.
+const DEFERRED_OPEN_POLL: Duration = Duration::from_millis(5);
 
 /// A session the user just unhid; select its row as soon as a refresh lists it.
 struct PendingReveal {
+    session_id: String,
+    deadline: Instant,
+}
+
+/// An open waiting for the hidden native client to draw the session, so it
+/// never shows the screen that client painted before. Any key cancels it.
+struct PendingOpen {
     session_id: String,
     deadline: Instant,
 }
@@ -309,6 +321,7 @@ pub fn run_dashboard(
     let _warm_worker = thread::spawn(move || warm_control.warm_native_clients());
     let mut preview_candidate: Option<(String, Instant)> = None;
     let mut previewed_row: Option<(String, u64)> = None;
+    let mut pending_open: Option<PendingOpen> = None;
 
     let result = 'dashboard: loop {
         loop {
@@ -554,6 +567,46 @@ pub fn run_dashboard(
             needs_draw |= app.advance_live_animation();
             next_live_animation = Instant::now() + LIVE_SESSION_ANIMATION_INTERVAL;
         }
+        if let Some(pending) = pending_open.take() {
+            match app
+                .selected_session()
+                .filter(|session| session.id == pending.session_id)
+            {
+                Some(session)
+                    if control.native_open_ready(session) == Some(false)
+                        && Instant::now() < pending.deadline =>
+                {
+                    pending_open = Some(pending);
+                }
+                Some(_) => {
+                    let effect = dispatch_action(
+                        &mut terminal,
+                        &mut app,
+                        AppAction::Open {
+                            session_id: pending.session_id,
+                        },
+                        control,
+                    );
+                    needs_draw = true;
+                    if effect.refresh {
+                        if refresh_in_flight {
+                            refresh_after_current = true;
+                        } else {
+                            schedule_refresh(
+                                &refresh_tx,
+                                &discovery_request_for_pending_launch(
+                                    &current_request,
+                                    pending_launch.as_ref(),
+                                ),
+                                &mut refresh_in_flight,
+                            )?;
+                            last_refresh = Instant::now();
+                        }
+                    }
+                }
+                None => {}
+            }
+        }
         let selected = app.selected_session().map(|session| session.id.as_str());
         if preview_candidate.as_ref().map(|(id, _)| id.as_str()) != selected {
             preview_candidate = selected.map(|id| (id.to_owned(), Instant::now()));
@@ -622,7 +675,12 @@ pub fn run_dashboard(
         } else {
             refresh_interval.saturating_sub(last_refresh.elapsed())
         };
-        if event_reader.poll(until_refresh.min(Duration::from_millis(50)))? {
+        let poll = if pending_open.is_some() {
+            DEFERRED_OPEN_POLL
+        } else {
+            Duration::from_millis(50)
+        };
+        if event_reader.poll(until_refresh.min(poll))? {
             for event_index in 0..MAX_READY_EVENTS_PER_TICK {
                 let event = match event_reader.read()? {
                     Event::Key(key) => {
@@ -666,6 +724,26 @@ pub fn run_dashboard(
                                 "migration is still running; agentview will be ready to exit when it finishes",
                             );
                             action = AppAction::None;
+                        }
+                        pending_open = None;
+                        if let AppAction::Open { session_id } = &action {
+                            if let Some(session) = app
+                                .session_by_id(session_id)
+                                .filter(|session| control.native_open_ready(session) == Some(false))
+                            {
+                                let previewing =
+                                    Some((session_id.clone(), control.preview_generation()));
+                                if previewed_row != previewing {
+                                    control.preview(session);
+                                    previewed_row =
+                                        Some((session_id.clone(), control.preview_generation()));
+                                }
+                                pending_open = Some(PendingOpen {
+                                    session_id: session_id.clone(),
+                                    deadline: Instant::now() + DEFERRED_OPEN_TIMEOUT,
+                                });
+                                action = AppAction::None;
+                            }
                         }
                         let mut effect = match action {
                             AppAction::SetPaused { session_id, paused } => {

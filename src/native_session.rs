@@ -292,7 +292,8 @@ pub fn resume(session_key: &str) -> Result<NativeSessionExit> {
         let session_key = &current_key(session_key);
         let detached =
             take_detached(session_key)?.context("the background terminal is no longer running")?;
-        let (child, master, screen, warning) = detached.into_frontend()?;
+        let (child, mut master, screen, warning) = detached.into_frontend()?;
+        report_focus(&mut master, session_key, true);
         bridge_session(child, master, screen, session_key, false, None, warning)
     }
     #[cfg(not(unix))]
@@ -321,7 +322,11 @@ pub fn start_in_background(mut command: Command, session_key: &str) -> Result<()
             ws_xpixel: 0,
             ws_ypixel: 0,
         });
-        let drain = start_output_drain(master, vt100::Parser::new(size.ws_row, size.ws_col, 0))?;
+        let drain = start_output_drain(
+            master,
+            vt100::Parser::new(size.ws_row, size.ws_col, 0),
+            Some(session_key.to_owned()),
+        )?;
         registry.insert(
             session_key.to_owned(),
             DetachedSession {
@@ -956,7 +961,8 @@ fn bridge_session(
             // private pseudo-terminal, not the dashboard's. Stopping it here
             // aborts an in-flight model request.
             restore_dashboard_terminal_modes(&mut stdout)?;
-            let drain = start_output_drain(master, screen)?;
+            report_focus(&mut master, session_key, false);
+            let drain = start_output_drain(master, screen, None)?;
             detached_registry()
                 .lock()
                 .map_err(|_| anyhow!("provider-native background registry lock was poisoned"))?
@@ -1068,7 +1074,14 @@ fn restore_dashboard_terminal_modes(stdout: &mut impl Write) -> Result<()> {
 const DRAIN_ERROR_BACKOFF: Duration = Duration::from_millis(50);
 
 #[cfg(unix)]
-fn start_output_drain(mut master: std::fs::File, mut screen: vt100::Parser) -> Result<PtyDrain> {
+/// `blur_once_started` sends an OpenCode frontend started behind the dashboard
+/// its focus-out with its first output: before then its terminal may still
+/// echo input instead of reading it.
+fn start_output_drain(
+    mut master: std::fs::File,
+    mut screen: vt100::Parser,
+    mut blur_once_started: Option<String>,
+) -> Result<PtyDrain> {
     set_nonblocking(master.as_raw_fd(), true)?;
     let (woken, wake) = wake_pipe()?;
     let stop = Arc::new(AtomicBool::new(false));
@@ -1128,6 +1141,9 @@ fn start_output_drain(mut master: std::fs::File, mut screen: vt100::Parser) -> R
                     continue;
                 }
                 changed = true;
+                if let Some(session_key) = blur_once_started.take() {
+                    report_focus(&mut master, &session_key, false);
+                }
                 loop {
                     match master.read(&mut bytes) {
                         Ok(0) => break 'drain,
@@ -1522,6 +1538,17 @@ fn absorb_available(
 /// unbound, so agentview can take it.
 fn redraws_on_ctrl_k(session_key: &str) -> bool {
     session_key.starts_with("opencode:")
+}
+
+/// Tell a frontend whether it is the one on screen, as a terminal reporting
+/// focus would, so OpenCode defers work it only needs in front while it runs
+/// behind the dashboard. Only OpenCode: its terminal library takes these as
+/// focus changes, where another provider could read them as typed keys.
+#[cfg(unix)]
+fn report_focus(master: &mut std::fs::File, session_key: &str, focused: bool) {
+    if session_key.starts_with("opencode:") {
+        let _ = master.write_all(if focused { b"\x1b[I" } else { b"\x1b[O" });
+    }
 }
 
 /// Other providers would read a second reply, the terminal's own, as typed
@@ -2274,7 +2301,7 @@ mod tests {
             "i=0; while [ \"$i\" -lt 20 ]; do echo tick-$i; i=$((i+1)); sleep 0.05; done",
         ]);
         let (mut child, master) = spawn_pty(&mut command).unwrap();
-        let drain = start_output_drain(master, vt100::Parser::new(24, 80, 0)).unwrap();
+        let drain = start_output_drain(master, vt100::Parser::new(24, 80, 0), None).unwrap();
         thread::sleep(Duration::from_millis(400));
         let state = Command::new("ps")
             .args(["-o", "state=", "-p", &child.id().to_string()])
@@ -2402,7 +2429,7 @@ mod tests {
         command.args(["-c", script]);
         let (child, master) = spawn_pty(&mut command).unwrap();
         let pid = child.id();
-        let drain = start_output_drain(master, vt100::Parser::new(24, 80, 0)).unwrap();
+        let drain = start_output_drain(master, vt100::Parser::new(24, 80, 0), None).unwrap();
         detached_registry().lock().unwrap().insert(
             session_key.to_owned(),
             DetachedSession {

@@ -1495,14 +1495,17 @@ fn request_http(
     )?;
     stream.set_read_timeout(Some(HTTP_TIMEOUT))?;
     stream.set_write_timeout(Some(HTTP_TIMEOUT))?;
-    write!(
-        stream,
+    // One write with Nagle off: a request sent in pieces waits out the
+    // server's delayed ACK, about 40 ms per request on macOS.
+    stream.set_nodelay(true)?;
+    let mut request = format!(
         "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nAuthorization: Basic {authorization}\r\nAccept: application/json\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         record.port,
         body.len()
-    )?;
-    stream.write_all(&body)?;
-    stream.flush()?;
+    )
+    .into_bytes();
+    request.extend_from_slice(&body);
+    stream.write_all(&request)?;
     read_http_response(&mut stream)
 }
 

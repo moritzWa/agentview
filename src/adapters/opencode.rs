@@ -34,9 +34,8 @@ use crate::process::{CancellableProcessRunner, CommandRequest, CommandRunner};
 const GLOBAL_SESSION_ROWS: &str = "SELECT json_object('id', s.id, 'title', s.title, 'created', s.time_created, 'updated', s.time_updated, 'projectId', s.project_id, 'directory', s.directory, 'last', json((SELECT json_object('role', json_extract(m.data, '$.role'), 'created', m.time_created, 'completed', json_extract(m.data, '$.time.completed'), 'question', EXISTS (SELECT 1 FROM part p WHERE p.message_id = m.id AND json_extract(p.data, '$.tool') = 'question' AND json_extract(p.data, '$.state.status') IN ('pending', 'running'))) FROM message m WHERE m.session_id = s.id ORDER BY m.time_created DESC, m.id DESC LIMIT 1)), 'child', (SELECT MAX(m.time_created) FROM session c JOIN message m ON m.id = (SELECT m2.id FROM message m2 WHERE m2.session_id = c.id ORDER BY m2.time_created DESC, m2.id DESC LIMIT 1) WHERE c.parent_id = s.id AND (json_extract(m.data, '$.role') = 'user' OR json_extract(m.data, '$.time.completed') IS NULL))) AS record FROM session s WHERE s.parent_id IS NULL";
 const MAX_MODEL_CATALOG_BYTES: usize = 4 * 1024 * 1024;
 const LAUNCH_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(8);
-/// How long a shared TUI switched on Enter may take to draw the session
-/// before it is shown anyway; a preview in the background may wait longer.
-const SHARED_CLIENT_OPEN_WAIT: Duration = Duration::from_millis(1_000);
+/// How long a preview waits for the shared TUI to draw a session before it
+/// takes the TUI as switched anyway.
 const SHARED_CLIENT_PREVIEW_WAIT: Duration = Duration::from_millis(3_000);
 /// Quiet after the title changes, so the frame that set it has finished.
 const SHARED_CLIENT_SETTLE: Duration = Duration::from_millis(40);
@@ -210,6 +209,25 @@ impl ProviderController for OpenCodeController {
         still_wanted: &dyn Fn() -> bool,
     ) -> Result<()> {
         self.preview_in_shared_client(session, still_wanted)
+    }
+
+    fn native_open_ready(&self, session: &AgentSession) -> Option<bool> {
+        let supervisor = self.supervisor.as_ref()?;
+        if session.provider != Provider::OpenCode
+            || session.runtime != Runtime::Host
+            || crate::native_session::is_backgrounded(&session.id)
+        {
+            return None;
+        }
+        let (_, reach) = supervisor.known_client_reach()?;
+        if reach == SharedClientReach::None {
+            return None;
+        }
+        let (key, _) = shared_client_for(reach, &session.cwd);
+        if !crate::native_session::is_backgrounded(&key) {
+            return None;
+        }
+        Some(previewed_shared_client(&session.id).is_some())
     }
 
     fn enrich(&self, snapshot: &mut SessionSnapshot) {
@@ -589,16 +607,6 @@ impl OpenCodeController {
         // The TUI is now recorded, so a warm-up will leave it alone while it
         // runs in front.
         drop(gate);
-        if switched {
-            wait_for_shared_client(
-                supervisor,
-                &key,
-                session,
-                &cwd,
-                SHARED_CLIENT_OPEN_WAIT,
-                &|| true,
-            );
-        }
         self.show_shared_client(&key, start, session).map(Some)
     }
 
