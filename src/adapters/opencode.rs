@@ -650,6 +650,9 @@ impl OpenCodeController {
             Some((pid, false)) if pid == server_pid => {}
             _ => return Ok(()),
         }
+        // The TUI repaints the new session before the switch returns; until
+        // then its screen must not speak for the row it showed before.
+        remember_shared_client(&key, server_pid, "", true);
         let selected_on =
             supervisor.select_in_shared_client(&session.provider_session_id, &cwd, &client)?;
         if selected_on == server_pid {
