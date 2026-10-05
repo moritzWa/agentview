@@ -55,10 +55,12 @@ YOLO support without a dedicated permission-behavior verification gate.
 | --- | --- |
 | Hermes | `$HERMES_HOME/state.db`, otherwise `~/.hermes/state.db` |
 | MastraCode | `$MASTRA_DB_PATH`, then `$MASTRA_APP_DATA_DIR/mastra.db`, then platform app-data `mastracode/mastra.db` |
-| Devin | Platform app-data `devin/cli/sessions.db` |
+| Devin | `$XDG_DATA_HOME` or `~/.local/share` on Linux and macOS, `%APPDATA%` on Windows, then `devin/cli/sessions.db` |
 
 Platform app-data: `$XDG_DATA_HOME` or `~/.local/share` on Linux,
-`~/Library/Application Support` on macOS, `%APPDATA%` on Windows.
+`~/Library/Application Support` on macOS, `%APPDATA%` on Windows. Devin
+3000.11 writes the XDG path on macOS as well; agentview reads the old
+Application Support location only when it is the only store present.
 Remote MastraCode LibSQL/PostgreSQL is outside this integration.
 
 - Refresh queries exact owned IDs. External inventory is opt-in and capped at

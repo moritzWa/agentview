@@ -44,9 +44,28 @@ pub(super) fn default_path(provider: &Provider) -> Result<PathBuf> {
                     .unwrap_or_else(|| app_data(&home).join("mastracode"))
                     .join("mastra.db")
             })),
-        Provider::Devin => Ok(app_data(&home).join("devin/cli/sessions.db")),
+        Provider::Devin => Ok(devin_path(
+            &home,
+            std::env::var_os("XDG_DATA_HOME").map(PathBuf::from),
+        )),
         _ => bail!("not a SQLite harness"),
     }
+}
+
+// Devin writes to the XDG data directory on macOS too, not Application Support.
+fn devin_path(home: &Path, xdg_data_home: Option<PathBuf>) -> PathBuf {
+    const DB: &str = "devin/cli/sessions.db";
+    if cfg!(windows) {
+        return app_data(home).join(DB);
+    }
+    let xdg = xdg_data_home
+        .unwrap_or_else(|| home.join(".local/share"))
+        .join(DB);
+    let legacy = app_data(home).join(DB);
+    if cfg!(target_os = "macos") && !xdg.exists() && legacy.exists() {
+        return legacy;
+    }
+    xdg
 }
 
 pub(super) fn require_local_store(provider: &Provider) -> Result<()> {
@@ -264,6 +283,33 @@ mod tests {
             "C:/work/demo"
         } else {
             "/work/demo"
+        }
+    }
+
+    #[test]
+    fn devin_store_uses_xdg_data_home_outside_windows() {
+        if cfg!(windows) {
+            return;
+        }
+        let home = tempfile::tempdir().unwrap();
+        let db = "devin/cli/sessions.db";
+        assert_eq!(
+            devin_path(home.path(), None),
+            home.path().join(".local/share").join(db)
+        );
+        assert_eq!(
+            devin_path(home.path(), Some(home.path().join("xdg"))),
+            home.path().join("xdg").join(db)
+        );
+        if cfg!(target_os = "macos") {
+            let legacy = home.path().join("Library/Application Support").join(db);
+            fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+            fs::write(&legacy, b"").unwrap();
+            assert_eq!(devin_path(home.path(), None), legacy);
+            let xdg = home.path().join(".local/share").join(db);
+            fs::create_dir_all(xdg.parent().unwrap()).unwrap();
+            fs::write(&xdg, b"").unwrap();
+            assert_eq!(devin_path(home.path(), None), xdg);
         }
     }
 

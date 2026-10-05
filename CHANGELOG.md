@@ -56,6 +56,10 @@ and released versions are intended to follow Semantic Versioning.
 - Pressing Left at an empty prompt in an opened Claude Code session returns
   to the dashboard instead of opening Claude's own agent view, including in
   background sessions agentview opens with `claude attach`.
+- Devin sessions are found on macOS. Devin 3000.11 keeps its session database
+  under `~/.local/share/devin/cli/` (or `$XDG_DATA_HOME`) on macOS as on
+  Linux, while agentview looked only in `~/Library/Application Support`, so
+  no Devin history ever appeared there.
 
 - Pasting more than about a kilobyte into an opened session no longer drops
   you back to the dashboard with the rest of the paste in the composer. Input

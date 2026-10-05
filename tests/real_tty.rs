@@ -64,11 +64,7 @@ fn sqlite_harnesses_launch_foreground_detach_rename_and_resume_together() {
                 "--all",
             ]);
         fs::create_dir_all(root.join("hermes-home")).unwrap();
-        let devin_path = if cfg!(target_os = "macos") {
-            "Library/Application Support/devin/cli/sessions.db"
-        } else {
-            "data/devin/cli/sessions.db"
-        };
+        let devin_path = "data/devin/cli/sessions.db";
         fs::create_dir_all(root.join(devin_path).parent().unwrap()).unwrap();
         // The fixture uses the actual configured stores, not symlink aliases.
         let body = include_str!("../fixtures/sqlite-native-cli.py")
@@ -154,11 +150,7 @@ fn sqlite_harnesses_launch_foreground_detach_rename_and_resume_together() {
     for relative in [
         "hermes-home/state.db",
         "mastracode.db",
-        if cfg!(target_os = "macos") {
-            "Library/Application Support/devin/cli/sessions.db"
-        } else {
-            "data/devin/cli/sessions.db"
-        },
+        "data/devin/cli/sessions.db",
     ] {
         assert!(
             app._home.path().join(relative).is_file(),
