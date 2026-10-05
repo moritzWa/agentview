@@ -11,8 +11,9 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::codex_rpc::{AppServerClient, AppServerInvocation};
+use crate::codex_rpc::{cli_version_output, AppServerClient, AppServerInvocation};
 use crate::domain::{AgentSession, Capability, Provider, Runtime, SessionSnapshot, SessionState};
+use crate::process::{CommandRequest, CommandRunner, ProcessRunner};
 
 const RECORD_VERSION: u32 = 1;
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(8);
@@ -52,6 +53,8 @@ struct SupervisorRecord {
     created_at_ms: u64,
     #[serde(default)]
     threads: BTreeMap<String, OwnedThread>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    codex_version: Option<String>,
 }
 
 impl SupervisorRecord {
@@ -127,6 +130,13 @@ pub struct CodexSupervisor {
     client_transport: SupervisorClientTransport,
     response_lease: Option<ResponseLease>,
     control: Mutex<ControlConnection>,
+    installed_version: Mutex<Option<InstalledVersion>>,
+}
+
+struct InstalledVersion {
+    executable: PathBuf,
+    modified: SystemTime,
+    version: Option<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -202,6 +212,7 @@ impl CodexSupervisor {
             client_transport,
             response_lease,
             control: Mutex::new(ControlConnection::default()),
+            installed_version: Mutex::new(None),
         })
     }
 
@@ -785,24 +796,7 @@ impl CodexSupervisor {
             );
         }
 
-        #[cfg(target_os = "linux")]
-        {
-            use std::os::fd::{AsRawFd, FromRawFd};
-
-            let raw_fd =
-                unsafe { libc::syscall(libc::SYS_pidfd_open, record.pid as libc::pid_t, 0_u32) };
-            if raw_fd < 0 {
-                let error = std::io::Error::last_os_error();
-                if error.raw_os_error() == Some(libc::ESRCH) {
-                    return Ok(());
-                }
-                return Err(error).context("failed to open exact Codex App Server pidfd");
-            }
-            let pidfd = unsafe { File::from_raw_fd(raw_fd as i32) };
-            if !verify_process(&record)? {
-                bail!("Codex App Server identity changed before shutdown");
-            }
-
+        let stopped = stop_exact_server(&record, || {
             // Drop the local protocol connection before asking the server to
             // exit. The pidfd remains a stable reference even if the numeric
             // PID is concurrently recycled after termination.
@@ -811,68 +805,12 @@ impl CodexSupervisor {
                 .lock()
                 .map_err(|_| anyhow!("Codex supervisor connection lock was poisoned"))?;
             *control = ControlConnection::default();
-            drop(control);
-
-            let sent = unsafe {
-                libc::syscall(
-                    libc::SYS_pidfd_send_signal,
-                    pidfd.as_raw_fd(),
-                    libc::SIGTERM,
-                    std::ptr::null::<libc::siginfo_t>(),
-                    0_u32,
-                )
-            };
-            if sent != 0 {
-                return Err(std::io::Error::last_os_error())
-                    .context("failed to stop exact Codex App Server through pidfd");
-            }
-            let mut descriptor = libc::pollfd {
-                fd: pidfd.as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            let polled = unsafe { libc::poll(&mut descriptor, 1, 5_000) };
-            if polled < 0 {
-                return Err(std::io::Error::last_os_error())
-                    .context("failed while waiting for exact Codex App Server exit");
-            }
-            if polled == 0 {
-                let killed = unsafe {
-                    libc::syscall(
-                        libc::SYS_pidfd_send_signal,
-                        pidfd.as_raw_fd(),
-                        libc::SIGKILL,
-                        std::ptr::null::<libc::siginfo_t>(),
-                        0_u32,
-                    )
-                };
-                if killed != 0 {
-                    return Err(std::io::Error::last_os_error())
-                        .context("failed to force-stop exact Codex App Server through pidfd");
-                }
-                descriptor.revents = 0;
-                let killed_poll = unsafe { libc::poll(&mut descriptor, 1, 2_000) };
-                if killed_poll < 0 {
-                    return Err(std::io::Error::last_os_error())
-                        .context("failed while waiting for force-stopped Codex App Server exit");
-                }
-                if killed_poll == 0 {
-                    bail!("timed out waiting for force-stopped exact Codex App Server to exit");
-                }
-            }
-
-            // Reap only when this dashboard is still the process parent. A
-            // reconnected dashboard receives ECHILD and safely ignores it.
-            let mut status = 0;
-            let _ = unsafe { libc::waitpid(record.pid as i32, &mut status, libc::WNOHANG) };
-            remove_record_if_same_server(&self.record_path, &self.state_dir, &record)?;
             Ok(())
+        })?;
+        if stopped {
+            remove_record_if_same_server(&self.record_path, &self.state_dir, &record)?;
         }
-        #[cfg(not(target_os = "linux"))]
-        {
-            let _ = record;
-            bail!("durable Codex App Server shutdown currently requires Linux")
-        }
+        Ok(())
     }
 
     pub fn enrich(&self, snapshot: &mut SessionSnapshot) {
@@ -1142,10 +1080,81 @@ impl CodexSupervisor {
                         record.pid
                     )
                 })?;
-                return Ok(record);
+                return self.replace_if_outdated(record);
             }
         }
         self.start_endpoint()
+    }
+
+    /// An App Server started before Codex updated itself can keep running the
+    /// old build and stop reporting threads. Replace it once no owned turn is
+    /// active, carrying exact thread ownership to the new server.
+    fn replace_if_outdated(&self, mut record: SupervisorRecord) -> Result<SupervisorRecord> {
+        let Some(installed) = self.installed_codex_version() else {
+            return Ok(record);
+        };
+        if record.codex_version.is_none() {
+            let Some(running) = self.running_codex_version(&record) else {
+                return Ok(record);
+            };
+            record.codex_version = Some(running);
+            save_record(&self.record_path, &record)?;
+        }
+        if record.codex_version.as_deref() == Some(installed.as_str())
+            || record
+                .threads
+                .values()
+                .any(|thread| thread.active_turn_id.is_some())
+        {
+            return Ok(record);
+        }
+
+        let mut replacement = self.start_endpoint()?;
+        replacement.threads = record.threads.clone();
+        save_record(&self.record_path, &replacement)?;
+        // Without a pidfd (macOS) the outdated server is left idle rather than
+        // signalled by a numeric PID that could be reused.
+        if cfg!(target_os = "linux") && self.response_lease.is_some() {
+            let _ = stop_exact_server(&record, || Ok(()));
+        }
+        Ok(replacement)
+    }
+
+    fn running_codex_version(&self, record: &SupervisorRecord) -> Option<String> {
+        AppServerClient::connect(&self.client_invocation(record))
+            .ok()?
+            .server_version()
+            .map(str::to_owned)
+    }
+
+    /// `codex --version` for the configured executable, cached until the
+    /// resolved file changes.
+    fn installed_codex_version(&self) -> Option<String> {
+        let executable = resolve_executable(&self.codex_bin)?;
+        let modified = fs::metadata(&executable).ok()?.modified().ok()?;
+        let mut cache = self.installed_version.lock().ok()?;
+        if let Some(cached) = cache.as_ref() {
+            if cached.executable == executable && cached.modified == modified {
+                return cached.version.clone();
+            }
+        }
+        let output = ProcessRunner
+            .run(&CommandRequest::new(
+                self.codex_bin.clone(),
+                vec!["--version".into()],
+            ))
+            .ok()
+            .filter(|output| output.status == 0);
+        let version = output
+            .as_ref()
+            .and_then(|output| output.stdout_text().ok())
+            .and_then(cli_version_output);
+        *cache = Some(InstalledVersion {
+            executable,
+            modified,
+            version: version.clone(),
+        });
+        version
     }
 
     fn start_endpoint(&self) -> Result<SupervisorRecord> {
@@ -1247,6 +1256,7 @@ impl CodexSupervisor {
             socket_path,
             created_at_ms: now_millis(),
             threads: BTreeMap::new(),
+            codex_version: self.installed_codex_version(),
         };
         save_record(&self.record_path, &record)?;
         // Dropping Child does not kill it. The new process group and redirected
@@ -2056,7 +2066,6 @@ fn save_record(path: &Path, record: &SupervisorRecord) -> Result<()> {
         .with_context(|| format!("failed to replace {}", path.display()))
 }
 
-#[cfg(target_os = "linux")]
 fn remove_record_if_same_server(
     record_path: &Path,
     state_dir: &Path,
@@ -2107,6 +2116,105 @@ fn verify_process(record: &SupervisorRecord) -> Result<bool> {
         Err(error) => return Err(error),
     };
     Ok(start == record.process_start_token && cmdline == record.process_cmdline)
+}
+
+fn resolve_executable(executable: &str) -> Option<PathBuf> {
+    let path = Path::new(executable);
+    if path.components().count() > 1 {
+        return fs::canonicalize(path).ok();
+    }
+    std::env::split_paths(&std::env::var_os("PATH")?)
+        .map(|directory| directory.join(executable))
+        .find(|candidate| candidate.is_file())
+        .and_then(|candidate| fs::canonicalize(candidate).ok())
+}
+
+/// Stop the exact verified App Server through a stable Linux pidfd.
+///
+/// Returns `false` when the process is already gone. `before_signal` runs
+/// after identity is revalidated and before any signal is sent.
+fn stop_exact_server(
+    record: &SupervisorRecord,
+    before_signal: impl FnOnce() -> Result<()>,
+) -> Result<bool> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::{AsRawFd, FromRawFd};
+
+        let raw_fd =
+            unsafe { libc::syscall(libc::SYS_pidfd_open, record.pid as libc::pid_t, 0_u32) };
+        if raw_fd < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::ESRCH) {
+                return Ok(false);
+            }
+            return Err(error).context("failed to open exact Codex App Server pidfd");
+        }
+        let pidfd = unsafe { File::from_raw_fd(raw_fd as i32) };
+        if !verify_process(record)? {
+            bail!("Codex App Server identity changed before shutdown");
+        }
+        before_signal()?;
+
+        let sent = unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                pidfd.as_raw_fd(),
+                libc::SIGTERM,
+                std::ptr::null::<libc::siginfo_t>(),
+                0_u32,
+            )
+        };
+        if sent != 0 {
+            return Err(std::io::Error::last_os_error())
+                .context("failed to stop exact Codex App Server through pidfd");
+        }
+        let mut descriptor = libc::pollfd {
+            fd: pidfd.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let polled = unsafe { libc::poll(&mut descriptor, 1, 5_000) };
+        if polled < 0 {
+            return Err(std::io::Error::last_os_error())
+                .context("failed while waiting for exact Codex App Server exit");
+        }
+        if polled == 0 {
+            let killed = unsafe {
+                libc::syscall(
+                    libc::SYS_pidfd_send_signal,
+                    pidfd.as_raw_fd(),
+                    libc::SIGKILL,
+                    std::ptr::null::<libc::siginfo_t>(),
+                    0_u32,
+                )
+            };
+            if killed != 0 {
+                return Err(std::io::Error::last_os_error())
+                    .context("failed to force-stop exact Codex App Server through pidfd");
+            }
+            descriptor.revents = 0;
+            let killed_poll = unsafe { libc::poll(&mut descriptor, 1, 2_000) };
+            if killed_poll < 0 {
+                return Err(std::io::Error::last_os_error())
+                    .context("failed while waiting for force-stopped Codex App Server exit");
+            }
+            if killed_poll == 0 {
+                bail!("timed out waiting for force-stopped exact Codex App Server to exit");
+            }
+        }
+
+        // Reap only when this dashboard is still the process parent. A
+        // reconnected dashboard receives ECHILD and safely ignores it.
+        let mut status = 0;
+        let _ = unsafe { libc::waitpid(record.pid as i32, &mut status, libc::WNOHANG) };
+        Ok(true)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (record, before_signal);
+        bail!("durable Codex App Server shutdown currently requires Linux")
+    }
 }
 
 fn record_uses_executable(record: &SupervisorRecord, configured: &str) -> bool {
@@ -2743,6 +2851,7 @@ mod tests {
             socket_path: PathBuf::from("/tmp/not-used.sock"),
             created_at_ms: 1,
             threads: BTreeMap::new(),
+            codex_version: None,
         };
 
         assert!(!verify_process(&record).unwrap());
@@ -2778,6 +2887,89 @@ mod tests {
             vec!["gpt-visible", "gpt-second"]
         );
         assert!(second.live_record().unwrap().same_process(&first_record));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn outdated_server_is_replaced_once_owned_work_is_idle() {
+        let directory = tempdir().unwrap();
+        let state_dir = directory.path().join("state");
+        let mock = directory.path().join("mock-codex.py");
+        let version_file = directory.path().join("version");
+        let versioned = MOCK_CODEX
+            .replace(
+                "args = sys.argv[1:]\n",
+                "args = sys.argv[1:]\nVERSION = open(os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), \"version\")).read().strip()\nif args == [\"--version\"]:\n    print(\"codex-cli \" + VERSION); sys.exit(0)\n",
+            )
+            .replace(
+                r#"result = {"userAgent": "mock/1"}"#,
+                r#"result = {"userAgent": "agentview/" + VERSION + " (test)"}"#,
+            );
+        fs::write(&mock, versioned).unwrap();
+        fs::set_permissions(&mock, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(&version_file, "1.0.0").unwrap();
+        let supervisor =
+            || CodexSupervisor::with_state_dir(mock.to_string_lossy(), state_dir.clone()).unwrap();
+
+        let first = supervisor();
+        first.available_models().unwrap();
+        let original = first.live_record().unwrap();
+        let _original_guard = VerifiedTestProcess(original.clone());
+        assert_eq!(original.codex_version.as_deref(), Some("1.0.0"));
+
+        // A record written before versions were tracked learns the running
+        // version from App Server instead of being replaced.
+        first
+            .update_record_for_server(&original, |record| {
+                record.codex_version = None;
+                record.threads.insert(
+                    "owned-thread".into(),
+                    OwnedThread {
+                        cwd: PathBuf::from("/tmp"),
+                        created_at_ms: 1,
+                        active_turn_id: Some("owned-turn-1".into()),
+                        yolo: false,
+                    },
+                );
+                Ok(())
+            })
+            .unwrap();
+        drop(first);
+        let legacy = supervisor();
+        legacy.available_models().unwrap();
+        let reused = legacy.live_record().unwrap();
+        assert!(reused.same_process(&original));
+        assert_eq!(reused.codex_version.as_deref(), Some("1.0.0"));
+        drop(legacy);
+
+        fs::write(&version_file, "2.0.0").unwrap();
+        let busy = supervisor();
+        busy.available_models().unwrap();
+        assert!(busy.live_record().unwrap().same_process(&original));
+        busy.update_record_for_server(&original, |record| {
+            record
+                .threads
+                .get_mut("owned-thread")
+                .unwrap()
+                .active_turn_id = None;
+            Ok(())
+        })
+        .unwrap();
+        drop(busy);
+
+        let updated = supervisor();
+        updated.available_models().unwrap();
+        let replacement = updated.live_record().unwrap();
+        let _replacement_guard = VerifiedTestProcess(replacement.clone());
+        assert!(!replacement.same_process(&original));
+        assert_eq!(replacement.codex_version.as_deref(), Some("2.0.0"));
+        assert_eq!(
+            replacement.threads.keys().collect::<Vec<_>>(),
+            vec!["owned-thread"]
+        );
+        if cfg!(target_os = "linux") {
+            assert!(!verify_process(&original).unwrap());
+        }
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -2858,6 +3050,7 @@ mod tests {
             socket_path: directory.path().join("server.sock"),
             created_at_ms: 1,
             threads: BTreeMap::new(),
+            codex_version: None,
         };
 
         assert!(record_uses_executable(&record, shim.to_str().unwrap()));
@@ -2910,6 +3103,7 @@ mod tests {
             socket_path: PathBuf::from("/tmp/test.sock"),
             created_at_ms: 1,
             threads,
+            codex_version: None,
         };
         let mut pending = Vec::new();
 
@@ -3015,6 +3209,7 @@ mod tests {
             socket_path: PathBuf::from("/tmp/test.sock"),
             created_at_ms: 1,
             threads,
+            codex_version: None,
         };
         let mut pending = Vec::new();
         reconcile_pending_event(
@@ -3065,6 +3260,7 @@ mod tests {
             socket_path: PathBuf::from("/tmp/test.sock"),
             created_at_ms: 1,
             threads,
+            codex_version: None,
         };
         let wrong = json!({
             "method": "turn/completed",
