@@ -118,6 +118,7 @@ pub(crate) struct AppServerClient {
     oversized_responses: BTreeSet<u64>,
     events: VecDeque<Value>,
     next_id: u64,
+    server_version: Option<String>,
 }
 
 impl AppServerClient {
@@ -153,8 +154,9 @@ impl AppServerClient {
             oversized_responses: BTreeSet::new(),
             events: VecDeque::new(),
             next_id: 1,
+            server_version: None,
         };
-        client.request(
+        let initialized = client.request(
             "initialize",
             json!({
                 "clientInfo": {
@@ -164,8 +166,17 @@ impl AppServerClient {
                 }
             }),
         )?;
+        client.server_version = initialized
+            .get("userAgent")
+            .and_then(Value::as_str)
+            .and_then(user_agent_version);
         client.notify("initialized", json!({}))?;
         Ok(client)
+    }
+
+    /// Codex version reported by the server's `initialize` user agent.
+    pub fn server_version(&self) -> Option<&str> {
+        self.server_version.as_deref()
     }
 
     fn connect_process(program: &str, args: &[String]) -> Result<ProcessTransport> {
@@ -421,6 +432,22 @@ fn spawn_retrying_text_busy(command: &mut Command) -> io::Result<Child> {
     }
 }
 
+/// `client/0.160.0 (Mac OS ...)` -> `0.160.0`.
+fn user_agent_version(user_agent: &str) -> Option<String> {
+    let product = user_agent.split_whitespace().next()?;
+    let version = product.split_once('/')?.1;
+    (!version.is_empty()).then(|| version.to_owned())
+}
+
+/// `codex-cli 0.160.0` -> `0.160.0`.
+pub(crate) fn cli_version_output(output: &str) -> Option<String> {
+    let line = output.lines().find(|line| !line.trim().is_empty())?;
+    line.split_whitespace()
+        .last()
+        .filter(|token| token.chars().next().is_some_and(|c| c.is_ascii_digit()))
+        .map(str::to_owned)
+}
+
 fn response_result(method: &str, message: Value) -> Result<Value> {
     if let Some(error) = message.get("error") {
         bail!("App Server {method} failed: {error}");
@@ -485,6 +512,22 @@ fn terminate_process_transport(process: &mut ProcessTransport) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_server_and_cli_versions() {
+        assert_eq!(
+            user_agent_version("agentview/0.160.0 (Mac OS 26.6.2; arm64) xterm-256color"),
+            Some("0.160.0".into())
+        );
+        assert_eq!(user_agent_version("agentview"), None);
+        assert_eq!(user_agent_version(""), None);
+        assert_eq!(
+            cli_version_output("codex-cli 0.160.0\n"),
+            Some("0.160.0".into())
+        );
+        assert_eq!(cli_version_output("codex-cli\n"), None);
+        assert_eq!(cli_version_output(""), None);
+    }
 
     #[cfg(unix)]
     #[test]
