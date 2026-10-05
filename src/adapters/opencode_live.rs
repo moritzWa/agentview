@@ -237,7 +237,7 @@ fn process_args(_pid: u32) -> Option<Vec<String>> {
 }
 
 /// `[[dd-]hh:]mm:ss` as printed by `ps -o etime`.
-fn parse_etime(value: &str) -> Option<u64> {
+pub(super) fn parse_etime(value: &str) -> Option<u64> {
     let (days, clock) = match value.split_once('-') {
         Some((days, clock)) => (days.parse::<u64>().ok()?, clock),
         None => (0, value),
