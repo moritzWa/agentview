@@ -2,7 +2,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::prelude::{Color, Frame, Line, Modifier, Span, Style};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, Padding, Paragraph, Wrap};
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::app::{
@@ -1444,9 +1444,9 @@ fn render_hidden_picker(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let popup_width = area.width.saturating_sub(2).min(84).max(30);
     let visible_rows = hidden_picker_rows_for_height(area.height);
     let result_rows = choices.len().clamp(1, visible_rows);
-    // Inside the borders, less the leading "   " and the quotes.
-    let snippet = app.hidden_snippet(popup_width.saturating_sub(7) as usize);
-    let popup_height = (result_rows as u16 + 4 + u16::from(snippet.is_some()))
+    // Inside the borders and padding, less the leading "  " and the quotes.
+    let snippet = app.hidden_snippet(popup_width.saturating_sub(8) as usize);
+    let popup_height = (result_rows as u16 + 3 + u16::from(snippet.is_some()))
         .min(area.height.saturating_sub(2))
         .max(5);
     let popup = Rect::new(
@@ -1461,7 +1461,7 @@ fn render_hidden_picker(frame: &mut Frame<'_>, app: &App, area: Rect) {
         (app.hidden_selection / visible_rows) * visible_rows
     };
     let mut lines = vec![Line::from(vec![
-        Span::styled(" search  ", Style::default().fg(palette().dim)),
+        Span::styled("search  ", Style::default().fg(palette().dim)),
         Span::styled(
             if app.hidden_filter.is_empty() {
                 "type a name, folder, ID, or words from the chat".into()
@@ -1486,8 +1486,9 @@ fn render_hidden_picker(frame: &mut Frame<'_>, app: &App, area: Rect) {
         )));
     } else {
         let now = SystemTime::now();
-        // Inside the borders, each row is " › " + name + tail.
-        let inner_width = popup_width.saturating_sub(2) as usize;
+        // Inside the borders and padding, each row is "› " + name + tail,
+        // with the tail right-aligned.
+        let inner_width = popup_width.saturating_sub(4) as usize;
         lines.extend(
             choices
                 .iter()
@@ -1506,15 +1507,7 @@ fn render_hidden_picker(frame: &mut Frame<'_>, app: &App, area: Rect) {
                             UNIX_EPOCH + std::time::Duration::from_millis(record.hidden_at_ms),
                         )
                         .ok();
-                    let age = format!(
-                        "{} {} ago",
-                        if app.is_hidden_choice(&record.id) {
-                            "hidden"
-                        } else {
-                            "updated"
-                        },
-                        format_age(hidden_for)
-                    );
+                    let age = format!("{:>4}", format_age(hidden_for));
                     let name = sanitize_inline(record.name.as_deref().unwrap_or(&record.id));
                     let folder = app
                         .restorable
@@ -1523,21 +1516,27 @@ fn render_hidden_picker(frame: &mut Frame<'_>, app: &App, area: Rect) {
                             format!(" · {}", sanitize_inline(&abbreviate_path(&session.cwd)))
                         })
                         .unwrap_or_default();
-                    let mut tail = format!("  {provider}{folder} · {age}");
-                    if inner_width < display_width(&tail) + 3 + HIDDEN_PICKER_MIN_NAME_WIDTH {
-                        tail = format!("  {provider} · {age}");
+                    let mut tail = format!("  {provider}{folder}  {age}");
+                    if inner_width < display_width(&tail) + 2 + HIDDEN_PICKER_MIN_NAME_WIDTH {
+                        tail = format!("  {provider}  {age}");
                     }
-                    if inner_width < display_width(&tail) + 3 + HIDDEN_PICKER_MIN_NAME_WIDTH {
+                    if inner_width < display_width(&tail) + 2 + HIDDEN_PICKER_MIN_NAME_WIDTH {
                         // Narrow popup: keep the age and drop the harness
                         // rather than pushing the suffix past the border.
                         tail = format!("  {age}");
                     }
-                    let name_width = inner_width.saturating_sub(display_width(&tail) + 3);
+                    let name_width = inner_width.saturating_sub(display_width(&tail) + 2);
                     let name = truncate(&name, name_width.max(1));
-                    Line::from(format!(
-                        " {} {name}{tail}",
-                        if selected { "›" } else { " " }
-                    ))
+                    let gap = " ".repeat(name_width.saturating_sub(display_width(&name)));
+                    let meta_style = if selected {
+                        Style::default()
+                    } else {
+                        Style::default().fg(palette().dim)
+                    };
+                    Line::from(vec![
+                        Span::raw(format!("{} {name}{gap}", if selected { "›" } else { " " })),
+                        Span::styled(tail, meta_style),
+                    ])
                     .style(if selected {
                         Style::default()
                             .bg(palette().selected_bg)
@@ -1551,18 +1550,10 @@ fn render_hidden_picker(frame: &mut Frame<'_>, app: &App, area: Rect) {
     }
     if let Some(snippet) = snippet {
         lines.push(Line::from(Span::styled(
-            format!("   “{}”", sanitize_inline(&snippet)),
+            format!("  “{}”", sanitize_inline(&snippet)),
             Style::default().fg(palette().dim),
         )));
     }
-    lines.push(
-        Line::from(if popup_width >= 60 {
-            " ↑/↓ move · PgUp/PgDn page · enter restore to the list · esc close"
-        } else {
-            " ↑/↓ · enter restore · esc"
-        })
-        .style(Style::default().fg(palette().dim)),
-    );
     frame.render_widget(Clear, popup);
     frame.render_widget(
         Paragraph::new(lines)
@@ -1579,7 +1570,8 @@ fn render_hidden_picker(frame: &mut Frame<'_>, app: &App, area: Rect) {
                         }
                     ))
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(palette().accent)),
+                    .border_style(Style::default().fg(palette().accent))
+                    .padding(Padding::horizontal(1)),
             )
             .style(Style::default().bg(palette().bg).fg(palette().fg)),
         popup,
@@ -2548,8 +2540,7 @@ mod tests {
             .lines()
             .find(|line| line.contains('›'))
             .expect("selected picker row");
-        assert!(row.contains("hidden"), "{row}");
-        assert!(row.contains(" ago"), "{row}");
+        assert!(row.contains(&format!("{} │", format_age(Some(Duration::ZERO)))), "{row}");
         assert!(row.trim_end().ends_with('│'), "{row}");
     }
 
