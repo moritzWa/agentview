@@ -1775,7 +1775,9 @@ mod tests {
         let mut sessions = parse_opencode_session_list(input, Runtime::Host).unwrap();
         let activity = crate::opencode_supervisor::ServerActivity {
             server_pid: Some(42),
-            running: ["ses_busy", "ses_ask", "ses_owned"].map(String::from).into(),
+            running: ["ses_busy", "ses_ask", "ses_owned"]
+                .map(String::from)
+                .into(),
             questions: ["ses_ask".to_owned()].into(),
             permissions: BTreeSet::new(),
         };
@@ -1787,8 +1789,14 @@ mod tests {
                 .unwrap();
             (session.state, session.raw_state.clone().unwrap_or_default())
         };
-        assert_eq!(state("ses_busy"), (SessionState::Working, "server busy".into()));
-        assert_eq!(state("ses_ask"), (SessionState::NeedsInput, "question asked".into()));
+        assert_eq!(
+            state("ses_busy"),
+            (SessionState::Working, "server busy".into())
+        );
+        assert_eq!(
+            state("ses_ask"),
+            (SessionState::NeedsInput, "question asked".into())
+        );
         assert_eq!(state("ses_idle").0, SessionState::Completed);
         assert_eq!(state("ses_owned").0, SessionState::Completed);
     }

@@ -460,9 +460,12 @@ impl OpenCodeSupervisor {
                 ("/question", &mut activity.questions),
                 ("/permission", &mut activity.permissions),
             ] {
-                if let Ok(requests) =
-                    self.request_json(&record, "GET", &with_directory_query(route, directory), None)
-                {
+                if let Ok(requests) = self.request_json(
+                    &record,
+                    "GET",
+                    &with_directory_query(route, directory),
+                    None,
+                ) {
                     blocked.extend(request_session_ids(&requests));
                 }
             }
