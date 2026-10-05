@@ -36,10 +36,10 @@ use agentview::maintenance::{
 use agentview::migration::{MigrationClient, MigrationRegistry};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use agentview::opencode_supervisor::OpenCodeSupervisor;
+use agentview::paused::PausedSessions;
 use agentview::pi_supervisor::run_pi_supervisor_daemon;
 #[cfg(target_os = "linux")]
 use agentview::pi_supervisor::PiSupervisor;
-use agentview::pins::PinnedSessions;
 use agentview::terminal::{run_dashboard, MigrationServices};
 use agentview::theme::{self, ThemePreference};
 
@@ -536,7 +536,7 @@ fn main() -> Result<()> {
     // provider path would otherwise leave the common parent at 0755 and the
     // hidden-session registry would correctly refuse to use it.
     let hidden_sessions = HiddenSessions::load_default()?;
-    let pinned_sessions = PinnedSessions::load_default()?;
+    let paused_sessions = PausedSessions::load_default()?;
     let temporary_roots = agentview::hidden::temporary_roots();
     // Asking for a temp directory with --cwd means those sessions are wanted.
     let hidden_sessions = if cli.include_temp
@@ -547,7 +547,7 @@ fn main() -> Result<()> {
     {
         hidden_sessions
     } else {
-        hidden_sessions.hide_temporary_directories(temporary_roots, pinned_sessions.clone())
+        hidden_sessions.hide_temporary_directories(temporary_roots, paused_sessions.clone())
     };
     let session_aliases = SessionAliases::load_default()?;
     let migration_registry = MigrationRegistry::load_default()?;
@@ -1093,7 +1093,7 @@ fn main() -> Result<()> {
         Duration::from_millis(cli.refresh_ms),
         &control,
         hidden_sessions,
-        pinned_sessions,
+        paused_sessions,
         agentview::order::SessionOrder::load_default()?,
         last_harness,
         LastView::load_default()?,

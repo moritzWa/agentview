@@ -27,6 +27,7 @@ pub const SESSION_PAGE_SIZE: usize = 25;
 pub const MODEL_PICKER_PAGE_SIZE: usize = 10;
 pub const MIGRATION_PICKER_PAGE_SIZE: usize = 10;
 pub const HIDDEN_PICKER_PAGE_SIZE: usize = 10;
+const PAUSED_GROUP_KEY: &str = "paused";
 
 /// Result rows the hidden-session picker can show in a terminal of `height`
 /// rows. Rendering and PageUp/PageDown share it so a page is what fits.
@@ -180,15 +181,15 @@ pub enum AppAction {
     Hide {
         session_ids: Vec<String>,
     },
-    /// Remember or forget a local pin. The row order is already updated.
-    SetPin {
+    /// Remember or forget a local pause. The row order is already updated.
+    SetPaused {
         session_id: String,
-        pinned: bool,
+        paused: bool,
     },
     /// Remember swapped sort keys after a manual move. The row order is
-    /// already updated. Pinned rows store theirs as pin times.
+    /// already updated. Paused rows store theirs as pause times.
     SetSortKeys {
-        pinned: bool,
+        paused: bool,
         keys: Vec<(String, u64)>,
     },
     /// Read an image from the system clipboard into the draft.
@@ -249,7 +250,7 @@ pub struct App {
     pub model_selection: usize,
     pub migration_targets: Vec<Provider>,
     pub migration_selection: usize,
-    pub pinned: BTreeMap<String, u64>,
+    pub paused: BTreeMap<String, u64>,
     pub sort_keys: BTreeMap<String, u64>,
     pub hidden_candidates: Vec<HiddenSessionRecord>,
     pub hidden_filter: String,
@@ -345,7 +346,7 @@ impl App {
             model_selection: 0,
             migration_targets: Vec::new(),
             migration_selection: 0,
-            pinned: BTreeMap::new(),
+            paused: BTreeMap::new(),
             sort_keys: BTreeMap::new(),
             hidden_candidates: Vec::new(),
             restorable: BTreeMap::new(),
@@ -359,7 +360,7 @@ impl App {
             models_provider: None,
             models_error: None,
             models_auth_available: false,
-            collapsed: BTreeSet::new(),
+            collapsed: BTreeSet::from([PAUSED_GROUP_KEY.to_owned()]),
             visible_limits: BTreeMap::new(),
             session_page_size: SESSION_PAGE_SIZE,
             group_cache: Vec::new(),
@@ -784,6 +785,7 @@ impl App {
     pub fn set_view_mode(&mut self, view_mode: ViewMode) {
         self.view_mode = view_mode;
         self.collapsed.clear();
+        self.collapsed.insert(PAUSED_GROUP_KEY.to_owned());
         self.visible_limits.clear();
         self.rebuild_group_cache();
         self.reconcile_selection();
@@ -1683,8 +1685,8 @@ impl App {
         self.reconcile_picker_selection();
     }
 
-    pub fn set_pins(&mut self, pins: BTreeMap<String, u64>) {
-        self.pinned = pins;
+    pub fn set_paused(&mut self, paused: BTreeMap<String, u64>) {
+        self.paused = paused;
         self.rebuild_group_cache();
     }
 
@@ -1720,9 +1722,11 @@ impl App {
         else {
             return AppAction::None;
         };
-        let pinned = group.key == "pinned";
-        if !pinned && self.view_mode != ViewMode::Directory {
-            self.set_notice("reorder sessions in the directory view (ctrl+s) or pin them");
+        let paused = group.key == PAUSED_GROUP_KEY;
+        if !paused && self.view_mode != ViewMode::Directory {
+            self.set_notice(
+                "reorder sessions in the directory view (ctrl+s) or in the Paused group",
+            );
             return AppAction::None;
         }
         let position = group
@@ -1750,8 +1754,8 @@ impl App {
             .iter()
             .zip(&ids)
             .map(|(row, id)| {
-                if pinned {
-                    self.pinned.get(id).copied().unwrap_or(0)
+                if paused {
+                    self.paused.get(id).copied().unwrap_or(0)
                 } else {
                     self.directory_sort_key(&self.snapshot.sessions[*row])
                 }
@@ -1772,8 +1776,8 @@ impl App {
             .filter(|(id, (old, new))| old != new || *id == session_id)
             .map(|(id, (_, new))| (id, new))
             .collect();
-        let target = if pinned {
-            &mut self.pinned
+        let target = if paused {
+            &mut self.paused
         } else {
             &mut self.sort_keys
         };
@@ -1783,39 +1787,46 @@ impl App {
         self.rebuild_group_cache();
         self.select_and_reveal_session(&session_id);
         self.notice = None;
-        AppAction::SetSortKeys { pinned, keys }
+        AppAction::SetSortKeys { paused, keys }
     }
 
-    /// Pin or unpin the selected session and move it into or out of the
-    /// leading Pinned group. Persistence is the caller's job.
-    pub fn toggle_pin(&mut self) -> AppAction {
+    /// Pause or unpause the selected session and move it into or out of the
+    /// leading Paused group. Persistence is the caller's job.
+    pub fn toggle_pause(&mut self) -> AppAction {
         let Some(session) = self.selected_session() else {
-            self.set_notice("select a session to pin");
+            self.set_notice("select a session to pause");
             return AppAction::None;
         };
         let session_id = session.id.clone();
         let name = session.name.clone();
-        let pinned = if self.pinned.contains_key(&session_id) {
-            self.pinned.remove(&session_id);
+        let previous_keys = self.ordered_keys();
+        let paused = if self.paused.contains_key(&session_id) {
+            self.paused.remove(&session_id);
             false
         } else {
-            let pinned_at = SystemTime::now()
+            let paused_at = SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as u64;
-            self.pinned.insert(session_id.clone(), pinned_at);
+            self.paused.insert(session_id.clone(), paused_at);
             true
         };
         self.rebuild_group_cache();
-        // The row moved groups; keep it selected and on screen even when its
-        // new group is collapsed or paged.
-        self.select_and_reveal_session(&session_id);
-        self.set_notice(if pinned {
-            format!("pinned {name}")
+        if paused {
+            // A paused row is put away: leave the Paused group as it is and
+            // move on to the row that slides into its place.
+            self.reconcile_selection_near(&previous_keys);
         } else {
-            format!("unpinned {name}")
+            // The row moved groups; keep it selected and on screen even when
+            // its new group is collapsed or paged.
+            self.select_and_reveal_session(&session_id);
+        }
+        self.set_notice(if paused {
+            format!("paused {name}")
+        } else {
+            format!("unpaused {name}")
         });
-        AppAction::SetPin { session_id, pinned }
+        AppAction::SetPaused { session_id, paused }
     }
 
     pub fn set_notice(&mut self, notice: impl Into<String>) {
@@ -1841,20 +1852,20 @@ impl App {
 
     fn status_groups(&self) -> Vec<Group> {
         let needle = self.filter.to_ascii_lowercase();
-        let mut pinned = Vec::new();
+        let mut paused = Vec::new();
         let mut grouped: BTreeMap<SessionState, Vec<usize>> = BTreeMap::new();
         for (index, session) in self.snapshot.sessions.iter().enumerate() {
             if !(needle.is_empty() || matches_filter(session, &needle)) {
                 continue;
             }
-            if self.pinned.contains_key(&session.id) {
-                pinned.push(index);
+            if self.paused.contains_key(&session.id) {
+                paused.push(index);
             } else {
                 grouped.entry(session.state).or_default().push(index);
             }
         }
         let mut groups = Vec::new();
-        if let Some(group) = self.pinned_group(pinned) {
+        if let Some(group) = self.paused_group(paused) {
             groups.push(group);
         }
         groups.extend(SessionState::DISPLAY_ORDER.iter().filter_map(|state| {
@@ -1868,40 +1879,40 @@ impl App {
         groups
     }
 
-    fn pinned_group(&self, mut sessions: Vec<usize>) -> Option<Group> {
+    fn paused_group(&self, mut sessions: Vec<usize>) -> Option<Group> {
         if sessions.is_empty() {
             return None;
         }
         sessions.sort_by(|left, right| {
             let left_at = self
-                .pinned
+                .paused
                 .get(&self.snapshot.sessions[*left].id)
                 .copied()
                 .unwrap_or(0);
             let right_at = self
-                .pinned
+                .paused
                 .get(&self.snapshot.sessions[*right].id)
                 .copied()
                 .unwrap_or(0);
             right_at.cmp(&left_at).then(left.cmp(right))
         });
         Some(Group {
-            key: "pinned".into(),
-            label: "Pinned".into(),
+            key: PAUSED_GROUP_KEY.into(),
+            label: "Paused".into(),
             sessions,
         })
     }
 
     fn directory_groups(&self) -> Vec<Group> {
         let needle = self.filter.to_ascii_lowercase();
-        let mut pinned = Vec::new();
+        let mut paused = Vec::new();
         let mut groups: BTreeMap<PathBuf, Vec<usize>> = BTreeMap::new();
         for (index, session) in self.snapshot.sessions.iter().enumerate() {
             if !(needle.is_empty() || matches_filter(session, &needle)) {
                 continue;
             }
-            if self.pinned.contains_key(&session.id) {
-                pinned.push(index);
+            if self.paused.contains_key(&session.id) {
+                paused.push(index);
             } else {
                 groups
                     .entry(project_group_path(&session.cwd))
@@ -1910,7 +1921,7 @@ impl App {
             }
         }
         let mut ordered = Vec::new();
-        if let Some(group) = self.pinned_group(pinned) {
+        if let Some(group) = self.paused_group(paused) {
             ordered.push(group);
         }
         ordered.extend(groups.into_iter().map(|(path, mut sessions)| {
@@ -3965,7 +3976,7 @@ mod tests {
     }
 
     #[test]
-    fn pinning_lifts_a_session_into_a_leading_group_and_unpinning_restores_it() {
+    fn pausing_lifts_a_session_into_a_leading_group_and_unpausing_restores_it() {
         let mut app = app_with(vec![
             session("needs", SessionState::NeedsInput),
             session("working", SessionState::Working),
@@ -3973,13 +3984,13 @@ mod tests {
         ]);
         app.selection = Some(SelectionKey::Session("done".into()));
         assert_eq!(
-            app.toggle_pin(),
-            AppAction::SetPin {
+            app.toggle_pause(),
+            AppAction::SetPaused {
                 session_id: "done".into(),
-                pinned: true,
+                paused: true,
             }
         );
-        assert_eq!(app.groups()[0].label, "Pinned");
+        assert_eq!(app.groups()[0].label, "Paused");
         assert_eq!(
             app.groups()[0]
                 .sessions
@@ -3993,7 +4004,7 @@ mod tests {
             .all(|group| group.label != "Completed"));
 
         app.selection = Some(SelectionKey::Session("working".into()));
-        app.toggle_pin();
+        app.toggle_pause();
         assert_eq!(
             app.groups()[0]
                 .sessions
@@ -4005,10 +4016,10 @@ mod tests {
 
         app.selection = Some(SelectionKey::Session("done".into()));
         assert_eq!(
-            app.toggle_pin(),
-            AppAction::SetPin {
+            app.toggle_pause(),
+            AppAction::SetPaused {
                 session_id: "done".into(),
-                pinned: false,
+                paused: false,
             }
         );
         assert_eq!(
@@ -4016,24 +4027,51 @@ mod tests {
                 .iter()
                 .map(|group| group.label.as_str())
                 .collect::<Vec<_>>(),
-            vec!["Pinned", "Needs input", "Completed"]
+            vec!["Paused", "Needs input", "Completed"]
         );
     }
 
     #[test]
-    fn unpinning_reveals_the_row_in_a_collapsed_or_paged_group() {
+    fn the_paused_group_starts_collapsed_and_pausing_moves_on_to_the_next_row() {
+        let mut app = app_with(vec![
+            session("first", SessionState::NeedsInput),
+            session("second", SessionState::NeedsInput),
+        ]);
+        app.selection = Some(SelectionKey::Session("first".into()));
+
+        app.toggle_pause();
+
+        assert_eq!(app.groups()[0].label, "Paused");
+        assert_eq!(app.selection, Some(SelectionKey::Session("second".into())));
+        assert!(!app
+            .selectable_keys()
+            .contains(&SelectionKey::Session("first".into())));
+
+        app.selection = Some(SelectionKey::Group(PAUSED_GROUP_KEY.into()));
+        app.activate();
+        assert!(app
+            .selectable_keys()
+            .contains(&SelectionKey::Session("first".into())));
+        app.activate();
+        assert!(!app
+            .selectable_keys()
+            .contains(&SelectionKey::Session("first".into())));
+    }
+
+    #[test]
+    fn unpausing_reveals_the_row_in_a_collapsed_or_paged_group() {
         let mut app = app_with(vec![
             session("done-a", SessionState::Completed),
             session("done-b", SessionState::Completed),
             session("done-c", SessionState::Completed),
         ]);
         app.selection = Some(SelectionKey::Session("done-c".into()));
-        app.toggle_pin();
+        app.toggle_pause();
         app.set_session_page_size(1);
         app.collapsed.insert("state:Completed".into());
         app.selection = Some(SelectionKey::Session("done-c".into()));
 
-        app.toggle_pin();
+        app.toggle_pause();
 
         assert_eq!(app.selection, Some(SelectionKey::Session("done-c".into())));
         assert!(app
@@ -4480,15 +4518,16 @@ mod tests {
     }
 
     #[test]
-    fn toggling_view_clears_collapsed_groups_and_reconciles_selection() {
+    fn toggling_view_resets_collapsed_groups_and_reconciles_selection() {
         let mut app = app_with(vec![session("one", SessionState::Working)]);
         app.selection = Some(SelectionKey::Group("state:Working".into()));
         app.collapsed.insert("state:Working".into());
+        app.collapsed.remove(PAUSED_GROUP_KEY);
 
         app.toggle_view();
 
         assert_eq!(app.view_mode, ViewMode::Directory);
-        assert!(app.collapsed.is_empty());
+        assert_eq!(app.collapsed, BTreeSet::from([PAUSED_GROUP_KEY.to_owned()]));
         assert_eq!(app.selection, Some(SelectionKey::Session("one".into())));
         app.toggle_view();
         assert_eq!(app.view_mode, ViewMode::Status);
@@ -4545,10 +4584,10 @@ mod tests {
         };
         app.selection = Some(SelectionKey::Session("old".into()));
 
-        let AppAction::SetSortKeys { pinned, keys } = app.move_selected_session(-1) else {
+        let AppAction::SetSortKeys { paused, keys } = app.move_selected_session(-1) else {
             panic!("expected a sort-key action");
         };
-        assert!(!pinned);
+        assert!(!paused);
         assert_eq!(keys, [("mid".into(), 1000), ("old".into(), 2000)]);
         assert_eq!(order(&app), ["new", "old", "mid"]);
         app.move_selected_session(-1);
@@ -4587,20 +4626,20 @@ mod tests {
     }
 
     #[test]
-    fn moving_a_pinned_session_reorders_the_pinned_group() {
+    fn moving_a_paused_session_reorders_the_paused_group() {
         let mut app = app_with(vec![
             session("one", SessionState::Working),
             session("two", SessionState::Working),
         ]);
-        app.set_pins(BTreeMap::from([("one".into(), 20), ("two".into(), 10)]));
+        app.set_paused(BTreeMap::from([("one".into(), 20), ("two".into(), 10)]));
         app.selection = Some(SelectionKey::Session("two".into()));
 
-        let AppAction::SetSortKeys { pinned, keys } = app.move_selected_session(-1) else {
+        let AppAction::SetSortKeys { paused, keys } = app.move_selected_session(-1) else {
             panic!("expected a sort-key action");
         };
-        assert!(pinned);
+        assert!(paused);
         assert_eq!(keys, [("one".into(), 10), ("two".into(), 20)]);
-        assert_eq!(app.groups()[0].label, "Pinned");
+        assert_eq!(app.groups()[0].label, "Paused");
         assert_eq!(
             app.groups()[0]
                 .sessions
@@ -4612,7 +4651,7 @@ mod tests {
     }
 
     #[test]
-    fn moving_an_unpinned_session_in_status_view_explains_where_it_works() {
+    fn moving_an_unpaused_session_in_status_view_explains_where_it_works() {
         let mut app = app_with(vec![
             session("one", SessionState::Working),
             session("two", SessionState::Working),

@@ -59,7 +59,9 @@ own interface.
   No new terminal, `cd`, or `--resume` needed.
 - **Launches stay on the dashboard** for harnesses that can run in the
   background. `Enter` opens the new row.
-- **Pin and reorder** with `Ctrl+T` and `Option+↑` / `↓`.
+- **Pause sessions you're waiting on** with `Ctrl+T`. They move into a Paused
+  group that stays collapsed until you press `Enter` on it. Reorder rows with
+  `Option+↑` / `↓`.
 - **Start in any folder** with `/cd` or `Ctrl+O`. Multi-line tasks and pastes
   stay one draft. A long paste shows as `[Pasted ~12 lines]` and `Ctrl+V`
   attaches a clipboard image as `[Image #1]`.

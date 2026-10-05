@@ -130,32 +130,35 @@ impl MigrationServices {
     }
 }
 
-/// Persist a pin the screen already shows, then show what the registry
+/// Persist a pause the screen already shows, then show what the registry
 /// actually holds, so a failed save puts the row back where it was.
-fn save_pin(
+fn save_pause(
     app: &mut App,
-    pinned_sessions: &crate::pins::PinnedSessions,
+    paused_sessions: &crate::paused::PausedSessions,
     session_id: &str,
-    pinned: bool,
+    paused: bool,
 ) {
-    if let Err(error) = pinned_sessions.set(session_id, pinned) {
-        app.set_notice(format!("failed to save pin: {error:#}"));
+    let saved = paused_sessions.set(session_id, paused);
+    if let Err(error) = &saved {
+        app.set_notice(format!("failed to save pause: {error:#}"));
     }
-    app.set_pins(pinned_sessions.pins());
-    app.select_and_reveal_session(session_id);
+    app.set_paused(paused_sessions.paused());
+    if saved.is_err() || !paused {
+        app.select_and_reveal_session(session_id);
+    }
 }
 
 /// Persist a manual move the screen already shows, then reload what the
 /// registry holds, so a failed save puts the rows back.
 fn save_sort_keys(
     app: &mut App,
-    pinned_sessions: &crate::pins::PinnedSessions,
+    paused_sessions: &crate::paused::PausedSessions,
     session_order: &crate::order::SessionOrder,
-    pinned: bool,
+    paused: bool,
     keys: &[(String, u64)],
 ) {
-    let saved = if pinned {
-        pinned_sessions.set_pinned_at(keys)
+    let saved = if paused {
+        paused_sessions.set_paused_at(keys)
     } else {
         session_order.set(keys)
     };
@@ -163,7 +166,7 @@ fn save_sort_keys(
         app.set_notice(format!("failed to save order: {error:#}"));
     }
     let selected = app.selected_session().map(|session| session.id.clone());
-    app.set_pins(pinned_sessions.pins());
+    app.set_paused(paused_sessions.paused());
     app.set_sort_keys(session_order.sort_keys());
     if let Some(session_id) = selected {
         app.select_and_reveal_session(&session_id);
@@ -177,7 +180,7 @@ pub fn run_dashboard(
     refresh_interval: Duration,
     control: &ControlHub,
     hidden_sessions: HiddenSessions,
-    pinned_sessions: crate::pins::PinnedSessions,
+    paused_sessions: crate::paused::PausedSessions,
     session_order: crate::order::SessionOrder,
     last_harness: crate::last_harness::LastHarness,
     last_view: crate::last_view::LastView,
@@ -263,7 +266,7 @@ pub fn run_dashboard(
         control.launch_targets(),
     );
     app.set_yolo(control.yolo_enabled(), control.yolo_supported_providers());
-    app.set_pins(pinned_sessions.pins());
+    app.set_paused(paused_sessions.paused());
     app.set_sort_keys(session_order.sort_keys());
     if let Some(view_mode) = last_view.view_mode() {
         app.set_view_mode(view_mode);
@@ -638,16 +641,16 @@ pub fn run_dashboard(
                             action = AppAction::None;
                         }
                         let mut effect = match action {
-                            AppAction::SetPin { session_id, pinned } => {
-                                save_pin(&mut app, &pinned_sessions, &session_id, pinned);
+                            AppAction::SetPaused { session_id, paused } => {
+                                save_pause(&mut app, &paused_sessions, &session_id, paused);
                                 ActionEffect::default()
                             }
-                            AppAction::SetSortKeys { pinned, keys } => {
+                            AppAction::SetSortKeys { paused, keys } => {
                                 save_sort_keys(
                                     &mut app,
-                                    &pinned_sessions,
+                                    &paused_sessions,
                                     &session_order,
-                                    pinned,
+                                    paused,
                                     &keys,
                                 );
                                 ActionEffect::default()
@@ -1466,7 +1469,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> AppAction {
             KeyCode::Char('p') | KeyCode::Char('t')
                 if matches!(app.overlay, Overlay::None | Overlay::Peek) =>
             {
-                app.toggle_pin()
+                app.toggle_pause()
             }
             KeyCode::Char('g')
                 if matches!(
@@ -1530,7 +1533,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> AppAction {
         && key.code == KeyCode::Char('p')
         && matches!(app.overlay, Overlay::None | Overlay::Peek)
     {
-        return app.toggle_pin();
+        return app.toggle_pause();
     }
     if key.modifiers.contains(KeyModifiers::SUPER) && key.code == KeyCode::Backspace {
         app.delete_to_line_start();
@@ -2027,7 +2030,7 @@ fn dispatch_action<T: DashboardTerminal, C: DashboardControl>(
                 }
             }
         }
-        AppAction::SetPin { .. } | AppAction::SetSortKeys { .. } => ActionEffect::default(),
+        AppAction::SetPaused { .. } | AppAction::SetSortKeys { .. } => ActionEffect::default(),
         AppAction::Hide { session_ids } => ActionEffect {
             hide_session_ids: session_ids,
             ..ActionEffect::default()
@@ -2135,7 +2138,7 @@ fn handle_action_legacy<T: DashboardTerminal, C: DashboardControl>(
         | AppAction::SetupLaunchOption { .. }
         | AppAction::Migrate { .. }
         | AppAction::Hide { .. }
-        | AppAction::SetPin { .. }
+        | AppAction::SetPaused { .. }
         | AppAction::SetSortKeys { .. }
         | AppAction::BrowseHidden
         | AppAction::PasteImage
@@ -2480,28 +2483,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_pin_that_fails_to_save_is_taken_back_off_the_screen() {
+    fn a_pause_that_fails_to_save_is_taken_back_off_the_screen() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("agentview/pinned-sessions.json");
-        let pins = crate::pins::PinnedSessions::load(path.clone()).unwrap();
+        let registry = crate::paused::PausedSessions::load(path.clone()).unwrap();
         let mut app = app();
         app.selection = Some(SelectionKey::Session("worker".into()));
-        let AppAction::SetPin { session_id, pinned } = app.toggle_pin() else {
-            panic!("expected a pin action");
+        let AppAction::SetPaused { session_id, paused } = app.toggle_pause() else {
+            panic!("expected a pause action");
         };
-        assert_eq!(app.groups()[0].label, "Pinned");
+        assert_eq!(app.groups()[0].label, "Paused");
 
         // A directory where the registry file belongs makes the save fail.
         std::fs::create_dir(&path).unwrap();
-        save_pin(&mut app, &pins, &session_id, pinned);
+        save_pause(&mut app, &registry, &session_id, paused);
 
-        assert!(app.groups().iter().all(|group| group.label != "Pinned"));
+        assert!(app.groups().iter().all(|group| group.label != "Paused"));
         assert_eq!(app.selection, Some(SelectionKey::Session("worker".into())));
         assert!(app
             .notice
             .as_deref()
             .unwrap()
-            .contains("failed to save pin"));
+            .contains("failed to save pause"));
     }
 
     #[test]
@@ -2684,31 +2687,32 @@ mod tests {
     }
 
     #[test]
-    fn control_p_pins_the_selected_session_and_super_p_does_the_same() {
+    fn control_p_pauses_the_selected_session_and_super_p_does_the_same() {
         let mut app = app();
         assert_eq!(
             handle_key(&mut app, control_key('p')),
-            AppAction::SetPin {
+            AppAction::SetPaused {
                 session_id: "worker".into(),
-                pinned: true,
+                paused: true,
             }
         );
-        assert_eq!(app.groups()[0].label, "Pinned");
+        assert_eq!(app.groups()[0].label, "Paused");
+        app.selection = Some(SelectionKey::Session("worker".into()));
         assert_eq!(
             handle_key(
                 &mut app,
                 modified_key(KeyCode::Char('p'), KeyModifiers::SUPER)
             ),
-            AppAction::SetPin {
+            AppAction::SetPaused {
                 session_id: "worker".into(),
-                pinned: false,
+                paused: false,
             }
         );
         assert_eq!(
             handle_key(&mut app, control_key('t')),
-            AppAction::SetPin {
+            AppAction::SetPaused {
                 session_id: "worker".into(),
-                pinned: true,
+                paused: true,
             }
         );
         app.start_new_session(None);
@@ -4214,11 +4218,11 @@ mod tests {
 
         assert!(matches!(
             handle_key(&mut app, modified_key(KeyCode::Down, KeyModifiers::ALT)),
-            AppAction::SetSortKeys { pinned: false, .. }
+            AppAction::SetSortKeys { paused: false, .. }
         ));
         assert!(matches!(
             handle_key(&mut app, modified_key(KeyCode::Up, KeyModifiers::ALT)),
-            AppAction::SetSortKeys { pinned: false, .. }
+            AppAction::SetSortKeys { paused: false, .. }
         ));
         assert_eq!(app.selection, Some(SelectionKey::Session("second".into())));
     }

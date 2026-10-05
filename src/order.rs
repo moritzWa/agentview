@@ -2,7 +2,7 @@
 //!
 //! Directory groups sort newest-first by start time. Moving a row stores a
 //! sort key that replaces its start time, so moved rows keep their place
-//! while new sessions still arrive at the top. Like pins, this is a local
+//! while new sessions still arrive at the top. Like pauses, this is a local
 //! display preference and keys for ids discovery no longer returns are unused.
 
 use std::collections::BTreeMap;
@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::pins::{
+use crate::paused::{
     ensure_private_directory, ensure_private_regular_file, temporary_path, validate_session_id,
     RegistryLock,
 };

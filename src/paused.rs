@@ -1,7 +1,7 @@
-//! Sessions pinned to the top of the dashboard.
+//! Sessions paused to the top of the dashboard.
 //!
-//! Pinning is a local display preference. It does not change the provider
-//! session, and a pin for an id discovery no longer returns is simply unused.
+//! Pausing is a local display preference. It does not change the provider
+//! session, and a pause for an id discovery no longer returns is simply unused.
 
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
@@ -19,18 +19,19 @@ const MAX_SESSION_ID_BYTES: usize = 4096;
 static TEMPORARY_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Deserialize, Serialize)]
-struct PinDocument {
+struct PauseDocument {
     version: u32,
-    sessions: Vec<PinRecord>,
+    sessions: Vec<PauseRecord>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-struct PinRecord {
+struct PauseRecord {
     id: String,
-    pinned_at_ms: u64,
+    #[serde(rename = "pinned_at_ms")]
+    paused_at_ms: u64,
 }
 
-impl Default for PinDocument {
+impl Default for PauseDocument {
     fn default() -> Self {
         Self {
             version: REGISTRY_VERSION,
@@ -39,16 +40,16 @@ impl Default for PinDocument {
     }
 }
 
-/// Cloneable pin registry shared by the dashboard.
+/// Cloneable pause registry shared by the dashboard.
 #[derive(Clone, Debug)]
-pub struct PinnedSessions {
+pub struct PausedSessions {
     path: PathBuf,
     records: Arc<Mutex<BTreeMap<String, u64>>>,
 }
 
-impl PinnedSessions {
+impl PausedSessions {
     pub fn load_default() -> Result<Self> {
-        Self::load(default_pinned_sessions_path()?)
+        Self::load(default_paused_sessions_path()?)
     }
 
     pub fn load(path: PathBuf) -> Result<Self> {
@@ -62,24 +63,24 @@ impl PinnedSessions {
         })
     }
 
-    pub fn pins(&self) -> BTreeMap<String, u64> {
+    pub fn paused(&self) -> BTreeMap<String, u64> {
         self.records
             .lock()
-            .expect("pinned-session registry mutex poisoned")
+            .expect("paused-session registry mutex poisoned")
             .clone()
     }
 
-    /// Pin or unpin one id. `pinned_at_ms` is stored when pinning.
-    pub fn set(&self, session_id: &str, pinned: bool) -> Result<()> {
+    /// Pause or unpause one id. `paused_at_ms` is stored when pausing.
+    pub fn set(&self, session_id: &str, paused: bool) -> Result<()> {
         validate_session_id(session_id)?;
         let session_id = session_id.to_owned();
         let parent = self
             .path
             .parent()
-            .context("pinned-session registry path has no parent")?;
+            .context("paused-session registry path has no parent")?;
         let _lock = RegistryLock::acquire(&parent.join("pinned-sessions.lock"))?;
         let mut records = read_registry(&self.path)?;
-        if pinned {
+        if paused {
             records.insert(session_id, now_millis());
         } else {
             records.remove(&session_id);
@@ -88,37 +89,39 @@ impl PinnedSessions {
         *self
             .records
             .lock()
-            .expect("pinned-session registry mutex poisoned") = records;
+            .expect("paused-session registry mutex poisoned") = records;
         Ok(())
     }
 
-    /// Overwrite `pinned_at_ms` for ids that are still pinned, which is what
-    /// orders the Pinned group. Ids pinned nowhere are ignored.
-    pub fn set_pinned_at(&self, updates: &[(String, u64)]) -> Result<()> {
+    /// Overwrite `paused_at_ms` for ids that are still paused, which is what
+    /// orders the Paused group. Ids paused nowhere are ignored.
+    pub fn set_paused_at(&self, updates: &[(String, u64)]) -> Result<()> {
         for (session_id, _) in updates {
             validate_session_id(session_id)?;
         }
         let parent = self
             .path
             .parent()
-            .context("pinned-session registry path has no parent")?;
+            .context("paused-session registry path has no parent")?;
         let _lock = RegistryLock::acquire(&parent.join("pinned-sessions.lock"))?;
         let mut records = read_registry(&self.path)?;
-        for (session_id, pinned_at_ms) in updates {
+        for (session_id, paused_at_ms) in updates {
             if let Some(record) = records.get_mut(session_id) {
-                *record = *pinned_at_ms;
+                *record = *paused_at_ms;
             }
         }
         write_registry(&self.path, &records)?;
         *self
             .records
             .lock()
-            .expect("pinned-session registry mutex poisoned") = records;
+            .expect("paused-session registry mutex poisoned") = records;
         Ok(())
     }
 }
 
-pub fn default_pinned_sessions_path() -> Result<PathBuf> {
+/// Paused sessions were once called pinned; the file keeps that name so
+/// existing pauses survive.
+pub fn default_paused_sessions_path() -> Result<PathBuf> {
     if let Some(state_home) = std::env::var_os("XDG_STATE_HOME") {
         return Ok(PathBuf::from(state_home)
             .join("agentview")
@@ -144,16 +147,16 @@ fn read_registry(path: &Path) -> Result<BTreeMap<String, u64>> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
         Err(error) => {
             return Err(error)
-                .with_context(|| format!("failed to inspect pinned sessions {}", path.display()))
+                .with_context(|| format!("failed to inspect paused sessions {}", path.display()))
         }
     }
     let input = fs::read_to_string(path)
-        .with_context(|| format!("failed to read pinned sessions {}", path.display()))?;
-    let document: PinDocument = serde_json::from_str(&input)
-        .with_context(|| format!("invalid pinned sessions registry {}", path.display()))?;
+        .with_context(|| format!("failed to read paused sessions {}", path.display()))?;
+    let document: PauseDocument = serde_json::from_str(&input)
+        .with_context(|| format!("invalid paused sessions registry {}", path.display()))?;
     if document.version != REGISTRY_VERSION {
         bail!(
-            "unsupported pinned sessions registry version {} in {}",
+            "unsupported paused sessions registry version {} in {}",
             document.version,
             path.display()
         );
@@ -161,22 +164,22 @@ fn read_registry(path: &Path) -> Result<BTreeMap<String, u64>> {
     let mut records = BTreeMap::new();
     for record in document.sessions {
         validate_session_id(&record.id)
-            .with_context(|| format!("invalid pinned session in {}", path.display()))?;
-        if records.insert(record.id, record.pinned_at_ms).is_some() {
-            bail!("duplicate pinned session ID in {}", path.display());
+            .with_context(|| format!("invalid paused session in {}", path.display()))?;
+        if records.insert(record.id, record.paused_at_ms).is_some() {
+            bail!("duplicate paused session ID in {}", path.display());
         }
     }
     Ok(records)
 }
 
 fn write_registry(path: &Path, records: &BTreeMap<String, u64>) -> Result<()> {
-    let document = PinDocument {
+    let document = PauseDocument {
         version: REGISTRY_VERSION,
         sessions: records
             .iter()
-            .map(|(id, pinned_at_ms)| PinRecord {
+            .map(|(id, paused_at_ms)| PauseRecord {
                 id: id.clone(),
-                pinned_at_ms: *pinned_at_ms,
+                paused_at_ms: *paused_at_ms,
             })
             .collect(),
     };
@@ -329,17 +332,17 @@ mod tests {
     }
 
     #[test]
-    fn pin_and_unpin_round_trip() {
+    fn pause_and_unpause_round_trip() {
         let directory = private_tempdir();
         let path = directory.path().join("pinned-sessions.json");
-        let registry = PinnedSessions::load(path.clone()).unwrap();
-        assert!(registry.pins().is_empty());
+        let registry = PausedSessions::load(path.clone()).unwrap();
+        assert!(registry.paused().is_empty());
         registry.set("cursor:host:abc", true).unwrap();
         registry.set("claude:host:def", true).unwrap();
         registry.set("cursor:host:abc", false).unwrap();
-        let reloaded = PinnedSessions::load(path).unwrap();
-        let pins = reloaded.pins();
-        assert!(!pins.contains_key("cursor:host:abc"));
-        assert!(pins.contains_key("claude:host:def"));
+        let reloaded = PausedSessions::load(path).unwrap();
+        let paused = reloaded.paused();
+        assert!(!paused.contains_key("cursor:host:abc"));
+        assert!(paused.contains_key("claude:host:def"));
     }
 }
