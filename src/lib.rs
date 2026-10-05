@@ -3,7 +3,6 @@
 pub mod adapters;
 pub mod aliases;
 pub mod app;
-pub mod claude_usage;
 pub mod clipboard;
 mod codex_rpc;
 pub mod codex_supervisor;
@@ -27,6 +26,7 @@ pub mod terminal;
 pub mod theme;
 pub mod turn_classifier;
 pub mod ui;
+pub mod usage;
 
 #[cfg(test)]
 pub(crate) mod test_support {

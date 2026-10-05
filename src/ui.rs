@@ -213,7 +213,7 @@ fn render_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Paragraph::new(lines).style(Style::default().bg(palette().bg).fg(palette().fg)),
         area,
     );
-    render_claude_usage(frame, app, area);
+    render_usage(frame, app, area);
 }
 
 fn render_session_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
@@ -919,26 +919,46 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
 }
 
 /// Right end of the header's title row, which is otherwise empty.
-fn render_claude_usage(frame: &mut Frame<'_>, app: &App, area: Rect) {
+fn render_usage(frame: &mut Frame<'_>, app: &App, area: Rect) {
     const TITLE_ROOM: usize = 30;
-    let Some((text, alert)) = app
-        .claude_usage
-        .as_ref()
-        .map(|usage| usage.summary(crate::claude_usage::now()))
-    else {
-        return;
+    const SEPARATOR: &str = "  │  ";
+    let now = crate::usage::now();
+    let mut entries = app
+        .usage
+        .iter()
+        .map(|usage| usage.summary(now))
+        .collect::<Vec<_>>();
+    let line_width = |entries: &[(String, bool)]| {
+        entries
+            .iter()
+            .map(|(text, _)| display_width(text))
+            .sum::<usize>()
+            + display_width(SEPARATOR) * entries.len().saturating_sub(1)
+            + 1
     };
-    let width = display_width(&text) + 1;
-    if area.height == 0 || TITLE_ROOM + width > usize::from(area.width) {
+    while !entries.is_empty() && TITLE_ROOM + line_width(&entries) > usize::from(area.width) {
+        entries.pop();
+    }
+    if area.height == 0 || entries.is_empty() {
         return;
     }
-    let style = if alert {
-        Style::default().fg(palette().attention)
-    } else {
-        Style::default().fg(palette().dim)
-    };
+    let width = line_width(&entries);
+    let spans = entries
+        .into_iter()
+        .enumerate()
+        .flat_map(|(index, (text, alert))| {
+            let style = Style::default().fg(if alert {
+                palette().attention
+            } else {
+                palette().dim
+            });
+            let separator =
+                (index > 0).then(|| Span::styled(SEPARATOR, Style::default().fg(palette().dim)));
+            separator.into_iter().chain([Span::styled(text, style)])
+        })
+        .collect::<Vec<_>>();
     frame.render_widget(
-        Paragraph::new(Span::styled(text, style)).style(Style::default().bg(palette().bg)),
+        Paragraph::new(Line::from(spans)).style(Style::default().bg(palette().bg)),
         Rect {
             x: area.x + area.width - width as u16,
             width: width as u16,
@@ -2851,28 +2871,32 @@ mod tests {
     }
 
     #[test]
-    fn header_shows_claude_usage_when_known() {
-        let mut app = App::new(SessionSnapshot::default());
-        app.claude_usage = Some(crate::claude_usage::Usage {
-            five_hour: Some(crate::claude_usage::Window {
-                percent: 38.0,
+    fn header_shows_one_usage_entry_per_provider_and_drops_extras_when_narrow() {
+        let usage = |provider, percent| crate::usage::Usage {
+            provider,
+            windows: vec![crate::usage::Window {
+                label: "5h",
+                percent,
                 resets_at: None,
-            }),
-            seven_day: None,
-        });
-        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+            }],
+        };
+        let mut app = App::new(SessionSnapshot::default());
+        app.usage = vec![usage("claude", 38.0), usage("codex", 4.0)];
+        let first_row = |width| {
+            let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            buffer_text(terminal.backend().buffer())
+                .lines()
+                .next()
+                .unwrap()
+                .trim_end()
+                .to_owned()
+        };
 
-        terminal.draw(|frame| render(frame, &app)).unwrap();
-
-        let first_row = buffer_text(terminal.backend().buffer())
-            .lines()
-            .next()
-            .unwrap()
-            .to_owned();
-        assert!(
-            first_row.trim_end().ends_with("claude 5h 38%"),
-            "{first_row}"
-        );
+        let wide = first_row(100);
+        assert!(wide.ends_with("claude 5h 38%  │  codex 5h 4%"), "{wide}");
+        let narrow = first_row(50);
+        assert!(narrow.ends_with("claude 5h 38%"), "{narrow}");
     }
 
     #[test]

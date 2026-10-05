@@ -284,7 +284,8 @@ pub struct App {
     pub refreshed_at: SystemTime,
     pub should_quit: bool,
     pub color_scheme: ColorScheme,
-    pub claude_usage: Option<crate::claude_usage::Usage>,
+    /// Latest subscription usage, sorted by provider.
+    pub usage: Vec<crate::usage::Usage>,
 }
 
 impl App {
@@ -377,7 +378,7 @@ impl App {
             refreshed_at: SystemTime::now(),
             should_quit: false,
             color_scheme: ColorScheme::Dark,
-            claude_usage: None,
+            usage: Vec::new(),
         };
         app.rebuild_snapshot_cache();
         app.reconcile_selection();

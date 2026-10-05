@@ -274,7 +274,7 @@ pub fn run_dashboard(
     app.color_scheme = color_scheme;
     crate::theme::set_terminal_scheme(color_scheme);
     let scheme_watcher = SchemeWatcher::spawn(theme_preference);
-    let usage_watcher = crate::claude_usage::UsageWatcher::spawn();
+    let usage_watcher = crate::usage::UsageWatcher::spawn();
     let mut usage_minute = 0;
     let mut terminal = TerminalSession::enter()?;
     let initial_size = terminal.terminal.size()?;
@@ -586,15 +586,28 @@ pub fn run_dashboard(
                 needs_draw = true;
             }
         }
-        if let Some(usage) = usage_watcher
+        for usage in usage_watcher
             .as_ref()
-            .and_then(crate::claude_usage::UsageWatcher::take_update)
+            .map(crate::usage::UsageWatcher::take_updates)
+            .unwrap_or_default()
         {
-            needs_draw |= app.claude_usage.as_ref() != Some(&usage);
-            app.claude_usage = Some(usage);
+            match app
+                .usage
+                .binary_search_by(|known| known.provider.cmp(usage.provider))
+            {
+                Ok(index) if app.usage[index] == usage => {}
+                Ok(index) => {
+                    app.usage[index] = usage;
+                    needs_draw = true;
+                }
+                Err(index) => {
+                    app.usage.insert(index, usage);
+                    needs_draw = true;
+                }
+            }
         }
-        let minute = crate::claude_usage::now() / 60;
-        if app.claude_usage.is_some() && minute != usage_minute {
+        let minute = crate::usage::now() / 60;
+        if !app.usage.is_empty() && minute != usage_minute {
             usage_minute = minute;
             needs_draw = true;
         }
