@@ -451,6 +451,15 @@ impl OpenCodeSupervisor {
         )
     }
 
+    /// Every session the state file records, whether or not its server is
+    /// running, so a reboot does not drop them from the dashboard.
+    pub fn recorded_session_ids(&self) -> Result<Vec<String>> {
+        let _lock = StateLock::acquire(&self.lock_path)?;
+        Ok(load_record(&self.record_path, &self.state_dir)?
+            .map(|record| record.sessions.into_keys().collect())
+            .unwrap_or_default())
+    }
+
     /// Run a TUI command in the TUIs attached to the live server for `cwd`.
     /// A TUI that does not know the command ignores it.
     pub fn run_tui_command(&self, cwd: &Path, command: &str) -> Result<()> {

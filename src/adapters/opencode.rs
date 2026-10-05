@@ -1030,11 +1030,21 @@ impl OpenCodeSource {
         let external = self.discover_external_history && request.include_external;
         // Sessions the dashboard started or brought back are always listed,
         // and are loaded even when they fall outside the history window.
-        let owned = self
+        let mut owned = self
             .ownership
             .as_ref()
             .map(|ownership| ownership.session_ids())
             .unwrap_or_default();
+        if let Some(supervisor) = self
+            .supervisor
+            .as_ref()
+            .filter(|_| self.runtime == Runtime::Host)
+        {
+            match supervisor.recorded_session_ids() {
+                Ok(ids) => owned.extend(ids),
+                Err(error) => warnings.push(format!("OpenCode managed sessions: {error:#}")),
+            }
+        }
         if external || !owned.is_empty() {
             let holders = if self.runtime == Runtime::Host {
                 (self.probe)()
@@ -1111,7 +1121,11 @@ impl OpenCodeSource {
             }
         }
         if let Some(supervisor) = &self.supervisor {
-            for managed in supervisor.list()? {
+            let managed = supervisor.list().unwrap_or_else(|error| {
+                warnings.push(format!("OpenCode managed control: {error:#}"));
+                Vec::new()
+            });
+            for managed in managed {
                 let session = agent_session_from_managed(&managed);
                 if (request.include_completed || session.state != SessionState::Completed)
                     && request
