@@ -754,6 +754,7 @@ impl App {
                 };
                 self.hidden_filter.clear();
                 self.hidden_candidates.clear();
+                self.open_candidates.clear();
                 self.restorable.clear();
                 self.transcripts_lower.clear();
                 self.restorable_loading = false;
@@ -2052,6 +2053,25 @@ impl App {
         self.restorable.clear();
         self.transcripts_lower.clear();
         self.open_candidates.clear();
+        if loading {
+            let mut open = self
+                .snapshot
+                .sessions
+                .iter()
+                .filter(|session| !self.hidden_ids.contains(&session.id))
+                .map(|session| HiddenSessionRecord {
+                    id: session.id.clone(),
+                    provider: Some(session.provider.clone()),
+                    name: Some(session.name.clone()),
+                    hidden_at_ms: session
+                        .updated_at
+                        .and_then(|time| time.duration_since(SystemTime::UNIX_EPOCH).ok())
+                        .map_or(0, |elapsed| elapsed.as_millis() as u64),
+                })
+                .collect::<Vec<_>>();
+            open.sort_by_key(|record| std::cmp::Reverse(record.hidden_at_ms));
+            self.open_candidates = open;
+        }
         self.restorable_loading = loading;
         self.hidden_filter.clear();
         self.hidden_selection = 0;
@@ -2076,21 +2096,17 @@ impl App {
             .collect::<BTreeSet<_>>();
         let mut added = Vec::new();
         for session in sessions {
-            if !self.hidden_ids.contains(&session.id) {
-                let record = HiddenSessionRecord {
+            let open = self.is_open_choice(&session.id);
+            if !self.hidden_ids.contains(&session.id) && !open {
+                if listed.contains(session.id.as_str()) {
+                    continue;
+                }
+                added.push(HiddenSessionRecord {
                     id: session.id.clone(),
                     provider: Some(session.provider.clone()),
                     name: Some(session.name.clone()),
                     hidden_at_ms: session.updated_at_ms,
-                };
-                if listed.contains(session.id.as_str()) {
-                    if session.transcript.is_empty() {
-                        continue;
-                    }
-                    self.open_candidates.push(record);
-                } else {
-                    added.push(record);
-                }
+                });
             }
             if !session.transcript.is_empty() {
                 self.transcripts_lower
@@ -2105,7 +2121,7 @@ impl App {
                 errors.join("; ")
             ));
         }
-        if self.hidden_candidates.is_empty() {
+        if self.hidden_candidates.is_empty() && self.open_candidates.is_empty() {
             self.overlay = Overlay::None;
             self.hidden_filter.clear();
             if errors.is_empty() {
@@ -2122,19 +2138,25 @@ impl App {
         self.hidden_ids.contains(id)
     }
 
+    /// Every row the picker can offer, before filtering.
+    pub fn picker_candidate_count(&self) -> usize {
+        self.open_candidates.len() + self.hidden_candidates.len()
+    }
+
     /// Whether a picker row is a session the list already shows.
     pub fn is_open_choice(&self, id: &str) -> bool {
         self.open_candidates.iter().any(|record| record.id == id)
     }
 
     /// Picker rows matching the filter: name, harness, ID, or folder matches
-    /// first, then rows whose recent message text alone matches, then open
-    /// sessions whose message text matches.
+    /// first, then rows whose recent message text alone matches. Within
+    /// each, sessions the list already shows come first.
     pub fn hidden_choices(&self) -> Vec<&HiddenSessionRecord> {
         let needle = self.hidden_filter.to_ascii_lowercase();
         let (mut by_label, by_text): (Vec<_>, Vec<_>) = self
-            .hidden_candidates
+            .open_candidates
             .iter()
+            .chain(&self.hidden_candidates)
             .filter_map(|record| {
                 if needle.is_empty() || self.label_matches(record, &needle) {
                     Some((record, true))
@@ -2146,15 +2168,18 @@ impl App {
             })
             .partition(|(_, label)| *label);
         by_label.extend(by_text);
-        let open = self
-            .open_candidates
-            .iter()
-            .filter(|record| self.transcript_match(&record.id, &needle).is_some());
-        by_label
-            .into_iter()
-            .map(|(record, _)| record)
-            .chain(open)
-            .collect()
+        by_label.into_iter().map(|(record, _)| record).collect()
+    }
+
+    /// The working directory of a picker row, when it is known.
+    pub fn picker_cwd(&self, id: &str) -> Option<&Path> {
+        if let Some(session) = self.restorable.get(id) {
+            return Some(&session.cwd);
+        }
+        if !self.is_open_choice(id) {
+            return None;
+        }
+        self.session_by_id(id).map(|session| session.cwd.as_path())
     }
 
     fn label_matches(&self, record: &HiddenSessionRecord, needle: &str) -> bool {
@@ -2167,13 +2192,9 @@ impl App {
                 .as_ref()
                 .is_some_and(|provider| provider.label().to_ascii_lowercase().contains(needle))
             || record.id.to_ascii_lowercase().contains(needle)
-            || self.restorable.get(&record.id).is_some_and(|session| {
-                session
-                    .cwd
-                    .to_string_lossy()
-                    .to_ascii_lowercase()
-                    .contains(needle)
-            })
+            || self
+                .picker_cwd(&record.id)
+                .is_some_and(|cwd| cwd.to_string_lossy().to_ascii_lowercase().contains(needle))
     }
 
     /// Byte offset of `needle` in a row's message text. Needles shorter than
@@ -2185,17 +2206,40 @@ impl App {
         self.transcripts_lower.get(id)?.find(needle)
     }
 
-    /// The message text around the filter's match in the selected row, for
-    /// the picker's preview line. `None` when the row matched on its label.
-    pub fn hidden_snippet(&self, width: usize) -> Option<String> {
-        let needle = self.hidden_filter.to_ascii_lowercase();
-        let record = *self.hidden_choices().get(self.hidden_selection)?;
-        if !self.is_open_choice(&record.id) && self.label_matches(record, &needle) {
-            return None;
+    /// Whether the filter is long enough to search message text, which gives
+    /// picker rows a second line for the matching text.
+    pub fn hidden_filter_searches_text(&self) -> bool {
+        self.hidden_filter.trim().chars().count() >= 3
+    }
+
+    /// Picker rows per page for `lines` of result space: half as many while
+    /// the filter searches message text, as each row may take two lines.
+    pub fn hidden_rows_per_page(&self, lines: usize) -> usize {
+        if self.hidden_filter_searches_text() {
+            (lines / 2).max(1)
+        } else {
+            lines.max(1)
         }
-        let start = self.transcript_match(&record.id, &needle)?;
-        let text = &self.restorable.get(&record.id)?.transcript;
-        Some(snippet_around(text, start, needle.len(), width))
+    }
+
+    /// The message text around the filter's match in row `id`, with the
+    /// byte range of the match inside the snippet when it survived
+    /// whitespace flattening.
+    pub fn hidden_snippet_for(
+        &self,
+        id: &str,
+        width: usize,
+    ) -> Option<(String, Option<std::ops::Range<usize>>)> {
+        let needle = self.hidden_filter.to_ascii_lowercase();
+        let start = self.transcript_match(id, &needle)?;
+        let text = &self.restorable.get(id)?.transcript;
+        let snippet = snippet_around(text, start, needle.len(), width);
+        let flat_needle = needle.split_whitespace().collect::<Vec<_>>().join(" ");
+        let range = snippet
+            .to_ascii_lowercase()
+            .find(&flat_needle)
+            .map(|at| at..at + flat_needle.len());
+        Some((snippet, range))
     }
 
     pub fn move_hidden_selection(&mut self, delta: isize) {
@@ -2221,7 +2265,7 @@ impl App {
             return;
         }
         self.hidden_selection = (self.hidden_selection as isize
-            + delta * self.hidden_picker_rows as isize)
+            + delta * self.hidden_rows_per_page(self.hidden_picker_rows) as isize)
             .clamp(0, len.saturating_sub(1) as isize) as usize;
     }
 
@@ -2249,10 +2293,12 @@ impl App {
         self.transcripts_lower.clear();
         self.restorable_loading = false;
         if open {
-            if !self.select_and_reveal_session(&session_id) {
-                self.set_notice("that session is hidden by the current filter");
+            if !self.snapshot_contains(&session_id) {
+                self.set_notice("that session is no longer listed");
+                return AppAction::None;
             }
-            return AppAction::None;
+            self.select_and_reveal_session(&session_id);
+            return AppAction::Open { session_id };
         }
         match restorable {
             Some(session) => AppAction::Restore { session, hidden },
@@ -3495,27 +3541,33 @@ mod tests {
             vec!["opencode:host:ses_named", "opencode:host:ses_chat"]
         );
         assert_eq!(
-            app.hidden_snippet(60),
+            app.hidden_snippet_for("opencode:host:ses_named", 60),
             None,
-            "a name match needs no preview"
+            "a row without matching message text has no second line"
         );
 
-        app.move_hidden_selection(1);
+        let snippet = "first line we should Retry the flaky upload test before merging";
+        let at = snippet.find("upload").unwrap();
         assert_eq!(
-            app.hidden_snippet(70).as_deref(),
-            Some("first line we should Retry the flaky upload test before merging")
+            app.hidden_snippet_for("opencode:host:ses_chat", 70),
+            Some((snippet.to_owned(), Some(at..at + "upload".len())))
         );
-        assert_eq!(
-            app.hidden_snippet(24).as_deref(),
-            Some("…e flaky upload test be…")
-        );
+        let (short, range) = app
+            .hidden_snippet_for("opencode:host:ses_chat", 24)
+            .unwrap();
+        assert_eq!(short, "…e flaky upload test be…");
+        assert_eq!(&short[range.unwrap()], "upload");
     }
 
     #[test]
-    fn restore_picker_finds_open_sessions_by_message_text_and_selects_them() {
+    fn restore_picker_finds_open_sessions_and_opens_them() {
         let mut listed = session("opencode:host:ses_open", SessionState::Completed);
         listed.provider = Provider::OpenCode;
-        let mut app = app_with(vec![listed]);
+        listed.name = "Transcript accuracy".into();
+        let mut other = session("claude:host:other", SessionState::Working);
+        other.name = "Pricing advice".into();
+        let mut app = app_with(vec![listed, other]);
+        app.selection = Some(SelectionKey::Session("claude:host:other".into()));
         app.open_restore_picker(Vec::new());
         let mut open = restorable("ses_open", "Transcript accuracy", "/work/a", 90);
         open.transcript = "You said \"Okay, I'm bored\" right after a wait".into();
@@ -3523,14 +3575,17 @@ mod tests {
         old.transcript = "eventually you get bored".into();
         app.add_restorable_sessions(vec![open, old], &[]);
 
+        assert_eq!(app.hidden_choices().len(), 3, "an empty search lists all");
         assert_eq!(
-            app.hidden_choices()
-                .iter()
-                .map(|record| record.id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["opencode:host:ses_old"],
-            "open sessions stay out of an empty search"
+            app.hidden_choices().last().unwrap().id,
+            "opencode:host:ses_old"
         );
+
+        for character in "pricing".chars() {
+            app.push_input(character);
+        }
+        assert_eq!(app.hidden_choices()[0].id, "claude:host:other");
+        app.delete_to_line_start();
 
         for character in "bored".chars() {
             app.push_input(character);
@@ -3540,13 +3595,21 @@ mod tests {
                 .iter()
                 .map(|record| record.id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["opencode:host:ses_old", "opencode:host:ses_open"]
+            vec!["opencode:host:ses_open", "opencode:host:ses_old"]
         );
         assert!(app.is_open_choice("opencode:host:ses_open"));
+        assert!(app
+            .hidden_snippet_for("opencode:host:ses_open", 70)
+            .unwrap()
+            .0
+            .contains("I'm bored"));
 
-        app.move_hidden_selection(1);
-        assert!(app.hidden_snippet(70).unwrap().contains("I'm bored"));
-        assert_eq!(app.activate(), AppAction::None);
+        assert_eq!(
+            app.activate(),
+            AppAction::Open {
+                session_id: "opencode:host:ses_open".into()
+            }
+        );
         assert_eq!(app.overlay, Overlay::None);
         assert_eq!(
             app.selection,
@@ -3603,7 +3666,11 @@ mod tests {
                 .iter()
                 .map(|record| record.id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["opencode:host:ses_hidden", "opencode:host:ses_old"]
+            vec![
+                "opencode:host:ses_listed",
+                "opencode:host:ses_hidden",
+                "opencode:host:ses_old"
+            ]
         );
         assert!(app.is_hidden_choice("opencode:host:ses_hidden"));
         assert!(!app.is_hidden_choice("opencode:host:ses_old"));
@@ -3631,6 +3698,9 @@ mod tests {
             vec![restorable("ses_hidden", "Hidden one", "/work/b", 30)],
             &[],
         );
+        for character in "hidden one".chars() {
+            app.push_input(character);
+        }
         assert!(matches!(
             app.activate(),
             AppAction::Restore { hidden: true, .. }
@@ -3639,7 +3709,7 @@ mod tests {
 
     #[test]
     fn restore_picker_with_nothing_to_offer_closes_with_a_notice() {
-        let mut app = app_with(vec![session("live", SessionState::Working)]);
+        let mut app = app_with(Vec::new());
         app.open_restore_picker(Vec::new());
         app.add_restorable_sessions(Vec::new(), &[]);
         assert_eq!(app.overlay, Overlay::None);

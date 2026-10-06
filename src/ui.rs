@@ -982,9 +982,9 @@ fn contextual_footer(app: &App, width: u16) -> String {
         ),
         Overlay::ModelPicker => "type filter · ↑/↓ · enter · esc".into(),
         Overlay::HiddenPicker if width >= 70 => {
-            "type to search hidden and older sessions · ↑/↓ move · enter restore · esc close".into()
+            "search current, hidden, and older sessions · ↑/↓ move · enter open · esc close".into()
         }
-        Overlay::HiddenPicker => "type to search · ↑/↓ · enter restore · esc".into(),
+        Overlay::HiddenPicker => "type to search · ↑/↓ · enter open · esc".into(),
         Overlay::DirectoryPicker if width >= 70 => {
             "type to search folders or a path · ↑/↓ move · enter choose · esc close".into()
         }
@@ -1490,11 +1490,22 @@ const HIDDEN_PICKER_MIN_NAME_WIDTH: usize = 8;
 fn render_hidden_picker(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let choices = app.hidden_choices();
     let popup_width = area.width.saturating_sub(2).min(84).max(30);
-    let visible_rows = hidden_picker_rows_for_height(area.height);
-    let result_rows = choices.len().clamp(1, visible_rows);
-    // Inside the borders and padding, less the leading "  " and the quotes.
-    let snippet = app.hidden_snippet(popup_width.saturating_sub(8) as usize);
-    let popup_height = (result_rows as u16 + 3 + u16::from(snippet.is_some()))
+    let visible_rows = app.hidden_rows_per_page(hidden_picker_rows_for_height(area.height));
+    let start = if choices.is_empty() {
+        0
+    } else {
+        (app.hidden_selection / visible_rows) * visible_rows
+    };
+    // Inside the borders and padding, less the two-column indent.
+    let snippet_width = popup_width.saturating_sub(6) as usize;
+    let snippets = choices
+        .iter()
+        .skip(start)
+        .take(visible_rows)
+        .map(|record| app.hidden_snippet_for(&record.id, snippet_width))
+        .collect::<Vec<_>>();
+    let result_lines = (snippets.len() + snippets.iter().flatten().count()).max(1);
+    let popup_height = (result_lines as u16 + 3)
         .min(area.height.saturating_sub(2))
         .max(5);
     let popup = Rect::new(
@@ -1503,11 +1514,6 @@ fn render_hidden_picker(frame: &mut Frame<'_>, app: &App, area: Rect) {
         popup_width,
         popup_height,
     );
-    let start = if choices.is_empty() {
-        0
-    } else {
-        (app.hidden_selection / visible_rows) * visible_rows
-    };
     let mut lines = vec![Line::from(vec![
         Span::styled("search  ", Style::default().fg(palette().dim)),
         Span::styled(
@@ -1537,73 +1543,72 @@ fn render_hidden_picker(frame: &mut Frame<'_>, app: &App, area: Rect) {
         // Inside the borders and padding, each row is "› " + name + tail,
         // with the tail right-aligned.
         let inner_width = popup_width.saturating_sub(4) as usize;
-        lines.extend(
-            choices
-                .iter()
-                .enumerate()
-                .skip(start)
-                .take(visible_rows)
-                .map(|(index, record)| {
-                    let selected = index == app.hidden_selection;
-                    let mut provider = record
-                        .provider
-                        .as_ref()
-                        .map(|provider| provider.label().to_owned())
-                        .unwrap_or_else(|| "unknown".into());
-                    if app.is_open_choice(&record.id) {
-                        provider = format!("open · {provider}");
-                    }
-                    let hidden_for = now
-                        .duration_since(
-                            UNIX_EPOCH + std::time::Duration::from_millis(record.hidden_at_ms),
-                        )
-                        .ok();
-                    let age = format!("{:>4}", format_age(hidden_for));
-                    let name = sanitize_inline(record.name.as_deref().unwrap_or(&record.id));
-                    let folder = app
-                        .restorable
-                        .get(&record.id)
-                        .map(|session| {
-                            format!(" · {}", sanitize_inline(&abbreviate_path(&session.cwd)))
-                        })
-                        .unwrap_or_default();
-                    let mut tail = format!("  {provider}{folder}  {age}");
-                    if inner_width < display_width(&tail) + 2 + HIDDEN_PICKER_MIN_NAME_WIDTH {
-                        tail = format!("  {provider}  {age}");
-                    }
-                    if inner_width < display_width(&tail) + 2 + HIDDEN_PICKER_MIN_NAME_WIDTH {
-                        // Narrow popup: keep the age and drop the harness
-                        // rather than pushing the suffix past the border.
-                        tail = format!("  {age}");
-                    }
-                    let name_width = inner_width.saturating_sub(display_width(&tail) + 2);
-                    let name = truncate(&name, name_width.max(1));
-                    let gap = " ".repeat(name_width.saturating_sub(display_width(&name)));
-                    let meta_style = if selected {
-                        Style::default()
-                    } else {
-                        Style::default().fg(palette().dim)
-                    };
-                    Line::from(vec![
-                        Span::raw(format!("{} {name}{gap}", if selected { "›" } else { " " })),
-                        Span::styled(tail, meta_style),
-                    ])
-                    .style(if selected {
-                        Style::default()
-                            .bg(palette().selected_bg)
-                            .fg(palette().selected_fg)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().bg(palette().bg).fg(palette().fg)
-                    })
-                }),
-        );
-    }
-    if let Some(snippet) = snippet {
-        lines.push(Line::from(Span::styled(
-            format!("  “{}”", sanitize_inline(&snippet)),
-            Style::default().fg(palette().dim),
-        )));
+        let rows = choices
+            .iter()
+            .enumerate()
+            .skip(start)
+            .take(visible_rows)
+            .zip(snippets);
+        for ((index, record), snippet) in rows {
+            let selected = index == app.hidden_selection;
+            let row_style = if selected {
+                Style::default()
+                    .bg(palette().selected_bg)
+                    .fg(palette().selected_fg)
+            } else {
+                Style::default().bg(palette().bg).fg(palette().fg)
+            };
+            lines.push({
+                let mut provider = record
+                    .provider
+                    .as_ref()
+                    .map(|provider| provider.label().to_owned())
+                    .unwrap_or_else(|| "unknown".into());
+                if app.is_open_choice(&record.id) {
+                    provider = format!("open · {provider}");
+                }
+                let hidden_for = now
+                    .duration_since(
+                        UNIX_EPOCH + std::time::Duration::from_millis(record.hidden_at_ms),
+                    )
+                    .ok();
+                let age = format!("{:>4}", format_age(hidden_for));
+                let name = sanitize_inline(record.name.as_deref().unwrap_or(&record.id));
+                let folder = app
+                    .picker_cwd(&record.id)
+                    .map(|cwd| format!(" · {}", sanitize_inline(&abbreviate_path(cwd))))
+                    .unwrap_or_default();
+                let mut tail = format!("  {provider}{folder}  {age}");
+                if inner_width < display_width(&tail) + 2 + HIDDEN_PICKER_MIN_NAME_WIDTH {
+                    tail = format!("  {provider}  {age}");
+                }
+                if inner_width < display_width(&tail) + 2 + HIDDEN_PICKER_MIN_NAME_WIDTH {
+                    // Narrow popup: keep the age and drop the harness
+                    // rather than pushing the suffix past the border.
+                    tail = format!("  {age}");
+                }
+                let name_width = inner_width.saturating_sub(display_width(&tail) + 2);
+                let name = truncate(&name, name_width.max(1));
+                let gap = " ".repeat(name_width.saturating_sub(display_width(&name)));
+                let meta_style = if selected {
+                    Style::default()
+                } else {
+                    Style::default().fg(palette().dim)
+                };
+                Line::from(vec![
+                    Span::raw(format!("{} {name}{gap}", if selected { "›" } else { " " })),
+                    Span::styled(tail, meta_style),
+                ])
+                .style(if selected {
+                    row_style.add_modifier(Modifier::BOLD)
+                } else {
+                    row_style
+                })
+            });
+            if let Some((snippet, range)) = snippet {
+                lines.push(hidden_snippet_line(&snippet, range, inner_width, row_style));
+            }
+        }
     }
     frame.render_widget(Clear, popup);
     frame.render_widget(
@@ -1611,9 +1616,9 @@ fn render_hidden_picker(frame: &mut Frame<'_>, app: &App, area: Rect) {
             .block(
                 Block::default()
                     .title(format!(
-                        " restore session · {} of {}{} ",
+                        " find session · {} of {}{} ",
                         choices.len(),
-                        app.hidden_candidates.len(),
+                        app.picker_candidate_count(),
                         if app.restorable_loading {
                             " · loading saved sessions…"
                         } else {
@@ -1627,6 +1632,41 @@ fn render_hidden_picker(frame: &mut Frame<'_>, app: &App, area: Rect) {
             .style(Style::default().bg(palette().bg).fg(palette().fg)),
         popup,
     );
+}
+
+/// A picker row's matching message text, indented under its name, dim with
+/// the match itself bold.
+fn hidden_snippet_line(
+    snippet: &str,
+    range: Option<std::ops::Range<usize>>,
+    width: usize,
+    row_style: Style,
+) -> Line<'static> {
+    let dim = Style::default().fg(palette().dim);
+    let (before, matched, after) = match range {
+        Some(range) => (
+            &snippet[..range.start],
+            &snippet[range.clone()],
+            &snippet[range.end..],
+        ),
+        None => (snippet, "", ""),
+    };
+    let text = [before, matched, after].map(sanitize_inline);
+    let used = 2 + text.iter().map(|part| display_width(part)).sum::<usize>();
+    let [before, matched, after] = text;
+    Line::from(vec![
+        Span::raw("  "),
+        Span::styled(before, dim),
+        Span::styled(
+            matched,
+            Style::default()
+                .fg(row_style.fg.unwrap_or(palette().fg))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(after, dim),
+        Span::raw(" ".repeat(width.saturating_sub(used))),
+    ])
+    .style(row_style)
 }
 
 fn render_directory_picker(frame: &mut Frame<'_>, app: &App, area: Rect) {
@@ -2596,6 +2636,50 @@ mod tests {
             "{row}"
         );
         assert!(row.trim_end().ends_with('│'), "{row}");
+    }
+
+    #[test]
+    fn text_matches_show_their_message_text_under_the_session_name() {
+        let mut app = App::new(SessionSnapshot::default());
+        app.open_restore_picker(Vec::new());
+        let saved = |id: &str, name: &str, transcript: &str| crate::control::RestorableSession {
+            id: format!("opencode:host:{id}"),
+            provider_session_id: id.into(),
+            provider: Provider::OpenCode,
+            name: name.into(),
+            cwd: "/work".into(),
+            updated_at_ms: 0,
+            transcript: transcript.into(),
+        };
+        app.add_restorable_sessions(
+            vec![
+                saved("a", "Worry books", "she said I'm bored of reading"),
+                saved("b", "Bored games", ""),
+            ],
+            &[],
+        );
+        for character in "bored".chars() {
+            app.push_input(character);
+        }
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let rendered = buffer_text(terminal.backend().buffer());
+        let lines = rendered.lines().collect::<Vec<_>>();
+        let name = lines
+            .iter()
+            .position(|line| line.contains("Worry books"))
+            .expect("text match row");
+        assert!(
+            lines[name + 1].contains("she said I'm bored of reading"),
+            "{rendered}"
+        );
+        let label_only = lines
+            .iter()
+            .position(|line| line.contains("Bored games"))
+            .expect("name match row");
+        assert!(!lines[label_only + 1].contains("bored"), "{rendered}");
     }
 
     #[test]
