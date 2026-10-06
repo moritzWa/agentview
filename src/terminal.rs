@@ -1640,6 +1640,16 @@ fn handle_key(app: &mut App, key: KeyEvent) -> AppAction {
     {
         return app.toggle_pause();
     }
+    if key.modifiers.contains(KeyModifiers::SUPER) && key.code == KeyCode::Char('o') {
+        return match app.overlay {
+            Overlay::None | Overlay::Composer(ComposerMode::NewSession) => {
+                app.open_directory_picker();
+                AppAction::None
+            }
+            Overlay::DirectoryPicker => app.escape(),
+            _ => AppAction::None,
+        };
+    }
     if key.modifiers.contains(KeyModifiers::SUPER) && key.code == KeyCode::Backspace {
         app.delete_to_line_start();
         return AppAction::None;
@@ -2882,6 +2892,23 @@ mod tests {
         assert_eq!(app.overlay, Overlay::DirectoryPicker);
         handle_key(&mut app, key(KeyCode::Esc));
         assert_eq!(app.overlay, Overlay::Composer(ComposerMode::NewSession));
+        assert_eq!(app.input, "x");
+    }
+
+    #[test]
+    fn super_o_toggles_the_folder_picker_like_control_o() {
+        let super_o = || modified_key(KeyCode::Char('o'), KeyModifiers::SUPER);
+        let mut app = app();
+        handle_key(&mut app, super_o());
+        assert_eq!(app.overlay, Overlay::DirectoryPicker);
+        handle_key(&mut app, super_o());
+        assert_eq!(app.overlay, Overlay::None);
+
+        app.start_new_session(None);
+        handle_key(&mut app, key(KeyCode::Char('x')));
+        handle_key(&mut app, super_o());
+        assert_eq!(app.overlay, Overlay::DirectoryPicker);
+        handle_key(&mut app, key(KeyCode::Esc));
         assert_eq!(app.input, "x");
     }
 

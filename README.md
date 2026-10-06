@@ -62,7 +62,8 @@ own interface.
 - **Pause sessions you're waiting on** with `Ctrl+T`. They move into a Paused
   group that stays collapsed until you press `Enter` on it. Reorder rows with
   `Option+↑` / `↓`.
-- **Start in any folder** with `/cd` or `Ctrl+O`. Multi-line tasks and pastes
+- **Start in any folder** with `/cd` or `Ctrl+O` (`Cmd+O` in terminals that
+  forward it, like Ghostty and kitty). Multi-line tasks and pastes
   stay one draft. A long paste shows as `[Pasted ~12 lines]` and `Ctrl+V`
   attaches a clipboard image as `[Image #1]`.
 - **Migrate a conversation** to another harness with `Ctrl+M`, via

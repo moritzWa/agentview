@@ -43,9 +43,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
             .min(10)
             .min(area.height.saturating_sub(5)),
         Overlay::Help => {
-            let help_lines =
-                pack_help_actions(help_actions(app), area.width.saturating_sub(4) as usize).len()
-                    as u16;
+            let help_lines = help_lines(app, area.width.saturating_sub(4) as usize).len() as u16;
             (4 + help_lines).min(area.height.saturating_sub(5))
         }
         Overlay::HarnessPicker | Overlay::Composer(_) => composer_draft_layout(app, area.width)
@@ -858,37 +856,7 @@ fn render_help(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let content_width = area.width.saturating_sub(4) as usize;
-    let column_width = help_column_width(content_width);
-    let lines = pack_help_actions(help_actions(app), content_width)
-        .into_iter()
-        .map(|actions| {
-            let mut spans = vec![Span::raw(" ")];
-            for (index, action) in actions.into_iter().enumerate() {
-                if index > 0 {
-                    let used = spans.iter().map(Span::width).sum::<usize>();
-                    let padding = 1 + column_width.saturating_sub(used.saturating_sub(1));
-                    spans.push(Span::raw(" ".repeat(padding)));
-                }
-                let action = sanitize_inline(&action);
-                if let Some((keys, description)) = action.split_once(" to ") {
-                    spans.push(Span::styled(
-                        keys.to_owned(),
-                        Style::default()
-                            .fg(palette().accent)
-                            .add_modifier(Modifier::BOLD),
-                    ));
-                    spans.push(Span::styled(
-                        format!(" to {description}"),
-                        Style::default().fg(palette().fg),
-                    ));
-                } else {
-                    spans.push(Span::styled(action, Style::default().fg(palette().fg)));
-                }
-            }
-            Line::from(spans)
-        })
-        .collect::<Vec<_>>();
+    let lines = help_lines(app, area.width.saturating_sub(4) as usize);
     frame.render_widget(
         Paragraph::new(lines).style(Style::default().bg(palette().bg).fg(palette().fg)),
         inner,
@@ -1094,8 +1062,12 @@ fn contextual_footer(app: &App, width: u16) -> String {
             let session = app.selected_session().expect("selection checked");
             let peek = session_peek_suffix(session);
             let control = session_control_suffix(session);
-            let open = "enter/right open · native: ←/→ twice · shift+←/→";
-            format!("{open}{peek}{control} · ? for shortcuts")
+            let back = if width >= 110 {
+                " · back: ←/→ twice"
+            } else {
+                ""
+            };
+            format!("enter to open{back}{peek}{control} · ? for shortcuts")
         }
         Overlay::None if app.selected_session().is_some() && width >= 55 => {
             let session = app.selected_session().expect("selection checked");
@@ -1107,13 +1079,8 @@ fn contextual_footer(app: &App, width: u16) -> String {
         Overlay::None if app.selected_session().is_some() => {
             "enter/right to open · ? for shortcuts".into()
         }
-        _ if width >= 110 => {
-            "type to create · ctrl+o create in folder · ↑/↓ select · ctrl+f filter · /completed show|hide · ? shortcuts"
-                .into()
-        }
         _ if width >= 90 => {
-            "type to create · ↑/↓ select · ctrl+f filter · /completed show|hide · ? shortcuts"
-                .into()
+            "type to create · ctrl+o to pick folder · ctrl+f to filter · ? for shortcuts".into()
         }
         _ if width >= 70 => "type to create · ↑/↓ to select · /completed · ? for shortcuts".into(),
         _ => "↑/↓ to select · ? for shortcuts".into(),
@@ -1136,11 +1103,11 @@ fn session_control_suffix(session: &AgentSession) -> &'static str {
     } else if session.capabilities.contains(&Capability::Delete)
         && session.capabilities.contains(&Capability::Archive)
     {
-        " · ctrl+a archive · ctrl+x delete"
+        " · ctrl+a to archive · ctrl+x to delete"
     } else if session.capabilities.contains(&Capability::Delete) {
-        " · ctrl+x delete"
+        " · ctrl+x to delete"
     } else {
-        " · ctrl+x hide locally"
+        " · ctrl+x to hide locally"
     }
 }
 
@@ -1160,117 +1127,198 @@ fn session_peek_suffix(session: &AgentSession) -> &'static str {
     }
 }
 
-fn help_actions(app: &App) -> Vec<String> {
-    let mut actions = Vec::new();
+struct HelpSection {
+    title: &'static str,
+    entries: Vec<(&'static str, &'static str)>,
+}
+
+const FOLDER_PICKER_KEYS: &str = if cfg!(target_os = "macos") {
+    "ctrl+o / cmd+o"
+} else {
+    "ctrl+o"
+};
+
+fn help_sections(app: &App) -> Vec<HelpSection> {
+    let mut sections = vec![HelpSection {
+        title: "dashboard",
+        entries: vec![
+            ("ctrl+f", "filter sessions"),
+            ("ctrl+g", "bring back a hidden session"),
+            ("ctrl+s", "switch view"),
+            ("ctrl+l", "refresh"),
+            ("esc", "quit"),
+        ],
+    }];
+    let mut selected = Vec::new();
     if matches!(app.selection, Some(SelectionKey::ShowMore(_))) {
-        actions.push("enter to show more".into());
+        selected.push(("enter", "show more"));
     }
-    if app.selected_session().is_some() {
-        actions.push("enter/right to open session".into());
-        actions.push("left/right twice at a boundary returns from native session".into());
-        actions.push("shift+left/right returns immediately".into());
-        if app
-            .selected_session()
-            .is_some_and(|session| session.provider == Provider::OpenCode)
-        {
-            actions.push("ctrl+x in OpenCode returns and removes like ctrl+x here".into());
-        }
-        actions.push("ctrl+r to rename".into());
-    }
-    actions.push("ctrl+s to switch views".into());
-    actions.push("ctrl+l to refresh".into());
-    if app.selected_session().is_some() {
-        actions.push("ctrl+t or ctrl+p to pause the session".into());
-        actions.push("option+up/down to move the session within its group".into());
-    }
-    if app.selected_session().is_some_and(|session| {
-        session.runtime == crate::domain::Runtime::Host
-            && crate::migration::provider_format(&session.provider).is_some()
-    }) {
-        actions.push("ctrl+m to migrate session".into());
-    }
-    actions.push("ctrl+f to filter".into());
-    actions
-        .push("ctrl+g or /restore to search hidden and older sessions and bring one back".into());
-    actions.push("/filter text to filter sessions".into());
-    actions.push("ctrl+j for newline".into());
-    actions.push("ctrl+v pastes a clipboard image into a task or reply".into());
-    actions.push("tab for new task/harness picker".into());
-    actions.push("/harness [name] switches harness".into());
-    actions.push("ctrl+o picks the folder for a new session".into());
-    actions.push("/cd path starts the next session in any directory".into());
-    actions.push("/model [name|default] selects a model (or Terminal shell)".into());
-    actions.push("/shell [name|default] selects a Terminal shell".into());
-    actions.push("/login opens native setup".into());
-    actions.push("/setup [harness] installs/signs in".into());
-    actions.push("/completed [show|hide] toggles finished sessions".into());
     if let Some(session) = app.selected_session() {
+        selected.push(("enter / →", "open session"));
+        selected.push(("← / → twice", "back, at the prompt edge"));
+        selected.push(("shift+← / →", "back immediately"));
         if session.capabilities.contains(&Capability::Approve)
             || session.capabilities.contains(&Capability::Decline)
         {
-            actions.push("space to review request".into());
+            selected.push(("space", "review request"));
             if session.capabilities.contains(&Capability::Approve) {
-                actions.push("y to allow once".into());
+                selected.push(("y", "allow once"));
             }
             if session.capabilities.contains(&Capability::Decline) {
-                actions.push("n to deny".into());
+                selected.push(("n", "deny"));
             }
         } else if session.capabilities.contains(&Capability::Respond) {
-            actions.push("space to answer request".into());
+            selected.push(("space", "answer request"));
         } else if session.capabilities.contains(&Capability::Reply) {
-            actions.push("space to inspect/reply".into());
+            selected.push(("space", "inspect or reply"));
         } else if session.capabilities.contains(&Capability::Inspect) {
-            actions.push("space to inspect".into());
+            selected.push(("space", "inspect"));
         }
-        let action = if session.capabilities.contains(&Capability::Interrupt) {
-            Some("ctrl+x to stop")
+        let removal = if session.capabilities.contains(&Capability::Interrupt) {
+            "stop"
         } else if session.capabilities.contains(&Capability::Delete) {
-            Some("ctrl+x to delete")
+            "delete"
         } else {
-            Some("ctrl+x to hide locally")
+            "hide locally"
         };
-        if let Some(action) = action {
-            actions.push(action.into());
+        selected.push(("ctrl+x", removal));
+        if session.provider == Provider::OpenCode {
+            selected.push(("", "also works inside OpenCode"));
         }
         if !is_active_session_state(session.state)
             && session.capabilities.contains(&Capability::Archive)
         {
-            actions.push("ctrl+a to archive".into());
+            selected.push(("ctrl+a", "archive"));
         }
-    } else if selected_group_can_delete(app) {
-        actions.push("ctrl+x to delete all".into());
-    }
-    actions.push("esc on dashboard to quit".into());
-    actions
-}
-
-fn pack_help_actions(actions: Vec<String>, width: usize) -> Vec<Vec<String>> {
-    const GAP_WIDTH: usize = 1;
-    const MAX_ACTIONS_PER_LINE: usize = 2;
-    let column_width = help_column_width(width);
-    let mut lines = vec![Vec::<String>::new()];
-    for action in actions {
-        let line = lines.last_mut().expect("help always has one line");
-        let action_width = display_width(&action);
-        let paired_width = column_width + GAP_WIDTH + action_width;
-        if !line.is_empty()
-            && (line.len() >= MAX_ACTIONS_PER_LINE
-                || line
-                    .first()
-                    .is_some_and(|first| display_width(first) > column_width)
-                || action_width > column_width
-                || paired_width > width)
+        selected.push(("ctrl+r", "rename"));
+        selected.push(("ctrl+t / ctrl+p", "pause"));
+        if session.runtime == crate::domain::Runtime::Host
+            && crate::migration::provider_format(&session.provider).is_some()
         {
-            lines.push(vec![action]);
-        } else {
-            line.push(action);
+            selected.push(("ctrl+m", "migrate to another harness"));
         }
+        selected.push(("option+↑ / ↓", "reorder within group"));
+    } else if selected_group_can_delete(app) {
+        selected.push(("ctrl+x", "delete all in group"));
     }
-    lines
+    if !selected.is_empty() {
+        sections.push(HelpSection {
+            title: "selected session",
+            entries: selected,
+        });
+    }
+    sections.push(HelpSection {
+        title: "new session",
+        entries: vec![
+            ("tab", "pick harness"),
+            (FOLDER_PICKER_KEYS, "pick folder"),
+            ("ctrl+j", "newline"),
+            ("ctrl+v", "paste image"),
+        ],
+    });
+    sections.push(HelpSection {
+        title: "commands",
+        entries: vec![
+            ("/filter text", "filter sessions"),
+            ("/restore", "bring back a hidden session"),
+            ("/completed", "show or hide finished"),
+            ("/cd path", "start in any directory"),
+            ("/harness name", "switch harness"),
+            ("/model name", "pick model or Terminal shell"),
+            ("/shell name", "pick Terminal shell"),
+            ("/setup", "install or sign in"),
+            ("/login", "open native setup"),
+        ],
+    });
+    sections
 }
 
-fn help_column_width(width: usize) -> usize {
-    width.saturating_sub(1).saturating_div(2).min(72)
+/// Lays sections out in as many side-by-side columns as fit, keeping each
+/// section whole and balancing column heights.
+fn help_lines(app: &App, width: usize) -> Vec<Line<'static>> {
+    const KEY_GAP: usize = 2;
+    const COLUMN_GAP: usize = 4;
+    let sections = help_sections(app);
+    let key_width = sections
+        .iter()
+        .flat_map(|section| section.entries.iter())
+        .map(|(key, _)| display_width(key))
+        .max()
+        .unwrap_or(0);
+    let column_width = sections
+        .iter()
+        .flat_map(|section| {
+            section
+                .entries
+                .iter()
+                .map(|(_, description)| key_width + KEY_GAP + display_width(description))
+                .chain([display_width(section.title)])
+        })
+        .max()
+        .unwrap_or(0);
+    let section_height = |section: &HelpSection| section.entries.len() + 1;
+    let fits = (width.saturating_sub(1) + COLUMN_GAP) / (column_width + COLUMN_GAP);
+    let columns = fits.clamp(1, sections.len().max(1));
+    let total = sections.iter().map(section_height).sum::<usize>() + sections.len() - 1;
+    let target = total.div_ceil(columns);
+
+    let mut grouped: Vec<Vec<&HelpSection>> = vec![Vec::new()];
+    let mut height = 0;
+    for section in &sections {
+        let added = section_height(section) + usize::from(height > 0);
+        if height > 0 && height + added > target && grouped.len() < columns {
+            grouped.push(Vec::new());
+            height = 0;
+        }
+        height += section_height(section) + usize::from(height > 0);
+        grouped.last_mut().expect("help has a column").push(section);
+    }
+
+    let title_style = Style::default()
+        .fg(palette().dim)
+        .add_modifier(Modifier::BOLD);
+    let key_style = Style::default()
+        .fg(palette().accent)
+        .add_modifier(Modifier::BOLD);
+    let description_style = Style::default().fg(palette().fg);
+    let rendered_columns = grouped
+        .into_iter()
+        .map(|column| {
+            let mut rows: Vec<Vec<Span<'static>>> = Vec::new();
+            for section in column {
+                if !rows.is_empty() {
+                    rows.push(Vec::new());
+                }
+                rows.push(vec![Span::styled(section.title, title_style)]);
+                for (key, description) in &section.entries {
+                    let padding = key_width.saturating_sub(display_width(key)) + KEY_GAP;
+                    rows.push(vec![
+                        Span::styled(*key, key_style),
+                        Span::raw(" ".repeat(padding)),
+                        Span::styled(*description, description_style),
+                    ]);
+                }
+            }
+            rows
+        })
+        .collect::<Vec<_>>();
+    let row_count = rendered_columns.iter().map(Vec::len).max().unwrap_or(0);
+    (0..row_count)
+        .map(|row| {
+            let mut spans = vec![Span::raw(" ")];
+            for (index, column) in rendered_columns.iter().enumerate() {
+                if index > 0 {
+                    let used = spans.iter().map(Span::width).sum::<usize>() - 1;
+                    let start = index * (column_width + COLUMN_GAP);
+                    spans.push(Span::raw(" ".repeat(start.saturating_sub(used))));
+                }
+                if let Some(cells) = column.get(row) {
+                    spans.extend(cells.iter().cloned());
+                }
+            }
+            Line::from(spans)
+        })
+        .collect()
 }
 
 fn render_harness_picker(frame: &mut Frame<'_>, app: &App, area: Rect) {
@@ -2276,7 +2324,7 @@ mod tests {
         assert!(second_page.contains("session-49"));
         assert!(!second_page.contains("session-50"));
         assert!(second_page.contains("Show 10 more · 10 hidden"));
-        assert!(second_page.contains("enter/right"));
+        assert!(second_page.contains("enter to open"));
 
         app.selection = Some(SelectionKey::ShowMore("state:Working".into()));
         terminal.draw(|frame| render(frame, &app)).unwrap();
@@ -2669,40 +2717,44 @@ mod tests {
         terminal.draw(|frame| render(frame, &app)).unwrap();
         let rendered = buffer_text(terminal.backend().buffer());
 
+        let has_entry = |key: &str, description: &str| {
+            rendered.lines().any(|line| {
+                line.find(key).is_some_and(|start| {
+                    line[start + key.len()..]
+                        .trim_start()
+                        .starts_with(description)
+                })
+            })
+        };
         assert!(rendered.contains("shortcuts"));
-        assert!(rendered.contains("ctrl+r to rename"));
-        assert!(rendered.contains("ctrl+t or ctrl+p to pause the session"));
-        assert!(rendered.contains("ctrl+m to migrate session"));
-        assert!(rendered.contains("ctrl+s to switch views"));
-        assert!(rendered.contains("/harness [name] switches harness"));
-        assert!(rendered.contains("/model [name|default] selects a model"));
-        assert!(rendered.contains("/login opens native setup"));
-        assert!(rendered.contains("? to close help"));
+        assert!(has_entry("ctrl+r", "rename"));
+        assert!(has_entry("ctrl+t / ctrl+p", "pause"));
+        assert!(has_entry("ctrl+m", "migrate"));
+        assert!(has_entry("ctrl+s", "switch view"));
+        assert!(has_entry(FOLDER_PICKER_KEYS, "pick folder"));
+        assert!(has_entry("/harness name", "switch harness"));
+        assert!(has_entry("/model name", "pick model"));
+        assert!(has_entry("/login", "open native setup"));
+        assert!(has_entry("ctrl+x", "hide locally"));
+        assert!(!has_entry("ctrl+x", "stop"));
         assert_eq!(rendered.matches("? to close help").count(), 1);
         assert!(rendered.contains("describe a task · /help for commands"));
-        assert!(!rendered.contains("ctrl+x to stop"));
-        assert!(rendered.contains("ctrl+x to hide locally"));
         assert!(!rendered.contains("j/k"));
 
-        let composer_row = rendered
-            .lines()
-            .position(|line| line.contains("describe a task"))
-            .expect("composer row");
-        let shortcuts_row = rendered
-            .lines()
-            .position(|line| line.contains("shortcuts"))
-            .expect("shortcuts heading row");
-        let first_action_row = rendered
-            .lines()
-            .position(|line| line.contains("enter/right to open session"))
-            .expect("first shortcut row");
-        assert!(composer_row < shortcuts_row && shortcuts_row < first_action_row);
-        let dashboard_row = rendered
-            .lines()
-            .find(|line| line.contains("ctrl+s to switch views"))
-            .expect("dashboard shortcut row");
-        assert!(dashboard_row.contains("ctrl+l to refresh"));
-        assert!(!dashboard_row.contains(" · "));
+        let row = |needle: &str| {
+            rendered
+                .lines()
+                .position(|line| line.contains(needle))
+                .unwrap_or_else(|| panic!("missing {needle}"))
+        };
+        assert!(row("describe a task") < row("shortcuts"));
+        assert!(row("shortcuts") < row("dashboard"));
+        assert!(row("dashboard") < row("selected session"));
+        assert!(row("selected session") < row("open session"));
+        assert!(
+            row("new session") < row("ctrl+r"),
+            "wide help lays sections out side by side"
+        );
     }
 
     #[test]
@@ -2733,23 +2785,27 @@ mod tests {
     }
 
     #[test]
-    fn wide_help_keeps_shortcuts_on_distinct_rows() {
-        let packed = pack_help_actions(
-            vec![
-                "ctrl+s to switch views".into(),
-                "ctrl+j for newline".into(),
-                "ctrl+f to filter".into(),
-                "ctrl+l to refresh".into(),
-                "esc on dashboard to quit".into(),
-            ],
-            240,
-        );
-
-        assert_eq!(packed.len(), 3);
-        assert!(packed.iter().all(|line| line.len() <= 2));
-        assert_eq!(packed[0][0], "ctrl+s to switch views");
-        assert_eq!(packed[1][0], "ctrl+f to filter");
-        assert_eq!(packed[2][0], "esc on dashboard to quit");
+    fn narrow_help_stacks_sections_in_one_column() {
+        let mut app = App::new(SessionSnapshot {
+            sessions: vec![session("worker", SessionState::Working)],
+            warnings: vec![],
+        });
+        app.toggle_help();
+        let lines = help_lines(&app, 50);
+        let text = lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        let position = |needle: &str| text.iter().position(|line| line.contains(needle)).unwrap();
+        assert!(position("dashboard") < position("selected session"));
+        assert!(position("selected session") < position("new session"));
+        assert!(position("new session") < position("commands"));
+        assert!(lines.iter().all(|line| line.width() <= 50));
     }
 
     #[test]
@@ -2767,8 +2823,16 @@ mod tests {
         terminal.draw(|frame| render(frame, &app)).unwrap();
         let rendered = buffer_text(terminal.backend().buffer());
 
-        assert!(rendered.contains("ctrl+x to delete"));
-        assert!(!rendered.contains("ctrl+x to stop"));
+        assert!(rendered.contains("ctrl+x"));
+        assert_eq!(help_description(&app, "ctrl+x"), Some("delete"));
+    }
+
+    fn help_description(app: &App, key: &str) -> Option<&'static str> {
+        help_sections(app)
+            .into_iter()
+            .flat_map(|section| section.entries)
+            .find(|(entry_key, _)| *entry_key == key)
+            .map(|(_, description)| description)
     }
 
     #[test]
@@ -2786,8 +2850,8 @@ mod tests {
         terminal.draw(|frame| render(frame, &app)).unwrap();
         let rendered = buffer_text(terminal.backend().buffer());
 
-        assert!(rendered.contains("ctrl+x to stop"));
-        assert!(!rendered.contains("ctrl+x to hide locally"));
+        assert!(rendered.contains("ctrl+x"));
+        assert_eq!(help_description(&app, "ctrl+x"), Some("stop"));
     }
 
     #[test]
@@ -3163,13 +3227,13 @@ mod tests {
             sessions: vec![session("worker", SessionState::Working)],
             warnings: vec![],
         });
-        let backend = TestBackend::new(100, 30);
+        let backend = TestBackend::new(120, 30);
         let mut terminal = Terminal::new(backend).unwrap();
 
         terminal.draw(|frame| render(frame, &app)).unwrap();
         let rendered = buffer_text(terminal.backend().buffer());
 
-        assert!(rendered.contains("native: ←/→ twice · shift+←/→"));
+        assert!(rendered.contains("enter to open · back: ←/→ twice"));
     }
 
     #[test]

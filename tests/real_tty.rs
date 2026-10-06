@@ -932,9 +932,9 @@ fn hundreds_of_sessions_coalesce_arrow_bursts_without_output_backlog() {
     app.send(b"/help");
     app.send(ENTER);
     app.wait_for("dashboard slash-command help", |screen| {
-        screen.contains("/harness [name] switches harness")
-            && screen.contains("/model [name|default] selects a model")
-            && screen.contains("/completed [show|hide] toggles finished sessions")
+        has_help_entry(screen, "/harness name", "switch harness")
+            && has_help_entry(screen, "/model name", "pick model")
+            && has_help_entry(screen, "/completed", "show or hide finished")
     });
     assert!(
         command_started.elapsed() < Duration::from_millis(750),
@@ -943,7 +943,7 @@ fn hundreds_of_sessions_coalesce_arrow_bursts_without_output_backlog() {
 
     app.send(b"?");
     app.wait_for("dashboard slash-command help closes", |screen| {
-        !screen.contains("/harness [name] switches harness")
+        !has_help_entry(screen, "/harness name", "switch harness")
     });
     app.send(b"\t");
     app.wait_for("stress task composer", |screen| {
@@ -2063,7 +2063,7 @@ elif "models" in sys.argv:
 
     app.send(DOWN);
     let navigated = app.wait_for("bounded history stays in the header only", |screen| {
-        screen.contains("history capped") && screen.contains("enter/right open")
+        screen.contains("history capped") && screen.contains("enter to open")
     });
     assert!(!navigated.contains("history is limited to 10 records"));
     app.send(UP);
@@ -2262,7 +2262,7 @@ fn real_claude_attach_explains_and_honors_native_background_return() {
     app.send(session_name.as_bytes());
     app.send(ENTER);
     app.wait_for("filtered real Claude row", |screen| {
-        screen.contains(&session_name) && screen.contains("native: ←/→ twice · shift+←/→")
+        screen.contains(&session_name) && screen.contains("enter to open · back: ")
     });
 
     let raw_before_open = app.raw.len();
@@ -2449,8 +2449,8 @@ fn wide_real_tty_exercises_primary_interactions_and_restores_terminal() {
     app.send(b"?");
     let help = app.wait_for("contextual help", |screen| {
         screen.contains("shortcuts")
-            && screen.contains("ctrl+s to switch views")
-            && screen.contains("space to inspect")
+            && has_help_entry(screen, "ctrl+s", "switch view")
+            && has_help_entry(screen, "space", "inspect")
             && screen.contains("? to close")
     });
     assert_lines_fit(&help, 120);
@@ -2841,6 +2841,16 @@ fn real_tty_renders_actionable_request_and_confirmation_states() {
     app.exit_cleanly();
 }
 
+fn has_help_entry(screen: &str, key: &str, description: &str) -> bool {
+    screen.lines().any(|line| {
+        line.match_indices(key).any(|(start, _)| {
+            line[start + key.len()..]
+                .trim_start()
+                .starts_with(description)
+        })
+    })
+}
+
 #[test]
 fn narrow_and_tiny_real_ttys_have_bounded_fallback_layouts() {
     let _serial = serialize_real_tty_test();
@@ -2859,7 +2869,7 @@ fn narrow_and_tiny_real_ttys_have_bounded_fallback_layouts() {
     narrow.send(b"?");
     let help = narrow.wait_for("wrapped narrow help", |screen| {
         screen.contains("shortcuts")
-            && screen.contains("ctrl+s to switch views")
+            && has_help_entry(screen, "ctrl+s", "switch view")
             && screen.contains("? to close")
     });
     assert_lines_fit(&help, 55);
@@ -2906,37 +2916,21 @@ fn vscode_wide_terminal_help_preserves_visual_line_breaks() {
     app.send(b"?");
     let help = app.wait_for("VS Code-style multiline shortcuts", |screen| {
         screen.contains("shortcuts")
-            && screen.contains("ctrl+s to switch views")
-            && screen.contains("ctrl+f to filter")
+            && has_help_entry(screen, "ctrl+s", "switch view")
+            && has_help_entry(screen, "ctrl+f", "filter sessions")
+            && has_help_entry(screen, "/login", "open native setup")
             && screen.contains("? to close")
     });
     assert_lines_fit(&help, 220);
     assert_eq!(help.matches("? to close help").count(), 1);
-    let dashboard_row = help
-        .lines()
-        .find(|line| line.contains("ctrl+s to switch views"))
-        .expect("dashboard shortcut row");
-    assert!(dashboard_row.contains("ctrl+l to refresh"));
-    assert!(!dashboard_row.contains(" · "));
-
-    let switch_row = help
-        .lines()
-        .position(|line| line.contains("ctrl+s to switch views"))
-        .expect("switch shortcut row");
-    let filter_row = help
-        .lines()
-        .position(|line| line.contains("ctrl+f to filter"))
-        .expect("filter shortcut row");
-    let close_row = help
-        .lines()
-        .position(|line| line.contains("? to close"))
-        .expect("close shortcut row");
-    assert!(switch_row < filter_row && filter_row < close_row);
-    assert!(
+    let row = |needle: &str| {
         help.lines()
-            .filter(|line| line.contains(" to ") || line.contains(" for "))
-            .count()
-            >= 8,
+            .position(|line| line.contains(needle))
+            .unwrap_or_else(|| panic!("missing {needle}:\n{help}"))
+    };
+    assert!(row("ctrl+f") < row("ctrl+s") && row("ctrl+s") < row("? to close"));
+    assert!(
+        help.lines().filter(|line| line.contains("ctrl+")).count() >= 5,
         "help should use multiple visual rows in a wide VS Code terminal:\n{help}"
     );
 
