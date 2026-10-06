@@ -263,6 +263,9 @@ pub struct App {
     /// lowercasing keeps byte offsets, so a match maps back onto the original.
     transcripts_lower: BTreeMap<String, String>,
     hidden_ids: BTreeSet<String>,
+    /// Sessions the list already shows. The picker offers them only when
+    /// their message text matches, and choosing one selects its row.
+    open_candidates: Vec<HiddenSessionRecord>,
     pub restorable_loading: bool,
     pub models_loading: bool,
     pub models_provider: Option<Provider>,
@@ -354,6 +357,7 @@ impl App {
             restorable: BTreeMap::new(),
             transcripts_lower: BTreeMap::new(),
             hidden_ids: BTreeSet::new(),
+            open_candidates: Vec::new(),
             restorable_loading: false,
             hidden_filter: String::new(),
             hidden_selection: 0,
@@ -2047,6 +2051,7 @@ impl App {
         self.hidden_candidates = records;
         self.restorable.clear();
         self.transcripts_lower.clear();
+        self.open_candidates.clear();
         self.restorable_loading = loading;
         self.hidden_filter.clear();
         self.hidden_selection = 0;
@@ -2072,15 +2077,20 @@ impl App {
         let mut added = Vec::new();
         for session in sessions {
             if !self.hidden_ids.contains(&session.id) {
-                if listed.contains(session.id.as_str()) {
-                    continue;
-                }
-                added.push(HiddenSessionRecord {
+                let record = HiddenSessionRecord {
                     id: session.id.clone(),
                     provider: Some(session.provider.clone()),
                     name: Some(session.name.clone()),
                     hidden_at_ms: session.updated_at_ms,
-                });
+                };
+                if listed.contains(session.id.as_str()) {
+                    if session.transcript.is_empty() {
+                        continue;
+                    }
+                    self.open_candidates.push(record);
+                } else {
+                    added.push(record);
+                }
             }
             if !session.transcript.is_empty() {
                 self.transcripts_lower
@@ -2112,8 +2122,14 @@ impl App {
         self.hidden_ids.contains(id)
     }
 
+    /// Whether a picker row is a session the list already shows.
+    pub fn is_open_choice(&self, id: &str) -> bool {
+        self.open_candidates.iter().any(|record| record.id == id)
+    }
+
     /// Picker rows matching the filter: name, harness, ID, or folder matches
-    /// first, then rows whose recent message text alone matches.
+    /// first, then rows whose recent message text alone matches, then open
+    /// sessions whose message text matches.
     pub fn hidden_choices(&self) -> Vec<&HiddenSessionRecord> {
         let needle = self.hidden_filter.to_ascii_lowercase();
         let (mut by_label, by_text): (Vec<_>, Vec<_>) = self
@@ -2130,7 +2146,15 @@ impl App {
             })
             .partition(|(_, label)| *label);
         by_label.extend(by_text);
-        by_label.into_iter().map(|(record, _)| record).collect()
+        let open = self
+            .open_candidates
+            .iter()
+            .filter(|record| self.transcript_match(&record.id, &needle).is_some());
+        by_label
+            .into_iter()
+            .map(|(record, _)| record)
+            .chain(open)
+            .collect()
     }
 
     fn label_matches(&self, record: &HiddenSessionRecord, needle: &str) -> bool {
@@ -2166,7 +2190,7 @@ impl App {
     pub fn hidden_snippet(&self, width: usize) -> Option<String> {
         let needle = self.hidden_filter.to_ascii_lowercase();
         let record = *self.hidden_choices().get(self.hidden_selection)?;
-        if self.label_matches(record, &needle) {
+        if !self.is_open_choice(&record.id) && self.label_matches(record, &needle) {
             return None;
         }
         let start = self.transcript_match(&record.id, &needle)?;
@@ -2212,6 +2236,7 @@ impl App {
         };
         let session_id = record.id.clone();
         let hidden = self.hidden_ids.contains(&session_id);
+        let open = self.is_open_choice(&session_id);
         let restorable = self.restorable.remove(&session_id);
         if self.hidden_picker_from_composer {
             self.clear_input();
@@ -2219,9 +2244,16 @@ impl App {
         self.overlay = Overlay::None;
         self.hidden_filter.clear();
         self.hidden_candidates.clear();
+        self.open_candidates.clear();
         self.restorable.clear();
         self.transcripts_lower.clear();
         self.restorable_loading = false;
+        if open {
+            if !self.select_and_reveal_session(&session_id) {
+                self.set_notice("that session is hidden by the current filter");
+            }
+            return AppAction::None;
+        }
         match restorable {
             Some(session) => AppAction::Restore { session, hidden },
             None => AppAction::Unhide { session_id },
@@ -3476,6 +3508,49 @@ mod tests {
         assert_eq!(
             app.hidden_snippet(24).as_deref(),
             Some("…e flaky upload test be…")
+        );
+    }
+
+    #[test]
+    fn restore_picker_finds_open_sessions_by_message_text_and_selects_them() {
+        let mut listed = session("opencode:host:ses_open", SessionState::Completed);
+        listed.provider = Provider::OpenCode;
+        let mut app = app_with(vec![listed]);
+        app.open_restore_picker(Vec::new());
+        let mut open = restorable("ses_open", "Transcript accuracy", "/work/a", 90);
+        open.transcript = "You said \"Okay, I'm bored\" right after a wait".into();
+        let mut old = restorable("ses_old", "Worry books", "/work/b", 40);
+        old.transcript = "eventually you get bored".into();
+        app.add_restorable_sessions(vec![open, old], &[]);
+
+        assert_eq!(
+            app.hidden_choices()
+                .iter()
+                .map(|record| record.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["opencode:host:ses_old"],
+            "open sessions stay out of an empty search"
+        );
+
+        for character in "bored".chars() {
+            app.push_input(character);
+        }
+        assert_eq!(
+            app.hidden_choices()
+                .iter()
+                .map(|record| record.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["opencode:host:ses_old", "opencode:host:ses_open"]
+        );
+        assert!(app.is_open_choice("opencode:host:ses_open"));
+
+        app.move_hidden_selection(1);
+        assert!(app.hidden_snippet(70).unwrap().contains("I'm bored"));
+        assert_eq!(app.activate(), AppAction::None);
+        assert_eq!(app.overlay, Overlay::None);
+        assert_eq!(
+            app.selection,
+            Some(SelectionKey::Session("opencode:host:ses_open".into()))
         );
     }
 

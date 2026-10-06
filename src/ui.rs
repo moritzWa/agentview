@@ -1545,11 +1545,14 @@ fn render_hidden_picker(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 .take(visible_rows)
                 .map(|(index, record)| {
                     let selected = index == app.hidden_selection;
-                    let provider = record
+                    let mut provider = record
                         .provider
                         .as_ref()
                         .map(|provider| provider.label().to_owned())
                         .unwrap_or_else(|| "unknown".into());
+                    if app.is_open_choice(&record.id) {
+                        provider = format!("open · {provider}");
+                    }
                     let hidden_for = now
                         .duration_since(
                             UNIX_EPOCH + std::time::Duration::from_millis(record.hidden_at_ms),
