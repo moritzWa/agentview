@@ -807,6 +807,14 @@ fn bridge_session(
     let _raw = RawModeGuard::enter()?;
     let _title = NativeTitleGuard::enter(warning.as_deref())?;
     let mut stdout = io::stdout().lock();
+    let mut current_size = terminal_size(libc::STDIN_FILENO).ok();
+    if let Some(size) = current_size {
+        // The saved screen keeps the size it last had in the foreground. If
+        // the window changed since, it must match before it is shown, and
+        // before the provider's next frame is parsed into it.
+        screen.set_size(size.ws_row, size.ws_col);
+        set_pty_size(master.as_raw_fd(), size)?;
+    }
     if !fresh {
         stdout.write_all(b"\x1b[2J\x1b[H")?;
         stdout.write_all(&screen.screen().state_formatted())?;
@@ -822,10 +830,6 @@ fn bridge_session(
     REMOVAL_REQUESTED.store(false, std::sync::atomic::Ordering::SeqCst);
     let mut parser = DetachParser::for_session(session_key);
     let mut return_gesture = ReturnGesture::for_session(session_key);
-    let mut current_size = terminal_size(libc::STDIN_FILENO).ok();
-    if let Some(size) = current_size {
-        set_pty_size(master.as_raw_fd(), size)?;
-    }
     let mut redraw_restore_at = None;
     let mut hidden_queries = TerminalQueryScanner::default();
     let mut color_queries = answers_color_queries(session_key).then(TerminalQueryScanner::default);
