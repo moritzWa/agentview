@@ -358,7 +358,25 @@ pub fn run_dashboard(
                     crate::adapters::apply_background_screens(&mut snapshot);
                     let changed = snapshot != app.snapshot;
                     app.replace_snapshot(snapshot);
-                    resolve_pending_reveal(&mut app, &mut pending_reveal, complete, Instant::now());
+                    if let Some(session_id) = resolve_pending_reveal(
+                        &mut app,
+                        &mut pending_reveal,
+                        complete,
+                        Instant::now(),
+                    ) {
+                        if let Some(session) = app
+                            .session_by_id(&session_id)
+                            .filter(|session| control.native_open_ready(session) == Some(false))
+                        {
+                            control.preview(session);
+                            previewed_row =
+                                Some((session_id.clone(), control.preview_generation()));
+                        }
+                        pending_open = Some(PendingOpen {
+                            session_id,
+                            deadline: Instant::now() + DEFERRED_OPEN_TIMEOUT,
+                        });
+                    }
                     if select_pending_launch(&mut app, pending_launch.as_ref()).is_some() {
                         pending_launch = None;
                         pending_launch_retry_at = None;
@@ -778,7 +796,7 @@ pub fn run_dashboard(
                                 match unhidden.and_then(|()| control.adopt(&session)) {
                                     Ok(()) => {
                                         app.set_notice(format!(
-                                            "restoring {}; it returns as soon as discovery lists it",
+                                            "restoring {}; opening it once discovery lists it",
                                             session.name
                                         ));
                                         pending_reveal = Some(PendingReveal {
@@ -803,7 +821,7 @@ pub fn run_dashboard(
                                             .clone()
                                             .unwrap_or_else(|| record.id.clone());
                                         app.set_notice(format!(
-                                            "restoring {name}; it returns as soon as discovery lists it"
+                                            "restoring {name}; opening it once discovery lists it"
                                         ));
                                         pending_reveal = Some(PendingReveal {
                                             session_id,
@@ -1239,7 +1257,8 @@ fn handle_key_with_reveal(
     action
 }
 
-/// Select a just-unhidden session once a refresh lists it.
+/// Select a just-unhidden session once a refresh lists it, and return its id
+/// so the caller can open it.
 ///
 /// The jump waits while any overlay is open: Peek, Rename, and Confirm act on
 /// the selected row, so moving the selection underneath them could send a
@@ -1251,17 +1270,15 @@ fn resolve_pending_reveal(
     pending: &mut Option<PendingReveal>,
     complete: bool,
     now: Instant,
-) {
-    let Some(reveal) = pending.as_ref() else {
-        return;
-    };
+) -> Option<String> {
+    let reveal = pending.as_ref()?;
     if app.overlay == Overlay::None && app.select_and_reveal_session(&reveal.session_id) {
         let name = app
             .selected_session()
             .map(|session| session.name.clone())
             .unwrap_or_else(|| reveal.session_id.clone());
         app.set_notice(format!("restored {name}"));
-        *pending = None;
+        return pending.take().map(|reveal| reveal.session_id);
     } else if app.snapshot_contains(&reveal.session_id)
         && !app.groups().iter().any(|group| {
             group
@@ -1276,6 +1293,7 @@ fn resolve_pending_reveal(
         app.set_notice("unhidden, but discovery does not list that session right now");
         *pending = None;
     }
+    None
 }
 
 fn select_pending_launch(app: &mut App, pending: Option<&PendingLaunch>) -> Option<String> {
@@ -2955,7 +2973,11 @@ mod tests {
 
         app.escape();
         assert_eq!(app.overlay, Overlay::None);
-        resolve_pending_reveal(&mut app, &mut reveal, true, Instant::now());
+        assert_eq!(
+            resolve_pending_reveal(&mut app, &mut reveal, true, Instant::now()).as_deref(),
+            Some("restored"),
+            "the restored session is handed back to be opened"
+        );
         assert_eq!(
             app.selection,
             Some(SelectionKey::Session("restored".into()))
