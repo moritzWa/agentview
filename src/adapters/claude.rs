@@ -39,6 +39,7 @@ pub struct ClaudeSource {
     runtime: Runtime,
     runner: Arc<dyn CommandRunner>,
     history: Option<ClaudeHistory>,
+    process_records: Option<PathBuf>,
 }
 
 impl ClaudeSource {
@@ -49,6 +50,7 @@ impl ClaudeSource {
             runtime: Runtime::Host,
             runner: Arc::new(CancellableProcessRunner::default()),
             history: ClaudeHistory::host(),
+            process_records: default_process_records(),
         }
     }
 
@@ -69,6 +71,7 @@ impl ClaudeSource {
             },
             runner: Arc::new(CancellableProcessRunner::default()),
             history: None,
+            process_records: None,
         }
     }
 
@@ -85,8 +88,34 @@ impl ClaudeSource {
             runtime,
             runner,
             history: None,
+            process_records: None,
         }
     }
+
+    /// Programs that drive `claude -p` through the SDK (voice bridges,
+    /// scripts) register live sessions too; `claude agents` does not say so,
+    /// but the per-process record names the SDK entrypoint.
+    fn is_headless(&self, session: &AgentSession) -> bool {
+        let (Some(directory), Some(pid)) = (&self.process_records, session.pid) else {
+            return false;
+        };
+        #[derive(Deserialize)]
+        struct ProcessRecord {
+            entrypoint: Option<String>,
+        }
+        std::fs::read_to_string(directory.join(format!("{pid}.json")))
+            .ok()
+            .and_then(|input| serde_json::from_str::<ProcessRecord>(&input).ok())
+            .and_then(|record| record.entrypoint)
+            .is_some_and(|entrypoint| entrypoint.starts_with("sdk"))
+    }
+}
+
+fn default_process_records() -> Option<PathBuf> {
+    let config = std::env::var_os("CLAUDE_CONFIG_DIR")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".claude")))?;
+    Some(config.join("sessions"))
 }
 
 impl SessionSource for ClaudeSource {
@@ -152,6 +181,7 @@ impl SessionSource for ClaudeSource {
             .filter(|session| {
                 request.include_interactive || session.kind != SessionKind::Interactive
             })
+            .filter(|session| !self.is_headless(session))
             .collect())
     }
 
@@ -340,5 +370,49 @@ mod tests {
             .unwrap();
 
         assert!(sessions.is_empty());
+    }
+
+    #[test]
+    fn sessions_driven_through_the_sdk_are_left_out() {
+        let records = crate::test_support::tempfile::tempdir().unwrap();
+        std::fs::write(
+            records.path().join("7.json"),
+            r#"{"pid":7,"entrypoint":"sdk-cli","kind":"interactive"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            records.path().join("8.json"),
+            r#"{"pid":8,"entrypoint":"cli","kind":"bg"}"#,
+        )
+        .unwrap();
+        let mut expected = CommandRequest::new("claude", vec!["agents".into(), "--json".into()]);
+        expected.timeout = Duration::from_secs(8);
+        let runner = Arc::new(FakeRunner {
+            expected,
+            output: Mutex::new(Some(CommandOutput {
+                status: 0,
+                stdout: br#"[
+                  {"pid":7,"cwd":"/Users/m","kind":"interactive","sessionId":"a","name":"m-c6","status":"idle"},
+                  {"pid":8,"cwd":"/work","kind":"background","sessionId":"b","name":"worker","status":"idle"}
+                ]"#
+                .to_vec(),
+                stderr: vec![],
+            })),
+        });
+        let mut source =
+            ClaudeSource::with_runner("test", Invocation::host("claude"), Runtime::Host, runner);
+        source.process_records = Some(records.path().to_path_buf());
+
+        let sessions = source
+            .discover(&DiscoveryRequest {
+                include_interactive: true,
+                ..DiscoveryRequest::default()
+            })
+            .unwrap();
+
+        assert_eq!(
+            sessions.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            ["worker"]
+        );
     }
 }
