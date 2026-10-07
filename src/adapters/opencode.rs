@@ -9,6 +9,7 @@ use serde::Deserialize;
 
 use super::native_owned::{poll_unique, NativeOwnership};
 use super::opencode_background::BackgroundShells;
+use super::opencode_db::DirectDbRunner;
 use super::opencode_live::{self, Candidate, Holder, LastMessage};
 use super::{DiscoveryRequest, SessionSource, SourceDiscovery};
 use crate::control::{
@@ -875,6 +876,13 @@ fn validate_model(model: &str) -> Result<()> {
     Ok(())
 }
 
+fn host_runner(executable: &str) -> Arc<dyn CommandRunner> {
+    Arc::new(DirectDbRunner::new(
+        Arc::new(CancellableProcessRunner::default()),
+        executable.to_owned(),
+    ))
+}
+
 fn host_probe(executable: &str) -> HolderProbe {
     let executable = executable.to_owned();
     Arc::new(move || opencode_live::probe_host_holders(&executable))
@@ -886,9 +894,9 @@ impl OpenCodeSource {
         Self {
             label: "OpenCode (host)".into(),
             probe: host_probe(&executable),
+            runner: host_runner(&executable),
             invocation: OpenCodeInvocation::host(executable),
             runtime: Runtime::Host,
-            runner: Arc::new(CancellableProcessRunner::default()),
             supervisor: None,
             discover_external_history: true,
             ownership: None,
@@ -901,9 +909,9 @@ impl OpenCodeSource {
         Self {
             label: "OpenCode (host)".into(),
             probe: host_probe(&executable),
+            runner: host_runner(&executable),
             invocation: OpenCodeInvocation::host(executable),
             runtime: Runtime::Host,
-            runner: Arc::new(CancellableProcessRunner::default()),
             supervisor: Some(supervisor),
             discover_external_history: true,
             ownership: None,
@@ -920,9 +928,9 @@ impl OpenCodeSource {
         Self {
             label: "OpenCode (managed host)".into(),
             probe: host_probe(&executable),
+            runner: host_runner(&executable),
             invocation: OpenCodeInvocation::host(executable),
             runtime: Runtime::Host,
-            runner: Arc::new(CancellableProcessRunner::default()),
             supervisor: Some(supervisor),
             discover_external_history: false,
             ownership: None,

@@ -276,6 +276,11 @@ for the hidden OpenCode TUI and why it went ahead, the preview's switch and
 draw, the first keystrokes' echo latency, and any wait on or long hold of the
 OpenCode state lock with its call site. Nothing is written without it.
 
+OpenCode history queries read OpenCode's database file directly, read-only,
+instead of starting `opencode db` for each one. `opencode-db` lines show each
+query's time, or `cli` with the reason when a query went through OpenCode's
+CLI instead.
+
 ### Local hide, provider delete, and provider archive
 
 Ctrl+X follows the selected row's current lifecycle. On an active row with

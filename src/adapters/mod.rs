@@ -18,6 +18,7 @@ mod muse;
 mod native_owned;
 mod opencode;
 mod opencode_background;
+mod opencode_db;
 mod opencode_live;
 mod pi;
 mod qwen;
