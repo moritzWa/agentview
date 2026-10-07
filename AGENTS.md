@@ -5,7 +5,7 @@
 - Small changes go straight to `main`; larger ones get a branch and PR. Either
   way, push as soon as it builds and the unit tests pass. If the push is rejected,
   rebase onto `origin/main` and push again.
-- After a change that affects the app, reinstall from the pushed `main`
-  (`cargo install --path . --locked --root "$HOME/.local" --force`), not from a
-  feature branch: an install from a branch drops whatever `main` has that it
-  lacks.
+- After a change that affects the app, push it, then reinstall with
+  `~/.claude/scripts/install-latest.sh agentview`. It fetches and builds
+  `origin/main` in a temporary worktree. Never `cargo install` from a checkout:
+  one that hasn't pulled drops whatever `main` has that it lacks.
