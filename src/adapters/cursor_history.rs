@@ -628,7 +628,25 @@ fn open_store_files(pids: &[u32], runner: &dyn CommandRunner) -> Vec<(u32, PathB
     }
     #[cfg(all(unix, not(target_os = "linux")))]
     {
-        let list = pids
+        let mut files = Vec::new();
+        let mut unread = Vec::new();
+        for pid in pids {
+            match crate::proc_info::open_files(*pid) {
+                Some(paths) => files.extend(
+                    paths
+                        .into_iter()
+                        .filter(|path| {
+                            path.file_name().and_then(|name| name.to_str()) == Some("store.db")
+                        })
+                        .map(|path| (*pid, path)),
+                ),
+                None => unread.push(*pid),
+            }
+        }
+        if unread.is_empty() {
+            return files;
+        }
+        let list = unread
             .iter()
             .map(|pid| pid.to_string())
             .collect::<Vec<_>>()
@@ -647,13 +665,15 @@ fn open_store_files(pids: &[u32], runner: &dyn CommandRunner) -> Vec<(u32, PathB
         request.timeout = PROCESS_PROBE_TIMEOUT;
         // lsof exits non-zero when any listed PID has gone away; the output it
         // did produce is still valid, so only an unreadable stream is fatal.
-        match runner.run(&request) {
-            Ok(output) => output
-                .stdout_text()
-                .map(parse_lsof_store_files)
-                .unwrap_or_default(),
-            Err(_) => Vec::new(),
+        if let Ok(output) = runner.run(&request) {
+            files.extend(
+                output
+                    .stdout_text()
+                    .map(parse_lsof_store_files)
+                    .unwrap_or_default(),
+            );
         }
+        files
     }
     #[cfg(not(unix))]
     {
@@ -1058,6 +1078,9 @@ mod tests {
             ),
             requests: Mutex::new(Vec::new()),
         });
+        // macOS reads open files in-process, so this process really holds them.
+        #[cfg(target_os = "macos")]
+        let _held = [File::open(&store_a).unwrap(), File::open(&store_b).unwrap()];
         let source =
             CursorHistorySource::host(root.clone(), Some(versions)).with_runner(runner.clone());
         let sessions = source.discover(&request()).unwrap();
@@ -1066,7 +1089,14 @@ mod tests {
             .map(|session| (session.provider_session_id.as_str(), session))
             .collect::<BTreeMap<_, _>>();
 
-        #[cfg(all(unix, not(target_os = "linux")))]
+        #[cfg(target_os = "macos")]
+        {
+            assert!(runner.requests.lock().unwrap().is_empty(), "no lsof");
+            assert_eq!(by_id[CHAT_A].state, SessionState::Working);
+            assert_eq!(by_id[CHAT_A].pid, Some(me));
+            assert_eq!(by_id[CHAT_B].state, SessionState::NeedsInput);
+        }
+        #[cfg(all(unix, not(target_os = "linux"), not(target_os = "macos")))]
         {
             let requests = runner.requests.lock().unwrap();
             assert_eq!(requests.len(), 1);
@@ -1091,6 +1121,24 @@ mod tests {
             assert_eq!(by_id[CHAT_A].state, SessionState::Completed);
             assert_eq!(by_id[CHAT_B].state, SessionState::Completed);
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn processes_libproc_cannot_read_fall_back_to_lsof() {
+        let runner = StaticRunner {
+            stdout: "p1\nn/Users/m/.cursor/chats/h/id/store.db\n".into(),
+            requests: Mutex::new(Vec::new()),
+        };
+        // launchd belongs to root, so libproc refuses it.
+        let files = open_store_files(&[1, std::process::id()], &runner);
+        assert_eq!(
+            files,
+            vec![(1, PathBuf::from("/Users/m/.cursor/chats/h/id/store.db"))]
+        );
+        let requests = runner.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].args[5], "1");
     }
 
     #[test]

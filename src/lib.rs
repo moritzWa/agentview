@@ -23,6 +23,7 @@ pub mod order;
 pub mod paused;
 pub mod perf_log;
 pub mod pi_supervisor;
+pub mod proc_info;
 pub mod process;
 pub mod terminal;
 pub mod theme;

@@ -352,7 +352,20 @@ fn process_cwds(pids: &[u32], runner: &dyn CommandRunner) -> BTreeMap<u32, PathB
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let list = pids
+        let mut cwds = BTreeMap::new();
+        let mut unread = Vec::new();
+        for pid in pids {
+            match crate::proc_info::cwd(*pid) {
+                Some(cwd) => {
+                    cwds.insert(*pid, cwd);
+                }
+                None => unread.push(*pid),
+            }
+        }
+        if unread.is_empty() {
+            return cwds;
+        }
+        let list = unread
             .iter()
             .map(u32::to_string)
             .collect::<Vec<_>>()
@@ -371,11 +384,14 @@ fn process_cwds(pids: &[u32], runner: &dyn CommandRunner) -> BTreeMap<u32, PathB
         request.timeout = PROBE_TIMEOUT;
         // lsof exits non-zero when a listed PID has exited; what it printed for
         // the others is still valid.
-        runner
+        if let Some(found) = runner
             .run(&request)
             .ok()
             .and_then(|output| output.stdout_text().ok().map(parse_lsof_cwds))
-            .unwrap_or_default()
+        {
+            cwds.extend(found);
+        }
+        cwds
     }
 }
 
