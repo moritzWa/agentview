@@ -1,0 +1,15 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "agentview",
+  "compatibility_date": "2026-10-01",
+  "observability": {
+    "enabled": true
+  },
+  "assets": {
+    "directory": "site"
+  },
+  "routes": [
+    { "pattern": "agent-view.app", "custom_domain": true },
+    { "pattern": "www.agent-view.app", "custom_domain": true }
+  ]
+}
