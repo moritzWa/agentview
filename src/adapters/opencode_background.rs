@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, UNIX_EPOCH};
 
 use anyhow::Result;
@@ -55,12 +55,19 @@ pub(super) struct BackgroundShells {
 }
 
 impl BackgroundShells {
-    pub fn host() -> Self {
-        let mut dirs = vec![std::env::temp_dir()];
-        if !dirs.iter().any(|dir| dir == Path::new("/tmp")) {
-            dirs.push(PathBuf::from("/tmp"));
-        }
-        Self::in_dirs(dirs)
+    /// One tracker per process: the controller re-applies what discovery found
+    /// after overlaying managed-server state, so both must read the same
+    /// `last`.
+    pub fn host() -> Arc<Self> {
+        static HOST: OnceLock<Arc<BackgroundShells>> = OnceLock::new();
+        HOST.get_or_init(|| {
+            let mut dirs = vec![std::env::temp_dir()];
+            if !dirs.iter().any(|dir| dir == Path::new("/tmp")) {
+                dirs.push(PathBuf::from("/tmp"));
+            }
+            Arc::new(Self::in_dirs(dirs))
+        })
+        .clone()
     }
 
     fn in_dirs(dirs: Vec<PathBuf>) -> Self {

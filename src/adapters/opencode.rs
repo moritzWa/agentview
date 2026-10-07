@@ -907,7 +907,6 @@ fn host_runner(executable: &str) -> Arc<dyn CommandRunner> {
         executable.to_owned(),
     ))
 }
-
 fn host_probe(executable: &str) -> HolderProbe {
     let executable = executable.to_owned();
     Arc::new(move || opencode_live::probe_host_holders(&executable))
@@ -925,7 +924,7 @@ impl OpenCodeSource {
             supervisor: None,
             discover_external_history: true,
             ownership: None,
-            background_shells: Some(Arc::new(BackgroundShells::host())),
+            background_shells: Some(BackgroundShells::host()),
         }
     }
 
@@ -940,7 +939,7 @@ impl OpenCodeSource {
             supervisor: Some(supervisor),
             discover_external_history: true,
             ownership: None,
-            background_shells: Some(Arc::new(BackgroundShells::host())),
+            background_shells: Some(BackgroundShells::host()),
         }
     }
 
@@ -959,7 +958,7 @@ impl OpenCodeSource {
             supervisor: Some(supervisor),
             discover_external_history: false,
             ownership: None,
-            background_shells: Some(Arc::new(BackgroundShells::host())),
+            background_shells: Some(BackgroundShells::host()),
         }
     }
 
@@ -2035,6 +2034,16 @@ mod tests {
         assert_eq!(sessions[0].raw_state.as_deref(), Some("background: shell"));
         assert_eq!(sessions[1].state, SessionState::Completed);
         assert_eq!(sessions[2].raw_state.as_deref(), Some("running turn"));
+    }
+
+    #[test]
+    fn the_controller_sees_the_background_shells_discovery_found() {
+        let controller = OpenCodeController::host("opencode");
+        let source = OpenCodeSource::host("opencode");
+        assert!(Arc::ptr_eq(
+            controller.source.background_shells.as_ref().unwrap(),
+            source.background_shells.as_ref().unwrap(),
+        ));
     }
 
     #[test]
