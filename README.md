@@ -79,23 +79,25 @@ own interface.
   `--theme`.
 - **`Ctrl+X` twice** stops and hides or deletes a session, no dialog.
 
-<details>
-<summary><strong>Refresh time by harness</strong></summary>
+### Refresh time by harness
 
-| Harness | Time per refresh | Through the harness's own tool |
-| --- | ---: | ---: |
-| OpenCode | ~130 ms | ~460 ms (`opencode db`) |
-| Claude Code | ~180 ms | same (`claude agents`) |
-| OpenAI Codex | ~80 ms | same (Codex App Server) |
-| Cursor | ~3 ms | ~80 ms (`lsof`) |
-| Devin | ~6 ms | — |
-| Pi, Antigravity, Terminal | under 1 ms | — |
+agentview is fast because it skips each harness's CLI wherever it can and
+reads the data itself: OpenCode's SQLite database directly instead of starting
+`opencode db` for every query, and which Cursor chats are open straight from
+macOS instead of running `lsof`.
 
-Median over 30 s of one-second refreshes on an Apple M5 Pro with a 17 GB OpenCode history,
-measured with [`AGENTVIEW_PERF_LOG`](docs/cli.md#timing-log). Harnesses are
-read in parallel, and none of it runs on the input thread.
+| Harness | Time per refresh | How agentview reads it |
+| --- | ---: | --- |
+| OpenCode | ~130 ms | Its SQLite database, read-only (going through `opencode db` took ~460 ms) |
+| Claude Code | ~180 ms | `claude agents --json` |
+| OpenAI Codex | ~80 ms | Codex's App Server |
+| Cursor | ~3 ms | Its chat files, plus macOS for which chats are open (`lsof` took ~80 ms) |
+| Devin | ~6 ms | Its SQLite database, read-only |
+| Pi, Antigravity, Terminal | under 1 ms | Session files and agentview's own records |
 
-</details>
+Median over 30 s of one-second refreshes on an Apple M5 Pro with a 17 GB
+OpenCode history, measured with [`AGENTVIEW_PERF_LOG`](docs/cli.md#timing-log).
+Harnesses are read in parallel, and none of it runs on the input thread.
 
 ## Keys
 
