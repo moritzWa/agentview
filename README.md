@@ -79,6 +79,24 @@ own interface.
   `--theme`.
 - **`Ctrl+X` twice** stops and hides or deletes a session, no dialog.
 
+<details>
+<summary><strong>Refresh time by harness</strong></summary>
+
+| Harness | Time per refresh | Through the harness's own tool |
+| --- | ---: | ---: |
+| OpenCode | ~130 ms | ~460 ms (`opencode db`) |
+| Claude Code | ~180 ms | same (`claude agents`) |
+| OpenAI Codex | ~80 ms | same (Codex App Server) |
+| Cursor | ~3 ms | ~80 ms (`lsof`) |
+| Devin | ~6 ms | — |
+| Pi, Antigravity, Terminal | under 1 ms | — |
+
+Median over 30 s of one-second refreshes on an Apple M5 Pro with a 17 GB OpenCode history,
+measured with [`AGENTVIEW_PERF_LOG`](docs/cli.md#timing-log). Harnesses are
+read in parallel, and none of it runs on the input thread.
+
+</details>
+
 ## Keys
 
 | Do this | Press |
