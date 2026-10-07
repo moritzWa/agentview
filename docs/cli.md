@@ -44,7 +44,7 @@ agentview is already up to date.
 | `--fixture FILE` | Read a normalized snapshot/session array instead of probing providers; all provider operations are fenced. |
 | `--no-host-providers` | Disable every host provider while retaining explicit Docker targets. |
 | `--claude-bin PATH` | Use a particular Claude executable; default `claude`. |
-| `--no-host-claude` | Disable host Claude discovery and control. |
+| `--no-host-claude` / `--no-claude` | Disable host Claude discovery and control. Every `--no-host-<provider>` flag also accepts the shorter `--no-<provider>` form. |
 | `--codex-bin PATH` | Use a particular Codex executable; default `codex`. |
 | `--no-host-codex` | Disable host Codex discovery and supervision. |
 | `--pi-bin PATH` / `--pi-session-dir PATH` | Select Pi and optionally override its documented history store. |
@@ -486,7 +486,7 @@ label.
 | Show more row | `enter` | Reveal the next terminal-sized page (at most 25) in that group. |
 | Group heading | `enter` | Collapse or expand the group. |
 | Session row | `enter` or `→` | Suspend the dashboard and open the provider's full native interface. The physical screen is cleared before the provider draws. |
-| Provider-native interface | `←` / `→` twice at a cursor boundary | The first arrow is forwarded. If the cursor does not move, a 1.6-second bottom-line hint appears; repeat the same arrow to retain the frontend and return to agentview. |
+| Provider-native interface | `←` / `→` twice at a cursor boundary | The first arrow is forwarded. If the cursor does not move, a 1.6-second bottom-line hint appears; repeat the same arrow to retain the frontend and return to agentview. In Claude Code, `←` at an empty prompt (where Claude shows "← for agents") returns at once and never opens Claude's agents view; OpenCode also returns on one `←`. |
 | Provider-native interface | `shift+←` / `shift+→` | Return immediately from anywhere. Plain arrows otherwise remain available for line editing. `enter` or `→` on the same dashboard row reattaches and restores its terminal screen. |
 | Inline Peek | `←` | Return to the session list without opening the native provider interface. |
 | Session row | `space` | Open the inline Peek panel and inspect transcript/request details when capability is advertised. |

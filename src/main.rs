@@ -273,7 +273,7 @@ struct Cli {
     claude_bin: String,
 
     /// Disable Claude discovery on the host.
-    #[arg(long)]
+    #[arg(long, visible_alias = "no-claude")]
     no_host_claude: bool,
 
     /// Codex executable used for host discovery through App Server.
@@ -281,7 +281,7 @@ struct Cli {
     codex_bin: String,
 
     /// Disable Codex discovery on the host.
-    #[arg(long)]
+    #[arg(long, visible_alias = "no-codex")]
     no_host_codex: bool,
 
     /// Pi executable used to open persisted host sessions.
@@ -293,7 +293,7 @@ struct Cli {
     pi_session_dir: Option<PathBuf>,
 
     /// Disable Pi discovery on the host.
-    #[arg(long)]
+    #[arg(long, visible_alias = "no-pi")]
     no_host_pi: bool,
 
     /// OpenCode executable used for host discovery and native resume.
@@ -301,7 +301,7 @@ struct Cli {
     opencode_bin: String,
 
     /// Disable OpenCode discovery on the host.
-    #[arg(long)]
+    #[arg(long, visible_alias = "no-opencode")]
     no_host_opencode: bool,
 
     /// GitHub Copilot CLI executable used for ACP session discovery.
@@ -309,7 +309,7 @@ struct Cli {
     copilot_bin: String,
 
     /// Disable GitHub Copilot discovery on the host.
-    #[arg(long)]
+    #[arg(long, visible_alias = "no-copilot")]
     no_host_copilot: bool,
 
     /// Cursor agent executable used to open known managed sessions.
@@ -326,7 +326,7 @@ struct Cli {
     cursor_chats_dir: Option<PathBuf>,
 
     /// Disable Cursor session control on the host.
-    #[arg(long)]
+    #[arg(long, visible_alias = "no-cursor")]
     no_host_cursor: bool,
 
     /// Antigravity CLI executable used to open documented recent sessions.
@@ -334,7 +334,7 @@ struct Cli {
     antigravity_bin: String,
 
     /// Disable Antigravity discovery on the host.
-    #[arg(long)]
+    #[arg(long, visible_alias = "no-antigravity")]
     no_host_antigravity: bool,
 
     /// Mistral Vibe executable used for native launch and resume.
@@ -351,7 +351,7 @@ struct Cli {
     mistral_vibe_app_server_bin: String,
 
     /// Disable Mistral Vibe discovery and control on the host.
-    #[arg(long)]
+    #[arg(long, visible_alias = "no-mistral-vibe")]
     no_host_mistral_vibe: bool,
 
     /// Muse Code executable used for native launch and resume.
@@ -359,7 +359,7 @@ struct Cli {
     muse_bin: String,
 
     /// Disable Muse Code discovery and control on the host.
-    #[arg(long)]
+    #[arg(long, visible_alias = "no-muse")]
     no_host_muse: bool,
 
     /// Qwen Code executable used for discovery, native launch, and resume.
@@ -367,7 +367,7 @@ struct Cli {
     qwen_bin: String,
 
     /// Disable Qwen Code discovery and control on the host.
-    #[arg(long)]
+    #[arg(long, visible_alias = "no-qwen")]
     no_host_qwen: bool,
 
     /// Kimi Code executable used for native launch and resume.
@@ -375,7 +375,7 @@ struct Cli {
     kimi_bin: String,
 
     /// Disable Kimi Code discovery and control on the host.
-    #[arg(long)]
+    #[arg(long, visible_alias = "no-kimi")]
     no_host_kimi: bool,
 
     /// Oh My Pi executable used for native discovery, launch, and resume.
@@ -383,7 +383,7 @@ struct Cli {
     omp_bin: String,
 
     /// Disable Oh My Pi discovery and control on the host.
-    #[arg(long)]
+    #[arg(long, visible_alias = "no-omp")]
     no_host_omp: bool,
 
     /// Grok executable used for native discovery, launch, and resume.
@@ -391,7 +391,7 @@ struct Cli {
     grok_bin: String,
 
     /// Disable Grok discovery and control on the host.
-    #[arg(long)]
+    #[arg(long, visible_alias = "no-grok")]
     no_host_grok: bool,
 
     /// Kilo Code executable used for discovery, native launch, and resume.
@@ -399,7 +399,7 @@ struct Cli {
     kilo_bin: String,
 
     /// Disable Kilo Code discovery and control on the host.
-    #[arg(long)]
+    #[arg(long, visible_alias = "no-kilo")]
     no_host_kilo: bool,
 
     /// OpenHands executable used for native discovery, launch, and resume.
@@ -407,7 +407,7 @@ struct Cli {
     openhands_bin: String,
 
     /// Disable OpenHands discovery and control on the host.
-    #[arg(long)]
+    #[arg(long, visible_alias = "no-openhands")]
     no_host_openhands: bool,
 
     /// Hermes Agent executable used for native launch and resume.
@@ -415,7 +415,7 @@ struct Cli {
     hermes_bin: String,
 
     /// Disable Hermes Agent discovery and control on the host.
-    #[arg(long)]
+    #[arg(long, visible_alias = "no-hermes")]
     no_host_hermes: bool,
 
     /// MastraCode executable used for native launch and resume.
@@ -423,7 +423,7 @@ struct Cli {
     mastracode_bin: String,
 
     /// Disable MastraCode discovery and control on the host.
-    #[arg(long)]
+    #[arg(long, visible_alias = "no-mastracode")]
     no_host_mastracode: bool,
 
     /// Devin executable used for native launch and resume.
@@ -431,7 +431,7 @@ struct Cli {
     devin_bin: String,
 
     /// Disable Devin discovery and control on the host.
-    #[arg(long)]
+    #[arg(long, visible_alias = "no-devin")]
     no_host_devin: bool,
 
     /// Explicitly observe Claude and Codex sessions in this running Docker container.
@@ -2634,6 +2634,51 @@ mod tests {
         ] {
             assert!(Cli::try_parse_from(arguments).is_err());
         }
+    }
+
+    #[test]
+    fn dashboard_cli_accepts_short_provider_disable_aliases() {
+        let cli = Cli::try_parse_from([
+            "agentview",
+            "--no-claude",
+            "--no-codex",
+            "--no-pi",
+            "--no-opencode",
+            "--no-copilot",
+            "--no-cursor",
+            "--no-antigravity",
+            "--no-mistral-vibe",
+            "--no-muse",
+            "--no-qwen",
+            "--no-kimi",
+            "--no-omp",
+            "--no-grok",
+            "--no-kilo",
+            "--no-openhands",
+            "--no-hermes",
+            "--no-mastracode",
+            "--no-devin",
+        ])
+        .unwrap();
+
+        assert!(cli.no_host_claude);
+        assert!(cli.no_host_codex);
+        assert!(cli.no_host_pi);
+        assert!(cli.no_host_opencode);
+        assert!(cli.no_host_copilot);
+        assert!(cli.no_host_cursor);
+        assert!(cli.no_host_antigravity);
+        assert!(cli.no_host_mistral_vibe);
+        assert!(cli.no_host_muse);
+        assert!(cli.no_host_qwen);
+        assert!(cli.no_host_kimi);
+        assert!(cli.no_host_omp);
+        assert!(cli.no_host_grok);
+        assert!(cli.no_host_kilo);
+        assert!(cli.no_host_openhands);
+        assert!(cli.no_host_hermes);
+        assert!(cli.no_host_mastracode);
+        assert!(cli.no_host_devin);
     }
 
     #[test]
