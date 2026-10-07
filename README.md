@@ -80,7 +80,7 @@ own interface.
 | --- | --- |
 | Move through sessions | `↑` / `↓` |
 | Open the selected session | `Enter` or `→` |
-| Return to agentview | `Shift+←`, or `←` twice at an empty prompt |
+| Return to agentview | `Shift+←`, or `←` twice at an empty prompt (once in Claude Code and OpenCode) |
 | Bring back a past session | `Ctrl+G` or `/hidden` |
 | Rename / filter | `Ctrl+R` / `Ctrl+F` |
 | New line in a task | `Shift+Enter`, `Ctrl+J`, or `\` then `Enter` |

@@ -1062,10 +1062,10 @@ fn contextual_footer(app: &App, width: u16) -> String {
             let session = app.selected_session().expect("selection checked");
             let peek = session_peek_suffix(session);
             let control = session_control_suffix(session);
-            let back = if width >= 110 {
-                " · back: ←/→ twice"
-            } else {
-                ""
+            let back = match (width >= 110, returns_on_one_left(session)) {
+                (false, _) => "",
+                (true, true) => " · back: ← on empty prompt",
+                (true, false) => " · back: ←/→ twice",
             };
             format!("enter to open{back}{peek}{control} · ? for shortcuts")
         }
@@ -1127,6 +1127,10 @@ fn session_peek_suffix(session: &AgentSession) -> &'static str {
     }
 }
 
+fn returns_on_one_left(session: &AgentSession) -> bool {
+    matches!(session.provider, Provider::Claude | Provider::OpenCode)
+}
+
 struct HelpSection {
     title: &'static str,
     entries: Vec<(&'static str, &'static str)>,
@@ -1155,7 +1159,11 @@ fn help_sections(app: &App) -> Vec<HelpSection> {
     }
     if let Some(session) = app.selected_session() {
         selected.push(("enter / →", "open session"));
-        selected.push(("← / → twice", "back, at the prompt edge"));
+        if returns_on_one_left(session) {
+            selected.push(("←", "back, from an empty prompt"));
+        } else {
+            selected.push(("← / → twice", "back, at the prompt edge"));
+        }
         selected.push(("shift+← / →", "back immediately"));
         if session.capabilities.contains(&Capability::Approve)
             || session.capabilities.contains(&Capability::Decline)
@@ -3310,17 +3318,20 @@ mod tests {
 
     #[test]
     fn session_row_explains_how_to_return_after_native_open() {
-        let app = App::new(SessionSnapshot {
-            sessions: vec![session("worker", SessionState::Working)],
-            warnings: vec![],
-        });
-        let backend = TestBackend::new(120, 30);
-        let mut terminal = Terminal::new(backend).unwrap();
+        let footer = |provider: Provider| {
+            let mut worker = session("worker", SessionState::Working);
+            worker.provider = provider;
+            let app = App::new(SessionSnapshot {
+                sessions: vec![worker],
+                warnings: vec![],
+            });
+            let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            buffer_text(terminal.backend().buffer())
+        };
 
-        terminal.draw(|frame| render(frame, &app)).unwrap();
-        let rendered = buffer_text(terminal.backend().buffer());
-
-        assert!(rendered.contains("enter to open · back: ←/→ twice"));
+        assert!(footer(Provider::Claude).contains("enter to open · back: ← on empty prompt"));
+        assert!(footer(Provider::Codex).contains("enter to open · back: ←/→ twice"));
     }
 
     #[test]
