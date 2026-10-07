@@ -1721,6 +1721,11 @@ fn handle_key(app: &mut App, key: KeyEvent) -> AppAction {
         };
     }
 
+    // Ghostty pastes text and copied files itself; it forwards Cmd+V as a key
+    // only when the clipboard holds nothing but image data.
+    if key.modifiers.contains(KeyModifiers::SUPER) && key.code == KeyCode::Char('v') {
+        return app.request_image_paste();
+    }
     if key.modifiers.contains(KeyModifiers::SUPER)
         && key.code == KeyCode::Char('p')
         && matches!(app.overlay, Overlay::None | Overlay::Peek)
@@ -2990,6 +2995,22 @@ mod tests {
         assert_eq!(app.overlay, Overlay::DirectoryPicker);
         handle_key(&mut app, key(KeyCode::Esc));
         assert_eq!(app.overlay, Overlay::Composer(ComposerMode::NewSession));
+        assert_eq!(app.input, "x");
+    }
+
+    #[test]
+    fn super_v_asks_for_the_clipboard_image_instead_of_typing_v() {
+        let mut app = app();
+        app.start_new_session(None);
+        handle_key(&mut app, key(KeyCode::Char('x')));
+
+        assert_eq!(
+            handle_key(
+                &mut app,
+                modified_key(KeyCode::Char('v'), KeyModifiers::SUPER)
+            ),
+            AppAction::PasteImage
+        );
         assert_eq!(app.input, "x");
     }
 
