@@ -84,6 +84,13 @@ the input thread. If typing or arrows remain slow on a release containing these
 fixes, capture the provider count, `--all`/`--include-external`/`--include-interactive` flags,
 terminal/tmux context, and an isolated real-PTY reproduction.
 
+To see where the time goes, start the dashboard with
+`AGENTVIEW_PERF_LOG=/tmp/av.log agentview ...` and reproduce the lag. The log
+has each provider's discovery time per refresh, open and preview timings, and
+OpenCode database queries; see [Timing log](cli.md#timing-log). OpenCode
+history is read from its database file directly, so a refresh should not
+start `opencode` at all; `opencode-db cli` lines name the reason when it did.
+
 For exact agentview-owned completed Codex threads, preview bounded provider-native
 archiving before changing anything:
 
