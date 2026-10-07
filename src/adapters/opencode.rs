@@ -1089,13 +1089,17 @@ impl OpenCodeSource {
             .as_ref()
             .map(|ownership| ownership.session_ids())
             .unwrap_or_default();
+        let mut server_run = BTreeSet::new();
         if let Some(supervisor) = self
             .supervisor
             .as_ref()
             .filter(|_| self.runtime == Runtime::Host)
         {
             match supervisor.recorded_session_ids() {
-                Ok(ids) => owned.extend(ids),
+                Ok(ids) => {
+                    owned.extend(ids.iter().cloned());
+                    server_run = ids.into_iter().collect();
+                }
                 Err(error) => warnings.push(format!("OpenCode managed sessions: {error:#}")),
             }
         }
@@ -1130,7 +1134,7 @@ impl OpenCodeSource {
                 };
                 let records = self.query(&scope)?;
                 let unfinished = unfinished_directories(&records);
-                let mut history = self.normalize_with_live_state(records, &holders);
+                let mut history = self.normalize_with_live_state(records, &holders, &server_run);
                 if let Some(supervisor) = server.filter(|_| server_live && !unfinished.is_empty()) {
                     match supervisor.server_activity(&unfinished) {
                         Ok(activity) => apply_server_activity(&mut history, &activity, &owned),
@@ -1256,10 +1260,14 @@ impl OpenCodeSource {
         Ok(records)
     }
 
+    /// `server_run` are sessions the managed server runs and reports on
+    /// itself; they claim no process, so a headless `opencode run` in the
+    /// same directory stays with the session it runs.
     fn normalize_with_live_state(
         &self,
         records: Vec<OpenCodeRecord>,
         holders: &[Holder],
+        server_run: &BTreeSet<String>,
     ) -> Vec<AgentSession> {
         let assigned = if holders.is_empty() {
             BTreeMap::new()
@@ -1267,6 +1275,7 @@ impl OpenCodeSource {
             let now = opencode_live::now_ms();
             let candidates = records
                 .iter()
+                .filter(|record| !server_run.contains(&record.id))
                 .map(|record| Candidate {
                     id: &record.id,
                     directory: &record.directory,
@@ -2234,6 +2243,49 @@ mod tests {
         assert_eq!(sessions[0].state, SessionState::Working);
         assert_eq!(sessions[0].pid, Some(42));
         assert_eq!(sessions[0].raw_state.as_deref(), Some("running turn"));
+    }
+
+    #[test]
+    fn a_headless_run_stays_with_its_session_beside_server_run_sessions() {
+        let now = opencode_live::now_ms();
+        let row = |id: &str, created: u64, updated: u64| {
+            format!(
+                "{{\"id\":\"{id}\",\"title\":\"{id}\",\"updated\":{updated},\"created\":{created},\"projectId\":\"global\",\"directory\":\"/work\",\"last\":{{\"role\":\"assistant\",\"created\":{updated},\"completed\":null,\"question\":0}}}}"
+            )
+        };
+        let records = parse_opencode_db_records(&format!(
+            "record\n{}\n{}\n",
+            row("ses_run", now - 60_000, now - 30_000),
+            row("ses_server", now - 3_600_000, now - 1_000),
+        ))
+        .unwrap();
+        let source = restorable_source(Arc::new(QueryRunner {
+            answers: vec![],
+            seen: Mutex::new(Vec::new()),
+        }));
+        let headless = Holder {
+            pid: 42,
+            started_ms: now - 61_000,
+            target: opencode_live::Target::Directory(Some("/work".into())),
+        };
+
+        let sessions = source.normalize_with_live_state(
+            records,
+            &[headless],
+            &BTreeSet::from(["ses_server".to_owned()]),
+        );
+
+        let run = sessions
+            .iter()
+            .find(|session| session.provider_session_id == "ses_run")
+            .unwrap();
+        assert_eq!(run.state, SessionState::Working);
+        assert_eq!(run.pid, Some(42));
+        let server = sessions
+            .iter()
+            .find(|session| session.provider_session_id == "ses_server")
+            .unwrap();
+        assert_eq!(server.pid, None);
     }
 
     /// Answers each `opencode db` query by a substring of its SQL, since the
