@@ -375,19 +375,19 @@ impl ProviderController for OpenCodeController {
         if let Some(outcome) = self.open_in_shared_client(session)? {
             return Ok(outcome);
         }
+        let cwd = openable_dir(&session.cwd);
         let command = if self.owned_session(session)?.is_some() {
             self.supervisor
                 .as_ref()
                 .context("managed OpenCode control is not configured")?
                 .native_attach_command(&session.provider_session_id)?
-        } else if let Some(supervisor) = self.supervisor.as_ref().filter(|_| session.cwd.is_dir()) {
-            supervisor
-                .native_attach_command_for_external(&session.provider_session_id, &session.cwd)?
+        } else if let Some(supervisor) = self.supervisor.as_ref().filter(|_| cwd.is_dir()) {
+            supervisor.native_attach_command_for_external(&session.provider_session_id, &cwd)?
         } else {
             let mut command = Command::new(&self.executable);
             command
                 .args(["--session", &session.provider_session_id])
-                .current_dir(&session.cwd);
+                .current_dir(&cwd);
             command
         };
         let exit = crate::native_session::run(command, &session.id)?;
@@ -396,6 +396,16 @@ impl ProviderController for OpenCodeController {
         }
         native_outcome(exit, &session.provider_session_id, &session.name)
     }
+}
+
+/// `cwd`, or its nearest existing ancestor once the directory is gone (a
+/// removed worktree). OpenCode keys projects by the repository's root commit,
+/// so the parent checkout still finds the session.
+fn openable_dir(cwd: &Path) -> PathBuf {
+    cwd.ancestors()
+        .find(|dir| dir.is_dir())
+        .unwrap_or(cwd)
+        .to_path_buf()
 }
 
 fn native_outcome(
@@ -577,9 +587,11 @@ impl OpenCodeController {
             return self.show_shared_client(&key, None, session).map(Some);
         }
         drop(gate);
-        let cwd = supervisor
-            .owned_session_cwd(&session.provider_session_id)?
-            .unwrap_or_else(|| session.cwd.clone());
+        let cwd = openable_dir(
+            &supervisor
+                .owned_session_cwd(&session.provider_session_id)?
+                .unwrap_or_else(|| session.cwd.clone()),
+        );
         if !cwd.is_dir() {
             return Ok(None);
         }
@@ -719,9 +731,11 @@ impl OpenCodeController {
         let Some((server_pid, reach)) = supervisor.known_client_reach() else {
             return Ok(());
         };
-        let cwd = supervisor
-            .owned_session_cwd(&session.provider_session_id)?
-            .unwrap_or_else(|| session.cwd.clone());
+        let cwd = openable_dir(
+            &supervisor
+                .owned_session_cwd(&session.provider_session_id)?
+                .unwrap_or_else(|| session.cwd.clone()),
+        );
         if reach == SharedClientReach::None
             || !crate::holds::process_alive(server_pid)
             || !cwd.is_dir()
@@ -1949,6 +1963,14 @@ mod tests {
             assert_eq!(request, &self.expected);
             Ok(self.output.lock().unwrap().take().unwrap())
         }
+    }
+
+    #[test]
+    fn a_session_whose_worktree_was_removed_opens_from_the_parent_checkout() {
+        let directory = tempfile::tempdir().unwrap();
+        let removed = directory.path().join(".claude/worktrees/gone");
+        assert_eq!(openable_dir(&removed), directory.path());
+        assert_eq!(openable_dir(directory.path()), directory.path());
     }
 
     #[test]
