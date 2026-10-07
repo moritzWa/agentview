@@ -2013,15 +2013,26 @@ impl App {
         };
         let still_listed_session =
             |key: &&SelectionKey| matches!(key, SelectionKey::Session(_)) && keys.contains(key);
-        let neighbour = previous_keys[position + 1..]
+        let is_group = |key: &SelectionKey| matches!(key, SelectionKey::Group(_));
+        let group_start = previous_keys[..position]
+            .iter()
+            .rposition(is_group)
+            .map_or(0, |index| index + 1);
+        let group_end = previous_keys[position + 1..]
+            .iter()
+            .position(is_group)
+            .map_or(previous_keys.len(), |index| position + 1 + index);
+        let (before, after) = (&previous_keys[..position], &previous_keys[position + 1..]);
+        let (before_in_group, after_in_group) = (
+            &previous_keys[group_start..position],
+            &previous_keys[position + 1..group_end],
+        );
+        let neighbour = after_in_group
             .iter()
             .find(still_listed_session)
-            .or_else(|| {
-                previous_keys[..position]
-                    .iter()
-                    .rev()
-                    .find(still_listed_session)
-            })
+            .or_else(|| before_in_group.iter().rev().find(still_listed_session))
+            .or_else(|| after.iter().find(still_listed_session))
+            .or_else(|| before.iter().rev().find(still_listed_session))
             .cloned();
         match neighbour {
             Some(key) => self.selection = Some(key),
@@ -3452,9 +3463,13 @@ mod tests {
         remove_session(&mut app, "done-c");
         assert_eq!(app.selection, Some(SelectionKey::Session("done-a".into())));
 
-        // Last row of its group: the next group's first row is the neighbour.
+        // Last row of its group: stay in the group on the row above it.
         app.selection = Some(SelectionKey::Session("needs-b".into()));
         remove_session(&mut app, "needs-b");
+        assert_eq!(app.selection, Some(SelectionKey::Session("needs-a".into())));
+
+        // Only row of its group: the next group's first row is the neighbour.
+        remove_session(&mut app, "needs-a");
         assert_eq!(app.selection, Some(SelectionKey::Session("done-a".into())));
     }
 
