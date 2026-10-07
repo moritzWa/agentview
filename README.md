@@ -66,6 +66,8 @@ own interface.
   forward it, like Ghostty and kitty). Multi-line tasks and pastes
   stay one draft. A long paste shows as `[Pasted ~12 lines]` and `Ctrl+V`
   attaches a clipboard image as `[Image #1]`.
+- **Select text in the draft** with `Shift+←` / `→`, a word at a time with
+  `Option+Shift`, as in OpenCode. Typing replaces the selection.
 - **Move a session to another folder** with `Ctrl+M` (`Cmd+M` where the
   terminal forwards it), or **migrate it** to another harness with `/migrate`,
   both via [session-migrate](https://session-migrate.github.io/).
