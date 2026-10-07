@@ -514,6 +514,7 @@ label.
 | Session list | `tab`, `/`, or printable text | Compose a new host task. `/` begins a dashboard command rather than a filter. |
 | New-task composer | `shift+enter`, `ctrl+enter`, `alt+enter`, `ctrl+j`, or `\` then `enter` | Add a line without submitting; pasted text keeps its lines. A `\` right before the cursor is replaced by the line break, as in Claude Code, for terminals that report `shift+enter` as plain `enter`. `enter` submits the whole draft. |
 | New-task composer | `←` / `→`, `↑` / `↓`, `home` / `end`, `alt+←` / `alt+→`, `ctrl+a` / `ctrl+e` | Move the cursor through the draft by character, line, or word; typing, `backspace`, and `delete` edit at the cursor. |
+| New-task composer | `shift` with any of those, e.g. `shift+←` / `shift+→`, `option+shift+←` / `option+shift+→`, `cmd+shift+←` / `cmd+shift+→` | Select by character, word, or to the line edge, growing the selection on each press, as in OpenCode. Typing, pasting, `backspace`, or `delete` replaces the selection; a plain arrow collapses it. |
 | New-task composer | `tab` | Open the visible harness picker. |
 | New-task composer | `shift+tab` | Open the selected harness's model picker—or Terminal shell picker—without changing the task draft. |
 | Harness picker | `↑` / `↓`, `←` / `→`, or `tab` / `shift+tab` | Preview configured launch-capable harnesses with wraparound. |
