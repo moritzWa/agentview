@@ -71,6 +71,10 @@ own interface.
   both via [session-migrate](https://session-migrate.github.io/).
 - **OpenCode sessions outlive the dashboard**, and Cursor chats show live state
   on every platform.
+- **Fast with big histories.** Refreshes run in the background, so typing and
+  arrows never wait on a harness. Where a harness's own CLI is slow to start,
+  agentview reads its data directly instead: an OpenCode refresh over a 17 GB
+  history takes about 0.1 s, and Cursor about 3 ms.
 - **Light and dark themes** that follow the terminal and the OS. Force one with
   `--theme`.
 - **`Ctrl+X` twice** stops and hides or deletes a session, no dialog.
