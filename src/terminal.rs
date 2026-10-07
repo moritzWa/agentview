@@ -313,6 +313,7 @@ pub fn run_dashboard(
     let mut launching_provider: Option<Provider> = None;
     let mut latest_migration_sequence = 0u64;
     let mut migrating_target: Option<Provider> = None;
+    let mut migrating_move = false;
     let mut launch_animation_tick = 0usize;
     let mut next_launch_animation = Instant::now();
     let mut next_live_animation = Instant::now() + LIVE_SESSION_ANIMATION_INTERVAL;
@@ -492,6 +493,15 @@ pub fn run_dashboard(
                                             &completed.request.name,
                                         );
                                         match alias_result {
+                                            Ok(_) if completed.request.is_move() => {
+                                                let notice = remove_moved_source(
+                                                    &mut app,
+                                                    control,
+                                                    &hidden_sessions,
+                                                    &completed.request,
+                                                );
+                                                app.set_notice(notice);
+                                            }
                                             Ok(_) => app.set_notice(format!(
                                                 "migrated to {} as {}{}",
                                                 completed.request.target.label(),
@@ -579,16 +589,14 @@ pub fn run_dashboard(
                 .as_ref()
                 .or(migrating_target.as_ref())
                 .expect("checked above");
-            app.set_notice(format!(
-                "{} {} {}…",
-                LAUNCH_SPINNER[launch_animation_tick % LAUNCH_SPINNER.len()],
-                if migrating_target.is_some() {
-                    "migrating to"
-                } else {
-                    "launching"
-                },
-                provider.label()
-            ));
+            let spinner = LAUNCH_SPINNER[launch_animation_tick % LAUNCH_SPINNER.len()];
+            app.set_notice(if migrating_target.is_none() {
+                format!("{spinner} launching {}…", provider.label())
+            } else if migrating_move {
+                format!("{spinner} moving session…")
+            } else {
+                format!("{spinner} migrating to {}…", provider.label())
+            });
             launch_animation_tick = launch_animation_tick.wrapping_add(1);
             next_launch_animation = Instant::now() + LAUNCH_ANIMATION_INTERVAL;
             needs_draw = true;
@@ -863,6 +871,7 @@ pub fn run_dashboard(
                                 session_id,
                                 target,
                                 name,
+                                cwd,
                             } => {
                                 if migrating_target.is_some() {
                                     app.set_notice("one session migration is already running");
@@ -885,9 +894,15 @@ pub fn run_dashboard(
                                 latest_migration_sequence =
                                     latest_migration_sequence.wrapping_add(1);
                                 migrating_target = Some(target.clone());
+                                migrating_move = target == source.provider;
                                 launch_animation_tick = 0;
                                 next_launch_animation = Instant::now();
-                                app.set_notice(format!("migrating to {}…", target.label()));
+                                app.set_notice(if migrating_move {
+                                    "moving session…".into()
+                                } else {
+                                    format!("migrating to {}…", target.label())
+                                });
+                                let cwd = cwd.unwrap_or_else(|| source.cwd.clone());
                                 schedule_migration(
                                     migration_client.clone(),
                                     latest_migration_sequence,
@@ -895,6 +910,7 @@ pub fn run_dashboard(
                                         source,
                                         target,
                                         name,
+                                        cwd,
                                     },
                                     migration_tx.clone(),
                                 );
@@ -1352,6 +1368,38 @@ fn looks_like_authentication_error(error: &str) -> bool {
         || error.contains("not logged in")
 }
 
+/// Delete the original of a finished move, or hide it when its harness
+/// cannot delete, so the session shows only in its new folder.
+fn remove_moved_source(
+    app: &mut App,
+    control: &ControlHub,
+    hidden_sessions: &HiddenSessions,
+    request: &MigrationRequest,
+) -> String {
+    let source = &request.source;
+    let destination = request.cwd.display();
+    if source.capabilities.contains(&Capability::Delete) {
+        return match control.delete(source) {
+            Ok(_) => format!("moved {} to {destination}", request.name),
+            Err(error) => format!(
+                "moved {} to {destination}, but the original could not be deleted: {error:#}",
+                request.name
+            ),
+        };
+    }
+    match hide_sessions_from_app(app, hidden_sessions, std::slice::from_ref(&source.id)) {
+        Ok(_) => format!(
+            "moved {} to {destination}; {} cannot delete the original, so it is hidden · ctrl+g to restore",
+            request.name,
+            source.provider.label()
+        ),
+        Err(error) => format!(
+            "moved {} to {destination}, but the original could not be hidden: {error:#}",
+            request.name
+        ),
+    }
+}
+
 fn hide_sessions_from_app(
     app: &mut App,
     hidden_sessions: &HiddenSessions,
@@ -1598,7 +1646,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> AppAction {
                 AppAction::None
             }
             KeyCode::Char('m') if app.overlay == Overlay::None => {
-                app.start_migration();
+                app.start_move();
                 AppAction::None
             }
             KeyCode::Char('r') if app.overlay == Overlay::ModelPicker => {
@@ -1688,6 +1736,13 @@ fn handle_key(app: &mut App, key: KeyEvent) -> AppAction {
             Overlay::DirectoryPicker => app.escape(),
             _ => AppAction::None,
         };
+    }
+    if key.modifiers.contains(KeyModifiers::SUPER)
+        && key.code == KeyCode::Char('m')
+        && app.overlay == Overlay::None
+    {
+        app.start_move();
+        return AppAction::None;
     }
     if key.modifiers.contains(KeyModifiers::SUPER) && key.code == KeyCode::Backspace {
         app.delete_to_line_start();
@@ -3085,10 +3140,37 @@ mod tests {
     }
 
     #[test]
-    fn control_m_opens_the_two_step_migration_flow_without_replacing_enter() {
-        let mut dashboard = app();
+    fn control_m_and_command_m_open_the_move_picker_without_replacing_enter() {
+        for shortcut in [
+            control_key('m'),
+            modified_key(KeyCode::Char('m'), KeyModifiers::SUPER),
+        ] {
+            let mut dashboard = app();
+            dashboard.snapshot.sessions[0].state = SessionState::Completed;
+            assert_eq!(handle_key(&mut dashboard, shortcut), AppAction::None);
+            assert_eq!(dashboard.overlay, Overlay::DirectoryPicker);
+            assert_eq!(dashboard.moving_session.as_deref(), Some("worker"));
+            handle_key(&mut dashboard, key(KeyCode::Esc));
+            assert_eq!(dashboard.overlay, Overlay::None);
+            assert_eq!(dashboard.moving_session, None);
+        }
+
+        let mut normal_enter = app();
         assert_eq!(
-            handle_key(&mut dashboard, control_key('m')),
+            handle_key(&mut normal_enter, key(KeyCode::Enter)),
+            AppAction::Open {
+                session_id: "worker".into()
+            }
+        );
+    }
+
+    #[test]
+    fn migrate_command_opens_the_two_step_migration_flow() {
+        let mut dashboard = app();
+        dashboard.start_new_session(None);
+        dashboard.input = "/migrate".into();
+        assert_eq!(
+            handle_key(&mut dashboard, key(KeyCode::Enter)),
             AppAction::None
         );
         assert_eq!(
@@ -3113,14 +3195,7 @@ mod tests {
                 session_id: "worker".into(),
                 target: Provider::Grok,
                 name: "worker port".into(),
-            }
-        );
-
-        let mut normal_enter = app();
-        assert_eq!(
-            handle_key(&mut normal_enter, key(KeyCode::Enter)),
-            AppAction::Open {
-                session_id: "worker".into()
+                cwd: None,
             }
         );
     }

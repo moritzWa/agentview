@@ -569,7 +569,89 @@ fn working_session_marker_blinks_in_a_real_terminal() {
 }
 
 #[test]
-fn ctrl_m_migrates_through_the_real_tui_and_keeps_enter_distinct() {
+fn ctrl_m_moves_through_the_real_tui_and_keeps_enter_distinct() {
+    let _serial = serialize_real_tty_test();
+    let mut app = PtyApp::spawn_configured(110, 32, |command, home| {
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures")
+            .join("populated-sessions.json");
+        let migrator = home.path().join("session-migrate");
+        let args_log = home.path().join("migration-args.txt");
+        fs::create_dir(home.path().join("right-folder")).expect("create move target");
+        fs::write(
+            &migrator,
+            r#"#!/bin/sh
+printf '%s\n' "$@" > "$AGENTVIEW_MIGRATION_ARGS"
+printf '%s\n' '{"session_id":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","target_format":"codex","warnings":[]}'
+"#,
+        )
+        .expect("write fake session-migrate");
+        fs::set_permissions(&migrator, fs::Permissions::from_mode(0o755))
+            .expect("make fake session-migrate executable");
+        // The move target lives under the test's temp HOME.
+        command.env("AGENTVIEW_MIGRATION_ARGS", &args_log).args([
+            "--include-temp",
+            "--fixture",
+            fixture.to_str().expect("UTF-8 fixture path"),
+            "--all",
+            "--include-interactive",
+            "--session-migrate-bin",
+            migrator.to_str().expect("UTF-8 migrator path"),
+            "--refresh-ms",
+            "60000",
+        ]);
+    });
+    let target = app
+        .home_path()
+        .join("right-folder")
+        .canonicalize()
+        .expect("canonical move target");
+
+    app.wait_for("source dashboard", |screen| {
+        screen.contains("approval-needed") && screen.contains("Needs input")
+    });
+    app.send(CTRL_F);
+    app.send(b"approval-needed");
+    app.send(ENTER);
+    app.wait_for("selected host source row", |screen| {
+        screen.contains("approval-needed") && !screen.contains("release-reviewer")
+    });
+    app.send(CTRL_M_ENHANCED);
+    app.wait_for("move folder picker", |screen| {
+        screen.contains("move session to folder")
+    });
+    app.send(target.to_str().expect("UTF-8 move target").as_bytes());
+    // Enter must choose the folder rather than being mistaken for another
+    // Ctrl+M after enhanced keyboard mode is enabled.
+    app.send(ENTER);
+    let moved = app.wait_for("moved row", |screen| {
+        screen.contains("moved approval-needed to")
+            && screen
+                .lines()
+                .any(|line| line.contains("approval-needed") && line.contains("Moved from"))
+    });
+    assert_lines_fit(&moved, 110);
+
+    let args = fs::read_to_string(app.home_path().join("migration-args.txt"))
+        .expect("read exact move argv");
+    assert_eq!(
+        args.lines().collect::<Vec<_>>(),
+        [
+            "transfer",
+            "thread-approval",
+            "--from",
+            "codex",
+            "--to",
+            "codex",
+            "--cwd",
+            target.to_str().expect("UTF-8 move target"),
+        ]
+    );
+    app.exit_cleanly();
+}
+
+#[test]
+fn migrate_command_migrates_through_the_real_tui() {
     let _serial = serialize_real_tty_test();
     let mut app = PtyApp::spawn_configured(110, 32, |command, home| {
         let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -608,7 +690,8 @@ printf '%s\n' '{"session_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","target_form
     app.wait_for("selected host source row", |screen| {
         screen.contains("approval-needed") && !screen.contains("release-reviewer")
     });
-    app.send(CTRL_M_ENHANCED);
+    app.send(b"/migrate");
+    app.send(ENTER);
     let picker = app.wait_for("migration target picker", |screen| {
         screen.contains("migrate session · target 1/17")
             && screen.contains("from  Codex")
@@ -616,8 +699,6 @@ printf '%s\n' '{"session_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","target_form
     });
     assert_lines_fit(&picker, 110);
 
-    // Enter must choose the highlighted target rather than being mistaken for
-    // another Ctrl+M after enhanced keyboard mode is enabled.
     app.send(ENTER);
     app.wait_for("migration name composer", |screen| {
         screen.contains("migrate to Claude · choose local name")

@@ -442,7 +442,7 @@ struct Cli {
     #[arg(long, default_value = "docker", value_name = "PATH", global = true)]
     docker_bin: String,
 
-    /// session-migrate executable used by the Ctrl+M migration workflow.
+    /// session-migrate executable used by Ctrl+M moves and /migrate.
     #[arg(
         long,
         default_value = "session-migrate",

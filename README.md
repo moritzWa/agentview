@@ -66,8 +66,9 @@ own interface.
   forward it, like Ghostty and kitty). Multi-line tasks and pastes
   stay one draft. A long paste shows as `[Pasted ~12 lines]` and `Ctrl+V`
   attaches a clipboard image as `[Image #1]`.
-- **Migrate a conversation** to another harness with `Ctrl+M`, via
-  [session-migrate](https://session-migrate.github.io/).
+- **Move a session to another folder** with `Ctrl+M` (`Cmd+M` where the
+  terminal forwards it), or **migrate it** to another harness with `/migrate`,
+  both via [session-migrate](https://session-migrate.github.io/).
 - **OpenCode sessions outlive the dashboard**, and Cursor chats show live state
   on every platform.
 - **Light and dark themes** that follow the terminal and the OS. Force one with

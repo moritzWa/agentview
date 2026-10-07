@@ -30,6 +30,15 @@ pub struct MigrationRequest {
     pub source: AgentSession,
     pub target: Provider,
     pub name: String,
+    /// Working directory of the imported session. A move keeps the harness
+    /// and changes only this.
+    pub cwd: PathBuf,
+}
+
+impl MigrationRequest {
+    pub fn is_move(&self) -> bool {
+        self.source.provider == self.target
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -74,8 +83,8 @@ impl MigrationClient {
             .context("the selected session's harness is not supported by session-migrate")?;
         let target_format = provider_format(&request.target)
             .context("the selected target harness is not supported by session-migrate")?;
-        if request.source.provider == request.target {
-            bail!("source and target harness must be different");
+        if request.is_move() && request.source.cwd == request.cwd {
+            bail!("the session is already in {}", request.cwd.display());
         }
         validate_text(&request.source.provider_session_id, "source session ID")?;
         validate_name(&request.name)?;
@@ -88,7 +97,7 @@ impl MigrationClient {
             "--to".into(),
             target_format.into(),
             "--cwd".into(),
-            request.source.cwd.to_string_lossy().into_owned(),
+            request.cwd.to_string_lossy().into_owned(),
         ];
         if supports_source_cwd(&request.source.provider) {
             args.push("--source-cwd".into());
@@ -311,7 +320,7 @@ impl MigrationRegistry {
             source_provider: request.source.provider.clone(),
             source_session_id: request.source.provider_session_id.clone(),
             name: request.name.trim().to_owned(),
-            cwd: request.source.cwd.clone(),
+            cwd: request.cwd.clone(),
             migrated_at_ms: now_millis(),
         };
         validate_record(&record)?;
@@ -377,7 +386,11 @@ fn record_to_session(record: &MigrationRecord) -> AgentSession {
         name: record.name.clone(),
         cwd: record.cwd.clone(),
         state: SessionState::Completed,
-        summary: format!("Migrated from {}", record.source_provider.label()),
+        summary: if record.source_provider == record.provider {
+            "Moved from another folder".into()
+        } else {
+            format!("Migrated from {}", record.source_provider.label())
+        },
         raw_state: Some("session-migrate import".into()),
         pid: None,
         started_at: Some(migrated_at),
@@ -677,6 +690,7 @@ mod tests {
                 source: source(Provider::Claude),
                 target: Provider::Codex,
                 name: "source (Codex)".into(),
+                cwd: "/work/project".into(),
             })
             .unwrap();
         assert_eq!(outcome.normalized_id, "codex:host:target-id");
@@ -722,6 +736,7 @@ mod tests {
                 source: source(Provider::Claude),
                 target: Provider::Codex,
                 name: "copy".into(),
+                cwd: "/work/project".into(),
             })
             .unwrap();
         assert_eq!(
@@ -743,6 +758,7 @@ mod tests {
                 source: source(Provider::Claude),
                 target: Provider::Codex,
                 name: "copy".into(),
+                cwd: "/work/project".into(),
             })
             .unwrap_err()
             .to_string();
@@ -759,6 +775,7 @@ mod tests {
                 source: source(Provider::OpenCode),
                 target: Provider::Codex,
                 name: "copy".into(),
+                cwd: "/work/project".into(),
             })
             .unwrap();
         assert!(!runner.requests.lock().unwrap()[0]
@@ -779,6 +796,7 @@ mod tests {
                 source: source(Provider::Grok),
                 target: Provider::Codex,
                 name: "copy".into(),
+                cwd: "/work/project".into(),
             })
             .unwrap();
         assert!(runner.requests.lock().unwrap()[0]
@@ -800,6 +818,7 @@ mod tests {
                 source: source(Provider::Claude),
                 target: Provider::Codex,
                 name: "copy".into(),
+                cwd: "/work/project".into(),
             })
             .unwrap_err()
             .to_string();
@@ -818,6 +837,7 @@ mod tests {
             source: source(Provider::Claude),
             target: Provider::Codex,
             name: "copy".into(),
+            cwd: "/work/project".into(),
         };
         assert!(MigrationClient::with_runner("session-migrate", invalid)
             .migrate(&request)
@@ -839,18 +859,44 @@ mod tests {
     }
 
     #[test]
-    fn same_harness_is_rejected_before_starting_the_cli() {
+    fn same_harness_in_the_same_folder_is_rejected_before_starting_the_cli() {
         let runner = Arc::new(FakeRunner::default());
         let error = MigrationClient::with_runner("session-migrate", runner.clone())
             .migrate(&MigrationRequest {
                 source: source(Provider::Codex),
                 target: Provider::Codex,
                 name: "copy".into(),
+                cwd: "/work/project".into(),
             })
             .unwrap_err()
             .to_string();
-        assert_eq!(error, "source and target harness must be different");
+        assert_eq!(error, "the session is already in /work/project");
         assert!(runner.requests.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn move_passes_the_new_folder_as_cwd_and_the_old_one_as_source_cwd() {
+        let runner = Arc::new(FakeRunner::default());
+        *runner.output.lock().unwrap() = Some(Ok(CommandOutput {
+            status: 0,
+            stdout: br#"{"session_id":"new-id","target_format":"claude"}"#.to_vec(),
+            stderr: Vec::new(),
+        }));
+        let request = MigrationRequest {
+            source: source(Provider::Claude),
+            target: Provider::Claude,
+            name: "source".into(),
+            cwd: "/work/other".into(),
+        };
+        assert!(request.is_move());
+        MigrationClient::with_runner("session-migrate", runner.clone())
+            .migrate(&request)
+            .unwrap();
+        let args = runner.requests.lock().unwrap()[0].args.clone();
+        assert!(args.windows(2).any(|pair| pair == ["--cwd", "/work/other"]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["--source-cwd", "/work/project"]));
     }
 
     #[test]
@@ -861,6 +907,7 @@ mod tests {
             source: source(Provider::Claude),
             target: Provider::Codex,
             name: "source (Codex)".into(),
+            cwd: "/work/project".into(),
         };
         registry
             .record(
@@ -900,6 +947,7 @@ mod tests {
             source: source(Provider::Claude),
             target: Provider::Codex,
             name: "x".repeat(MAX_NAME_BYTES + 1),
+            cwd: "/work/project".into(),
         };
         assert!(registry
             .record(

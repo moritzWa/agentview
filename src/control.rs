@@ -2929,6 +2929,7 @@ exit 0
         registry
             .record(
                 &MigrationRequest {
+                    cwd: source_session.cwd.clone(),
                     source: source_session,
                     target: Provider::Claude,
                     name: "source (Claude)".into(),

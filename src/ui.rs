@@ -1142,6 +1142,12 @@ const FOLDER_PICKER_KEYS: &str = if cfg!(target_os = "macos") {
     "ctrl+o"
 };
 
+const MOVE_KEYS: &str = if cfg!(target_os = "macos") {
+    "ctrl+m / cmd+m"
+} else {
+    "ctrl+m"
+};
+
 fn help_sections(app: &App) -> Vec<HelpSection> {
     let mut sections = vec![HelpSection {
         title: "dashboard",
@@ -1203,7 +1209,7 @@ fn help_sections(app: &App) -> Vec<HelpSection> {
         if session.runtime == crate::domain::Runtime::Host
             && crate::migration::provider_format(&session.provider).is_some()
         {
-            selected.push(("ctrl+m", "migrate to another harness"));
+            selected.push((MOVE_KEYS, "move to another folder"));
         }
         selected.push(("option+↑ / ↓", "reorder within group"));
     } else if selected_group_can_delete(app) {
@@ -1236,6 +1242,7 @@ fn help_sections(app: &App) -> Vec<HelpSection> {
             ("/shell name", "pick Terminal shell"),
             ("/setup", "install or sign in"),
             ("/login", "open native setup"),
+            ("/migrate", "copy selected to another harness"),
         ],
     });
     sections
@@ -1742,10 +1749,12 @@ fn render_directory_picker(frame: &mut Frame<'_>, app: &App, area: Rect) {
         );
     }
     lines.push(
-        Line::from(if popup_width >= 60 {
-            " ↑/↓ move · PgUp/PgDn page · enter start a session here · esc close"
-        } else {
+        Line::from(if popup_width < 60 {
             " ↑/↓ · enter choose · esc"
+        } else if app.moving_session.is_some() {
+            " ↑/↓ move · PgUp/PgDn page · enter move the session here · esc close"
+        } else {
+            " ↑/↓ move · PgUp/PgDn page · enter start a session here · esc close"
         })
         .style(Style::default().fg(palette().dim)),
     );
@@ -1754,7 +1763,15 @@ fn render_directory_picker(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Paragraph::new(lines)
             .block(
                 Block::default()
-                    .title(format!(" new session folder · {} ", choices.len()))
+                    .title(format!(
+                        " {} · {} ",
+                        if app.moving_session.is_some() {
+                            "move session to folder"
+                        } else {
+                            "new session folder"
+                        },
+                        choices.len()
+                    ))
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(palette().accent)),
             )
@@ -2824,7 +2841,8 @@ mod tests {
         assert!(rendered.contains("shortcuts"));
         assert!(has_entry("ctrl+r", "rename"));
         assert!(has_entry("ctrl+t / ctrl+p", "pause"));
-        assert!(has_entry("ctrl+m", "migrate"));
+        assert!(has_entry(MOVE_KEYS, "move to another folder"));
+        assert!(has_entry("/migrate", "copy selected to another harness"));
         assert!(has_entry("ctrl+s", "switch view"));
         assert!(has_entry(FOLDER_PICKER_KEYS, "pick folder"));
         assert!(has_entry("/harness name", "switch harness"));

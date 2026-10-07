@@ -50,6 +50,7 @@ const DASHBOARD_COMMANDS: &[&str] = &[
     "/cd",
     "/completed",
     "/filter",
+    "/migrate",
 ];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -168,6 +169,8 @@ pub enum AppAction {
         session_id: String,
         target: Provider,
         name: String,
+        /// Folder of the imported session; `None` keeps the source folder.
+        cwd: Option<PathBuf>,
     },
     Interrupt {
         session_id: String,
@@ -239,6 +242,8 @@ pub struct App {
     pub directory_selection: usize,
     /// Escape returns to the new-task draft when the picker was opened from it.
     directory_picker_from_composer: bool,
+    /// Session the directory picker moves instead of starting a new one.
+    pub moving_session: Option<String>,
     /// Escape returns to the new-task draft when the restore picker was
     /// opened from it.
     hidden_picker_from_composer: bool,
@@ -342,6 +347,7 @@ impl App {
             directory_filter: String::new(),
             directory_selection: 0,
             directory_picker_from_composer: false,
+            moving_session: None,
             hidden_picker_from_composer: false,
             yolo: false,
             yolo_supported_providers: BTreeSet::new(),
@@ -694,10 +700,7 @@ impl App {
                 AppAction::None
             }
             Overlay::HiddenPicker => self.confirm_hidden_selection(),
-            Overlay::DirectoryPicker => {
-                self.confirm_directory_selection();
-                AppAction::None
-            }
+            Overlay::DirectoryPicker => self.confirm_directory_selection(),
             Overlay::Composer(mode) => self.submit_composer(mode),
             Overlay::Confirm(target) => self.confirm(target),
             Overlay::None => match self.selection.clone() {
@@ -2460,6 +2463,7 @@ impl App {
                 session_id,
                 target,
                 name: input,
+                cwd: None,
             },
             ComposerMode::Filter => {
                 self.set_filter(input);
@@ -2538,6 +2542,7 @@ impl App {
             // Alternative to ctrl+g, which multiplexers such as Zellij bind
             // to their own lock mode before agentview can see it.
             "/hidden" | "/restore" => return AppAction::BrowseHidden,
+            "/migrate" => self.start_migration(),
             "/filter" => {
                 self.set_filter(argument);
                 self.set_notice(if argument.is_empty() {
@@ -2600,8 +2605,35 @@ impl App {
         self.directory_selection = 0;
         self.directory_picker_from_composer =
             self.overlay == Overlay::Composer(ComposerMode::NewSession);
+        self.moving_session = None;
         self.notice = None;
         self.overlay = Overlay::DirectoryPicker;
+    }
+
+    /// Open the folder picker to move the selected session into another
+    /// folder with the same harness. The original is removed once the copy
+    /// exists, so a session in the middle of a turn has to stop first.
+    pub fn start_move(&mut self) {
+        let Some(session) = self.selected_session() else {
+            self.set_notice("select a session to move");
+            return;
+        };
+        if crate::migration::provider_format(&session.provider).is_none() {
+            let provider = session.provider.label().to_owned();
+            self.set_notice(format!("{provider} sessions cannot be moved"));
+            return;
+        }
+        if session.runtime != crate::domain::Runtime::Host {
+            self.set_notice("moving currently supports host sessions only");
+            return;
+        }
+        if session.state == SessionState::Working {
+            self.set_notice("stop the session before moving it");
+            return;
+        }
+        let session_id = session.id.clone();
+        self.open_directory_picker();
+        self.moving_session = Some(session_id);
     }
 
     /// Candidates matching the search. A typed absolute or `~` path that
@@ -2649,15 +2681,18 @@ impl App {
             .clamp(0, len.saturating_sub(1) as isize) as usize;
     }
 
-    fn confirm_directory_selection(&mut self) {
+    fn confirm_directory_selection(&mut self) -> AppAction {
         let Some(directory) = self
             .directory_choices()
             .get(self.directory_selection)
             .cloned()
         else {
-            return;
+            return AppAction::None;
         };
         let directory = directory.canonicalize().unwrap_or(directory);
+        if let Some(session_id) = self.moving_session.clone() {
+            return self.confirm_move(session_id, directory);
+        }
         let from_composer = self.directory_picker_from_composer;
         self.launch_directory_override = Some(directory);
         self.directory_filter.clear();
@@ -2668,6 +2703,28 @@ impl App {
         } else {
             self.start_new_session(None);
         }
+        AppAction::None
+    }
+
+    fn confirm_move(&mut self, session_id: String, directory: PathBuf) -> AppAction {
+        let Some(session) = self.session_by_id(&session_id) else {
+            self.close_directory_picker();
+            self.set_notice("the selected session disappeared during refresh");
+            return AppAction::None;
+        };
+        let current = session.cwd.canonicalize().unwrap_or(session.cwd.clone());
+        if current == directory {
+            self.set_notice("the session is already in that folder");
+            return AppAction::None;
+        }
+        let action = AppAction::Migrate {
+            session_id,
+            target: session.provider.clone(),
+            name: session.name.clone(),
+            cwd: Some(directory),
+        };
+        self.close_directory_picker();
+        action
     }
 
     fn close_directory_picker(&mut self) {
@@ -2678,6 +2735,7 @@ impl App {
         };
         self.directory_filter.clear();
         self.directory_candidates.clear();
+        self.moving_session = None;
         self.notice = None;
     }
 
@@ -4601,9 +4659,46 @@ mod tests {
                 session_id: "native-id".into(),
                 target: Provider::Codex,
                 name: "review API port".into(),
+                cwd: None,
             }
         );
         assert_eq!(app.overlay, Overlay::None);
+    }
+
+    #[test]
+    fn move_picks_a_folder_and_keeps_the_harness_and_name() {
+        let target = tempfile::tempdir().unwrap();
+        let target_path = target.path().canonicalize().unwrap();
+        let mut item = session("native-id", SessionState::Completed);
+        item.name = "review API".into();
+        item.provider = Provider::Claude;
+        let mut app = app_with(vec![item]);
+
+        app.start_move();
+        assert_eq!(app.overlay, Overlay::DirectoryPicker);
+        app.directory_filter = target_path.display().to_string();
+        assert_eq!(
+            app.activate(),
+            AppAction::Migrate {
+                session_id: "native-id".into(),
+                target: Provider::Claude,
+                name: "review API".into(),
+                cwd: Some(target_path),
+            }
+        );
+        assert_eq!(app.overlay, Overlay::None);
+        assert_eq!(app.moving_session, None);
+    }
+
+    #[test]
+    fn move_refuses_running_sessions() {
+        let mut app = app_with(vec![session("native-id", SessionState::Working)]);
+        app.start_move();
+        assert_eq!(app.overlay, Overlay::None);
+        assert_eq!(
+            app.notice.as_deref(),
+            Some("stop the session before moving it")
+        );
     }
 
     #[test]
