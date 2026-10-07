@@ -197,8 +197,14 @@ impl DiscoveryEngine {
                 let sender = sender.clone();
                 let label = source.label().to_owned();
                 scope.spawn(move || {
+                    let started = std::time::Instant::now();
                     let result =
                         catch_unwind(AssertUnwindSafe(|| source.discover_with_warnings(request)));
+                    crate::perf!(
+                        "discover-source",
+                        "source={label} took={}",
+                        crate::perf_log::ms(started.elapsed())
+                    );
                     let _ = sender.send((label, result));
                 });
             }

@@ -21,6 +21,7 @@ pub mod native_session;
 pub mod opencode_supervisor;
 pub mod order;
 pub mod paused;
+pub mod perf_log;
 pub mod pi_supervisor;
 pub mod process;
 pub mod terminal;

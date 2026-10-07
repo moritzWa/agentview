@@ -290,10 +290,16 @@ pub fn resume(session_key: &str) -> Result<NativeSessionExit> {
             bail!("resuming a native session requires an interactive terminal");
         }
         let session_key = &current_key(session_key);
+        let started = Instant::now();
         let detached =
             take_detached(session_key)?.context("the background terminal is no longer running")?;
         let (child, mut master, screen, warning) = detached.into_frontend()?;
         report_focus(&mut master, session_key, true);
+        crate::perf!(
+            "resume",
+            "key={session_key} handoff={}",
+            crate::perf_log::ms(started.elapsed())
+        );
         bridge_session(child, master, screen, session_key, false, None, warning)
     }
     #[cfg(not(unix))]
@@ -421,17 +427,40 @@ pub fn wait_for_background_title(
                 None => return false,
             }
         };
-        let deadline = Instant::now() + timeout;
+        let started = Instant::now();
+        let deadline = started + timeout;
+        let mut first_match: Option<Duration> = None;
+        let mut longest_quiet = Duration::ZERO;
         loop {
-            let ready = title
+            let (matched, quiet, shown) = title
                 .lock()
-                .map(|slot| matches(&slot.0) && slot.1.elapsed() >= settle)
-                .unwrap_or(false);
-            if ready {
-                return true;
+                .map(|slot| (matches(&slot.0), slot.1.elapsed(), slot.0.clone()))
+                .unwrap_or((false, Duration::ZERO, String::new()));
+            if matched {
+                first_match.get_or_insert(started.elapsed());
+                longest_quiet = longest_quiet.max(quiet);
             }
-            if Instant::now() >= deadline || !still_wanted() {
-                return false;
+            let outcome = if matched && quiet >= settle {
+                Some("drawn")
+            } else if !still_wanted() {
+                Some("superseded")
+            } else if Instant::now() >= deadline {
+                Some("timeout")
+            } else {
+                None
+            };
+            if let Some(outcome) = outcome {
+                if crate::perf_log::enabled() {
+                    crate::perf!(
+                        "title-wait",
+                        "key={session_key} outcome={outcome} elapsed={} first_match={} longest_quiet={} settle={} shown={shown:?}",
+                        crate::perf_log::ms(started.elapsed()),
+                        first_match.map_or_else(|| "never".into(), crate::perf_log::ms),
+                        crate::perf_log::ms(longest_quiet),
+                        crate::perf_log::ms(settle),
+                    );
+                }
+                return outcome == "drawn";
             }
             thread::sleep(Duration::from_millis(5));
         }
@@ -840,6 +869,10 @@ fn bridge_session(
     if !fresh {
         signal_group(child.id(), libc::SIGWINCH);
     }
+    let bridged_at = Instant::now();
+    crate::perf!("bridge-start", "key={session_key} fresh={fresh}");
+    let mut echo_wait: Option<Instant> = None;
+    let mut echo_samples = 0_u8;
     loop {
         let mut descriptors = [
             libc::pollfd {
@@ -869,6 +902,14 @@ fn bridge_session(
             }
         }
         if descriptors[0].revents & libc::POLLIN != 0 {
+            if let Some(sent) = echo_wait.take() {
+                crate::perf!(
+                    "echo",
+                    "key={session_key} latency={} since_bridge={}",
+                    crate::perf_log::ms(sent.elapsed()),
+                    crate::perf_log::ms(bridged_at.elapsed()),
+                );
+            }
             if redraw_restore_at.is_some() {
                 absorb_available(&mut master, &mut screen, &mut hidden_queries)?;
             } else {
@@ -898,6 +939,15 @@ fn bridge_session(
                     for action in parser.push(&input[..read as usize]) {
                         match action {
                             InputAction::Forward(bytes) => {
+                                if echo_wait.is_none() && echo_samples < 5 {
+                                    echo_samples += 1;
+                                    echo_wait = Some(Instant::now());
+                                    crate::perf!(
+                                        "input",
+                                        "key={session_key} since_bridge={}",
+                                        crate::perf_log::ms(bridged_at.elapsed()),
+                                    );
+                                }
                                 return_gesture.clear(&mut stdout, &screen)?;
                                 pending_input.write_all(&bytes)?;
                             }

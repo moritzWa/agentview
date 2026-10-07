@@ -513,7 +513,16 @@ fn wait_for_shared_client(
     timeout: Duration,
     still_wanted: &dyn Fn() -> bool,
 ) -> bool {
-    let Ok(title) = supervisor.session_title(&session.provider_session_id, cwd) else {
+    let started = std::time::Instant::now();
+    let title = supervisor.session_title(&session.provider_session_id, cwd);
+    crate::perf!(
+        "session-title",
+        "session={} took={} ok={}",
+        session.provider_session_id,
+        crate::perf_log::ms(started.elapsed()),
+        title.is_ok()
+    );
+    let Ok(title) = title else {
         return false;
     };
     crate::native_session::wait_for_background_title(
@@ -540,14 +549,23 @@ impl OpenCodeController {
         if crate::native_session::is_backgrounded(&session.id) {
             return Ok(None);
         }
+        let started = std::time::Instant::now();
         // Each server check below costs about 60 ms; a preview already made
         // them against a server that is still running.
         let gate = SHARED_CLIENT_GATE
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let gate_wait = started.elapsed();
         if let Some((key, server_pid)) = previewed_shared_client(&session.id) {
             remember_shared_client(&key, server_pid, &session.id, false);
             drop(gate);
+            crate::perf!(
+                "open-shared",
+                "session={} path=previewed gate={} total={}",
+                session.provider_session_id,
+                crate::perf_log::ms(gate_wait),
+                crate::perf_log::ms(started.elapsed()),
+            );
             return self.show_shared_client(&key, None, session).map(Some);
         }
         drop(gate);
@@ -607,6 +625,14 @@ impl OpenCodeController {
         // The TUI is now recorded, so a warm-up will leave it alone while it
         // runs in front.
         drop(gate);
+        crate::perf!(
+            "open-shared",
+            "session={} path={} gate={} total={}",
+            session.provider_session_id,
+            if switched { "switched" } else { "started" },
+            crate::perf_log::ms(gate_wait),
+            crate::perf_log::ms(started.elapsed()),
+        );
         self.show_shared_client(&key, start, session).map(Some)
     }
 
@@ -695,9 +721,11 @@ impl OpenCodeController {
             return Ok(());
         }
         let (key, client) = shared_client_for(reach, &cwd);
+        let started = std::time::Instant::now();
         let _gate = SHARED_CLIENT_GATE
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let gate_wait = started.elapsed();
         if !still_wanted() || !crate::native_session::is_backgrounded(&key) {
             return Ok(());
         }
@@ -718,6 +746,7 @@ impl OpenCodeController {
         remember_shared_client(&key, server_pid, "", true);
         let selected_on =
             supervisor.select_in_shared_client(&session.provider_session_id, &cwd, &client)?;
+        let selected = started.elapsed();
         // Until it is drawn, an open must not take this TUI as already showing
         // the session. One that never matches its title is still taken as
         // switched once the wait runs out.
@@ -729,9 +758,18 @@ impl OpenCodeController {
             SHARED_CLIENT_PREVIEW_WAIT,
             still_wanted,
         );
-        if selected_on == server_pid && (drawn || still_wanted()) {
+        let marked = selected_on == server_pid && (drawn || still_wanted());
+        if marked {
             remember_shared_client(&key, server_pid, &session.id, true);
         }
+        crate::perf!(
+            "preview",
+            "session={} gate={} selected={} total={} drawn={drawn} marked={marked}",
+            session.provider_session_id,
+            crate::perf_log::ms(gate_wait),
+            crate::perf_log::ms(selected),
+            crate::perf_log::ms(started.elapsed()),
+        );
         Ok(())
     }
 

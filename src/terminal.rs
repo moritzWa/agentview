@@ -67,6 +67,7 @@ struct PendingReveal {
 /// never shows the screen that client painted before. Any key cancels it.
 struct PendingOpen {
     session_id: String,
+    since: Instant,
     deadline: Instant,
 }
 const LAUNCH_ANIMATION_INTERVAL: Duration = Duration::from_millis(120);
@@ -219,6 +220,7 @@ pub fn run_dashboard(
     let _refresh_worker = thread::spawn(move || {
         let mut first_refresh = true;
         while let Ok(worker_request) = refresh_rx.recv() {
+            let refresh_started = Instant::now();
             let partial_sender = snapshot_tx.clone();
             let mut snapshot = if first_refresh {
                 worker_engine.discover_progressively(
@@ -248,7 +250,15 @@ pub fn run_dashboard(
             } else {
                 worker_engine.discover(&worker_request)
             };
+            let enrich_started = Instant::now();
             worker_control.enrich(&mut snapshot);
+            crate::perf!(
+                "refresh",
+                "discover={} enrich={} sessions={}",
+                crate::perf_log::ms(refresh_started.elapsed() - enrich_started.elapsed()),
+                crate::perf_log::ms(enrich_started.elapsed()),
+                snapshot.sessions.len(),
+            );
             if !worker_request.include_external {
                 worker_control.retain_owned(&mut snapshot);
             }
@@ -372,8 +382,10 @@ pub fn run_dashboard(
                             previewed_row =
                                 Some((session_id.clone(), control.preview_generation()));
                         }
+                        crate::perf!("open-deferred", "session={session_id} from=reveal");
                         pending_open = Some(PendingOpen {
                             session_id,
+                            since: Instant::now(),
                             deadline: Instant::now() + DEFERRED_OPEN_TIMEOUT,
                         });
                     }
@@ -596,7 +608,14 @@ pub fn run_dashboard(
                 {
                     pending_open = Some(pending);
                 }
-                Some(_) => {
+                Some(session) => {
+                    crate::perf!(
+                        "open-dispatch",
+                        "session={} waited={} ready={:?}",
+                        pending.session_id,
+                        crate::perf_log::ms(pending.since.elapsed()),
+                        control.native_open_ready(session),
+                    );
                     let effect = dispatch_action(
                         &mut terminal,
                         &mut app,
@@ -756,8 +775,10 @@ pub fn run_dashboard(
                                     previewed_row =
                                         Some((session_id.clone(), control.preview_generation()));
                                 }
+                                crate::perf!("open-deferred", "session={session_id} from=key");
                                 pending_open = Some(PendingOpen {
                                     session_id: session_id.clone(),
+                                    since: Instant::now(),
                                     deadline: Instant::now() + DEFERRED_OPEN_TIMEOUT,
                                 });
                                 action = AppAction::None;

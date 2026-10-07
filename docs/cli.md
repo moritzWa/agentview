@@ -268,6 +268,14 @@ the default `google/gemini-2.5-flash-lite`, and `AGENTVIEW_TURN_CLASSIFIER=off`
 disables it. The terminal tab title shows the same counts, for example
 `2 need input · 1 working · 3 done · agentview`.
 
+### Timing log
+
+`AGENTVIEW_PERF_LOG=/tmp/av.log agentview` appends one line per event on the
+open and refresh paths: each provider's discovery time, how long an open waited
+for the hidden OpenCode TUI and why it went ahead, the preview's switch and
+draw, the first keystrokes' echo latency, and any wait on or long hold of the
+OpenCode state lock with its call site. Nothing is written without it.
+
 ### Local hide, provider delete, and provider archive
 
 Ctrl+X follows the selected row's current lifecycle. On an active row with

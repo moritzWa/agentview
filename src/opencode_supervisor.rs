@@ -198,8 +198,7 @@ impl OpenCodeSupervisor {
     /// List only sessions backed by an already-running, exactly verified
     /// server. Read-only discovery never starts a server as a side effect.
     pub fn list(&self) -> Result<Vec<ManagedOpenCodeSession>> {
-        let _lock = StateLock::acquire(&self.lock_path)?;
-        let Some(mut record) = self.live_record_locked()? else {
+        let Some(mut record) = self.live_record()? else {
             return Ok(Vec::new());
         };
         let mut statuses_by_directory = BTreeMap::new();
@@ -245,33 +244,45 @@ impl OpenCodeSupervisor {
             refreshed.insert(owned.id.clone(), (title, summary, updated_at_ms));
         }
         if !refreshed.is_empty() {
-            for (id, (title, summary, updated_at_ms)) in refreshed {
-                let Some(owned) = record.sessions.get_mut(&id) else {
-                    continue;
-                };
-                owned.title = title;
-                if let Some(summary) = summary {
-                    owned.summary = summary;
+            // The requests above ran unlocked, so the record may have changed
+            // since: merge into the current one instead of saving the copy.
+            let _lock = StateLock::acquire(&self.lock_path)?;
+            if let Some(mut current) = load_record(&self.record_path, &self.state_dir)?
+                .filter(|current| current.pid == record.pid)
+            {
+                for (id, (title, summary, updated_at_ms)) in refreshed {
+                    let Some(owned) = current.sessions.get_mut(&id) else {
+                        continue;
+                    };
+                    if updated_at_ms < owned.updated_at_ms {
+                        continue;
+                    }
+                    owned.title = title;
+                    if let Some(summary) = summary {
+                        owned.summary = summary;
+                    }
+                    owned.updated_at_ms = updated_at_ms;
                 }
-                owned.updated_at_ms = updated_at_ms;
+                save_record(&self.record_path, &current)?;
+                record = current;
             }
-            save_record(&self.record_path, &record)?;
         }
         Ok(record
             .sessions
             .values()
-            .map(|owned| {
-                let statuses = statuses_by_directory
-                    .get(&owned.cwd)
-                    .expect("status was fetched for each owned directory");
-                self.snapshot_with_state(&record, owned, state_from_statuses(statuses, &owned.id))
+            .filter_map(|owned| {
+                let statuses = statuses_by_directory.get(&owned.cwd)?;
+                Some(self.snapshot_with_state(
+                    &record,
+                    owned,
+                    state_from_statuses(statuses, &owned.id),
+                ))
             })
             .collect())
     }
 
     pub fn inspect(&self, session_id: &str) -> Result<String> {
-        let _lock = StateLock::acquire(&self.lock_path)?;
-        let record = self.required_live_record_locked()?;
+        let record = self.required_live_record()?;
         let owned = require_owned(&record, session_id)?;
         let path = with_directory_query(
             &format!("/session/{}/message", url_path_segment(session_id)),
@@ -293,8 +304,7 @@ impl OpenCodeSupervisor {
     /// loses everything past its first 64 KiB when stdout is a pipe. Never
     /// starts a server.
     pub fn read_transcript(&self, session_id: &str, cwd: &Path) -> Result<String> {
-        let _lock = StateLock::acquire(&self.lock_path)?;
-        let record = self.required_live_record_locked()?;
+        let record = self.required_live_record()?;
         let path = with_directory_query(
             &format!("/session/{}/message", url_path_segment(session_id)),
             cwd,
@@ -305,8 +315,7 @@ impl OpenCodeSupervisor {
     /// The title OpenCode holds for a session the live server can load. Never
     /// starts a server.
     pub fn session_title(&self, session_id: &str, cwd: &Path) -> Result<String> {
-        let _lock = StateLock::acquire(&self.lock_path)?;
-        let record = self.required_live_record_locked()?;
+        let record = self.required_live_record()?;
         let path = with_directory_query(&format!("/session/{}", url_path_segment(session_id)), cwd);
         let session = self.request_json(&record, "GET", &path, None)?;
         session
@@ -342,8 +351,7 @@ impl OpenCodeSupervisor {
     }
 
     pub fn interrupt(&self, session_id: &str) -> Result<()> {
-        let _lock = StateLock::acquire(&self.lock_path)?;
-        let record = self.required_live_record_locked()?;
+        let record = self.required_live_record()?;
         let owned = require_owned(&record, session_id)?;
         let status = self.status_for(&record, owned)?;
         if status != SessionState::Working {
@@ -412,8 +420,7 @@ impl OpenCodeSupervisor {
         cwd: &Path,
         client: &str,
     ) -> Result<u32> {
-        let _lock = StateLock::acquire(&self.lock_path)?;
-        let record = self.required_live_record_locked()?;
+        let record = self.required_live_record()?;
         let mut body = json!({ "sessionID": session_id, "client": client });
         match self.client_reach(&record) {
             SharedClientReach::None => bail!("the OpenCode server cannot switch a single TUI"),
@@ -463,8 +470,7 @@ impl OpenCodeSupervisor {
     /// Run a TUI command in the TUIs attached to the live server for `cwd`.
     /// A TUI that does not know the command ignores it.
     pub fn run_tui_command(&self, cwd: &Path, command: &str) -> Result<()> {
-        let _lock = StateLock::acquire(&self.lock_path)?;
-        let Some(record) = self.live_record_locked()? else {
+        let Some(record) = self.live_record()? else {
             return Ok(());
         };
         let body = json!({ "type": "tui.command.execute", "properties": { "command": command } });
@@ -481,9 +487,8 @@ impl OpenCodeSupervisor {
     /// process of their own holds them, so only the server knows they run.
     /// Never starts a server.
     pub fn server_activity(&self, directories: &BTreeSet<PathBuf>) -> Result<ServerActivity> {
-        let _lock = StateLock::acquire(&self.lock_path)?;
         let mut activity = ServerActivity::default();
-        let Some(record) = self.live_record_locked()? else {
+        let Some(record) = self.live_record()? else {
             return Ok(activity);
         };
         activity.server_pid = Some(record.pid);
@@ -520,8 +525,7 @@ impl OpenCodeSupervisor {
 
     /// The live server's pid, which changes when the server restarts.
     pub fn live_server_pid(&self) -> Result<Option<u32>> {
-        let _lock = StateLock::acquire(&self.lock_path)?;
-        Ok(self.live_record_locked()?.map(|record| record.pid))
+        Ok(self.live_record()?.map(|record| record.pid))
     }
 
     /// Which of `client` and `targetDirectory` the server's
@@ -978,8 +982,32 @@ impl OpenCodeSupervisor {
             .context("OpenCode supervisor has no live owned server")
     }
 
+    /// The live server's record for a call that only talks to the server.
+    /// The state lock is held just to read the record: every dashboard and
+    /// CLI on this machine shares it, and a request to a busy server must not
+    /// keep an open waiting behind a refresh.
+    fn live_record(&self) -> Result<Option<ServerRecord>> {
+        let record = {
+            let _lock = StateLock::acquire(&self.lock_path)?;
+            let Some(record) = load_record(&self.record_path, &self.state_dir)? else {
+                return Ok(None);
+            };
+            if !verify_server(&record)? {
+                return Ok(None);
+            }
+            record
+        };
+        self.verify_http_endpoint(&record)?;
+        Ok(Some(record))
+    }
+
+    fn required_live_record(&self) -> Result<ServerRecord> {
+        self.live_record()?
+            .context("OpenCode supervisor has no live owned server")
+    }
+
     fn verify_http_endpoint(&self, record: &ServerRecord) -> Result<()> {
-        verify_listener_owner(record.pid, record.port)?;
+        verify_listener_owner_cached(record)?;
         let health = self.request_json(record, "GET", "/global/health", None)?;
         if health.get("healthy").and_then(Value::as_bool) != Some(true) {
             bail!("OpenCode health endpoint did not report healthy");
@@ -2363,6 +2391,40 @@ fn verify_listener_owner(pid: u32, port: u16) -> Result<()> {
     Ok(())
 }
 
+/// How long a verified listener owner is trusted before it is checked again.
+/// The check runs `lsof` on macOS, about 60 ms, and every supervisor call
+/// made it; [`verify_server`] still confirms the exact process on each call,
+/// and while it lives and listens no other process can take its port.
+const LISTENER_OWNER_TTL: Duration = Duration::from_secs(30);
+
+fn verify_listener_owner_cached(record: &ServerRecord) -> Result<()> {
+    type Verified = Option<(u32, u16, String, Instant)>;
+    static VERIFIED: Mutex<Verified> = Mutex::new(None);
+    let fresh = VERIFIED.lock().ok().is_some_and(|verified| {
+        verified.as_ref().is_some_and(|(pid, port, start, at)| {
+            *pid == record.pid
+                && *port == record.port
+                && *start == record.process_start_token
+                && at.elapsed() < LISTENER_OWNER_TTL
+        })
+    });
+    if fresh {
+        return Ok(());
+    }
+    let verified = verify_listener_owner(record.pid, record.port);
+    if let Ok(mut slot) = VERIFIED.lock() {
+        *slot = verified.is_ok().then(|| {
+            (
+                record.pid,
+                record.port,
+                record.process_start_token.clone(),
+                Instant::now(),
+            )
+        });
+    }
+    verified
+}
+
 #[cfg(target_os = "macos")]
 fn verify_listener_owner(pid: u32, port: u16) -> Result<()> {
     let output = Command::new("/usr/sbin/lsof")
@@ -2391,10 +2453,15 @@ fn verify_listener_owner(_: u32, _: u16) -> Result<()> {
 
 struct StateLock {
     file: File,
+    caller: &'static std::panic::Location<'static>,
+    held_since: Instant,
 }
 
 impl StateLock {
+    #[track_caller]
     fn acquire(path: &Path) -> Result<Self> {
+        let caller = std::panic::Location::caller();
+        let started = Instant::now();
         let mut options = OpenOptions::new();
         options.create(true).read(true).write(true);
         #[cfg(unix)]
@@ -2417,12 +2484,36 @@ impl StateLock {
                     .context("failed to lock OpenCode server state");
             }
         }
-        Ok(Self { file })
+        let waited = started.elapsed();
+        if waited >= Duration::from_millis(20) {
+            crate::perf!(
+                "state-lock-wait",
+                "at={}:{} waited={}",
+                caller.file(),
+                caller.line(),
+                crate::perf_log::ms(waited)
+            );
+        }
+        Ok(Self {
+            file,
+            caller,
+            held_since: Instant::now(),
+        })
     }
 }
 
 impl Drop for StateLock {
     fn drop(&mut self) {
+        let held = self.held_since.elapsed();
+        if held >= Duration::from_millis(100) {
+            crate::perf!(
+                "state-lock-held",
+                "at={}:{} held={}",
+                self.caller.file(),
+                self.caller.line(),
+                crate::perf_log::ms(held)
+            );
+        }
         #[cfg(unix)]
         {
             use std::os::unix::io::AsRawFd;
