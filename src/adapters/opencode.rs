@@ -1158,13 +1158,22 @@ impl OpenCodeSource {
                 };
                 let records = self.query(&scope)?;
                 let unfinished = unfinished_directories(&records);
-                let mut history = self.normalize_with_live_state(records, &holders, &server_run);
-                if let Some(supervisor) = server.filter(|_| server_live && !unfinished.is_empty()) {
-                    match supervisor.server_activity(&unfinished) {
-                        Ok(activity) => apply_server_activity(&mut history, &activity, &owned),
-                        Err(error) => warnings.push(format!("OpenCode server status: {error:#}")),
-                    }
-                }
+                let activity = server
+                    .filter(|_| server_live && !unfinished.is_empty())
+                    .and_then(|supervisor| match supervisor.server_activity(&unfinished) {
+                        Ok(activity) => Some(activity),
+                        Err(error) => {
+                            warnings.push(format!("OpenCode server status: {error:#}"));
+                            None
+                        }
+                    });
+                let mut history = self.normalize_beside_server(
+                    records,
+                    &holders,
+                    &server_run,
+                    activity.as_ref(),
+                    &owned,
+                );
                 if request.history_oldest_first {
                     history.sort_by_key(|session| session.updated_at);
                 } else {
@@ -1287,6 +1296,27 @@ impl OpenCodeSource {
     /// `server_run` are sessions the managed server runs and reports on
     /// itself; they claim no process, so a headless `opencode run` in the
     /// same directory stays with the session it runs.
+    /// A session the server runs a turn for, recorded or opened in the shared
+    /// TUI, must not take a headless run's process in the same directory.
+    fn normalize_beside_server(
+        &self,
+        records: Vec<OpenCodeRecord>,
+        holders: &[Holder],
+        recorded: &BTreeSet<String>,
+        activity: Option<&crate::opencode_supervisor::ServerActivity>,
+        owned: &BTreeSet<String>,
+    ) -> Vec<AgentSession> {
+        let mut server_run = recorded.clone();
+        if let Some(activity) = activity {
+            server_run.extend(activity.running.iter().cloned());
+        }
+        let mut sessions = self.normalize_with_live_state(records, holders, &server_run);
+        if let Some(activity) = activity {
+            apply_server_activity(&mut sessions, activity, owned);
+        }
+        sessions
+    }
+
     fn normalize_with_live_state(
         &self,
         records: Vec<OpenCodeRecord>,
@@ -2320,6 +2350,58 @@ mod tests {
             .find(|session| session.provider_session_id == "ses_server")
             .unwrap();
         assert_eq!(server.pid, None);
+    }
+
+    #[test]
+    fn a_headless_run_stays_with_its_session_beside_a_session_opened_in_the_shared_tui() {
+        let now = opencode_live::now_ms();
+        let row = |id: &str, created: u64, updated: u64| {
+            format!(
+                "{{\"id\":\"{id}\",\"title\":\"{id}\",\"updated\":{updated},\"created\":{created},\"projectId\":\"global\",\"directory\":\"/work\",\"last\":{{\"role\":\"assistant\",\"created\":{updated},\"completed\":null,\"question\":0}}}}"
+            )
+        };
+        let records = parse_opencode_db_records(&format!(
+            "record\n{}\n{}\n",
+            row("ses_run", now - 300_000, now - 120_000),
+            row("ses_shared", now - 3_600_000, now - 1_000),
+        ))
+        .unwrap();
+        let source = restorable_source(Arc::new(QueryRunner {
+            answers: vec![],
+            seen: Mutex::new(Vec::new()),
+        }));
+        let headless = Holder {
+            pid: 42,
+            started_ms: now - 301_000,
+            target: opencode_live::Target::Directory(Some("/work".into())),
+        };
+        let activity = crate::opencode_supervisor::ServerActivity {
+            server_pid: Some(7),
+            running: BTreeSet::from(["ses_shared".to_owned()]),
+            questions: BTreeSet::new(),
+            permissions: BTreeSet::new(),
+        };
+
+        let sessions = source.normalize_beside_server(
+            records,
+            &[headless],
+            &BTreeSet::new(),
+            Some(&activity),
+            &BTreeSet::new(),
+        );
+
+        let run = sessions
+            .iter()
+            .find(|session| session.provider_session_id == "ses_run")
+            .unwrap();
+        assert_eq!(run.state, SessionState::Working);
+        assert_eq!(run.pid, Some(42));
+        let shared = sessions
+            .iter()
+            .find(|session| session.provider_session_id == "ses_shared")
+            .unwrap();
+        assert_eq!(shared.raw_state.as_deref(), Some("server busy"));
+        assert_eq!(shared.pid, Some(7));
     }
 
     /// Answers each `opencode db` query by a substring of its SQL, since the
