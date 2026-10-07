@@ -1,3 +1,4 @@
+use std::ops::Range;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
@@ -601,8 +602,9 @@ fn render_composer(frame: &mut Frame<'_>, app: &App, area: Rect) {
             .iter()
             .enumerate()
             .map(|(index, line)| {
-                Line::from(vec![
-                    Span::styled(if start + index == 0 { prefix } else { "" }, {
+                let mut spans = vec![Span::styled(
+                    if start + index == 0 { prefix } else { "" },
+                    {
                         let style = Style::default().fg(if renaming || naming_migration {
                             palette().accent
                         } else {
@@ -613,9 +615,22 @@ fn render_composer(frame: &mut Frame<'_>, app: &App, area: Rect) {
                         } else {
                             style
                         }
-                    }),
-                    Span::styled(line.clone(), text_style),
-                ])
+                    },
+                )];
+                match layout.selected[start + index].clone().filter(|_| editable) {
+                    Some(range) => spans.extend([
+                        Span::styled(line[..range.start].to_owned(), text_style),
+                        Span::styled(
+                            line[range.clone()].to_owned(),
+                            Style::default()
+                                .fg(palette().selected_fg)
+                                .bg(palette().selected_bg),
+                        ),
+                        Span::styled(line[range.end..].to_owned(), text_style),
+                    ]),
+                    None => spans.push(Span::styled(line.clone(), text_style)),
+                }
+                Line::from(spans)
             })
             .collect::<Vec<_>>()
     } else {
@@ -767,6 +782,8 @@ struct DraftLayout {
     cursor_row: usize,
     /// Includes the prompt prefix on the first row.
     cursor_column: usize,
+    /// Per row, the byte range of `rows[row]` inside the selection.
+    selected: Vec<Option<Range<usize>>>,
 }
 
 impl DraftLayout {
@@ -782,14 +799,22 @@ impl DraftLayout {
 /// Wrap the draft into rows of at most `width` columns, with the prompt
 /// prefix taking the start of the first row. One column stays free so the
 /// cursor can sit after the last character of a full row.
-fn layout_draft(input: &str, cursor: usize, prefix_width: usize, width: usize) -> DraftLayout {
+fn layout_draft(
+    input: &str,
+    cursor: usize,
+    selection: Option<Range<usize>>,
+    prefix_width: usize,
+    width: usize,
+) -> DraftLayout {
     let limit = width.saturating_sub(1).max(prefix_width + 1);
     let mut rows = vec![String::new()];
+    let mut selected: Vec<Option<Range<usize>>> = vec![None];
     let mut column = prefix_width;
     let mut cursor_at = (0, prefix_width);
     for (line_index, line) in input.split('\n').enumerate() {
         if line_index > 0 {
             rows.push(String::new());
+            selected.push(None);
             column = 0;
         }
         let line_start = line.as_ptr() as usize - input.as_ptr() as usize;
@@ -802,14 +827,25 @@ fn layout_draft(input: &str, cursor: usize, prefix_width: usize, width: usize) -
             let character_width = display_width(&shown);
             if column + character_width > limit && column > 0 {
                 rows.push(String::new());
+                selected.push(None);
                 column = 0;
             }
             if line_start + offset == cursor {
                 cursor_at = (rows.len() - 1, column);
             }
-            rows.last_mut()
-                .expect("rows is never empty")
-                .push_str(&shown);
+            let row = rows.last_mut().expect("rows is never empty");
+            let shown_start = row.len();
+            row.push_str(&shown);
+            if selection
+                .as_ref()
+                .is_some_and(|range| range.contains(&(line_start + offset)))
+            {
+                let row_selected = selected.last_mut().expect("one entry per row");
+                let start = row_selected
+                    .as_ref()
+                    .map_or(shown_start, |range| range.start);
+                *row_selected = Some(start..row.len());
+            }
             column += character_width;
         }
         if line_start + line.len() == cursor {
@@ -820,6 +856,7 @@ fn layout_draft(input: &str, cursor: usize, prefix_width: usize, width: usize) -
         rows,
         cursor_row: cursor_at.0,
         cursor_column: cursor_at.1,
+        selected,
     }
 }
 
@@ -837,6 +874,7 @@ fn composer_draft_layout(app: &App, width: u16) -> Option<DraftLayout> {
     Some(layout_draft(
         &app.input,
         app.input_cursor(),
+        app.input_selection(),
         display_width(prefix),
         width as usize,
     ))
@@ -2222,17 +2260,17 @@ mod tests {
 
     #[test]
     fn draft_layout_wraps_long_lines_and_tracks_the_cursor() {
-        let layout = layout_draft("abcdefgh\nxy", 4, 2, 7);
+        let layout = layout_draft("abcdefgh\nxy", 4, None, 2, 7);
         assert_eq!(layout.rows, vec!["abcd", "efgh", "xy"]);
         assert_eq!((layout.cursor_row, layout.cursor_column), (1, 0));
 
-        let at_end = layout_draft("abcdefgh\nxy", 11, 2, 7);
+        let at_end = layout_draft("abcdefgh\nxy", 11, None, 2, 7);
         assert_eq!((at_end.cursor_row, at_end.cursor_column), (2, 2));
 
-        let long = layout_draft(&"line\n".repeat(30), 0, 2, 40);
+        let long = layout_draft(&"line\n".repeat(30), 0, None, 2, 40);
         assert_eq!(long.visible_start(), 0);
         assert_eq!(long.visible_rows(), MAX_DRAFT_ROWS);
-        let bottom = layout_draft(&"line\n".repeat(30), 150, 2, 40);
+        let bottom = layout_draft(&"line\n".repeat(30), 150, None, 2, 40);
         assert_eq!(bottom.cursor_row, 30);
         assert_eq!(bottom.visible_start(), 30 + 1 - MAX_DRAFT_ROWS);
     }
@@ -3120,6 +3158,25 @@ mod tests {
         assert_eq!(terminal.get_cursor().unwrap(), (5, 21));
         assert_eq!(terminal.backend().buffer().get(2, 21).symbol(), "a");
         assert_eq!(terminal.backend().buffer().get(4, 21).symbol(), "c");
+    }
+
+    #[test]
+    fn composer_highlights_the_selected_text() {
+        let mut app = App::new(SessionSnapshot::default());
+        app.start_new_session(None);
+        app.input = "one two".into();
+        app.extend_input_selection(crate::app::CursorMovement::WordLeft);
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer.get(6, 21).symbol(), "t");
+        assert_eq!(buffer.get(6, 21).bg, palette().selected_bg);
+        assert_eq!(buffer.get(8, 21).bg, palette().selected_bg);
+        assert_ne!(buffer.get(5, 21).bg, palette().selected_bg);
+        assert_eq!(terminal.get_cursor().unwrap(), (6, 21));
     }
 
     #[test]

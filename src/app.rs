@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -228,6 +229,9 @@ pub struct App {
     pub input: String,
     /// Byte offset of the composer cursor in `input`; `None` is the end.
     input_cursor: Option<usize>,
+    /// Byte offset where a Shift+movement selection started; the selection
+    /// runs from here to the cursor.
+    input_anchor: Option<usize>,
     /// Images and long text pasted into the draft, shown there as tokens.
     pasted: PastedParts,
     pub filter: String,
@@ -337,6 +341,7 @@ impl App {
             overlay: Overlay::None,
             input: String::new(),
             input_cursor: None,
+            input_anchor: None,
             pasted: PastedParts::default(),
             filter: String::new(),
             launch_targets,
@@ -1354,6 +1359,7 @@ impl App {
                     || session.capabilities.contains(&Capability::Respond)
             });
         if peek_is_writable || matches!(self.overlay, Overlay::Composer(_)) {
+            self.delete_input_selection();
             let cursor = self.input_cursor();
             self.input.insert(cursor, character);
             if self.input_cursor.is_some() {
@@ -1365,6 +1371,7 @@ impl App {
     fn clear_input(&mut self) {
         self.input.clear();
         self.input_cursor = None;
+        self.input_anchor = None;
         self.pasted.clear();
     }
 
@@ -1412,6 +1419,7 @@ impl App {
     fn set_input(&mut self, text: String) {
         self.input = text;
         self.input_cursor = None;
+        self.input_anchor = None;
         self.pasted.clear();
     }
 
@@ -1433,6 +1441,29 @@ impl App {
         self.input_cursor = (cursor < self.input.len()).then_some(cursor);
     }
 
+    /// Byte range of the Shift-selected part of a composer draft.
+    pub fn input_selection(&self) -> Option<Range<usize>> {
+        let anchor = self.input_anchor.filter(|anchor| {
+            self.input_cursor_movable()
+                && *anchor <= self.input.len()
+                && self.input.is_char_boundary(*anchor)
+        })?;
+        let cursor = self.input_cursor();
+        (anchor != cursor).then(|| anchor.min(cursor)..anchor.max(cursor))
+    }
+
+    /// Remove the selected text, leaving the cursor where it started.
+    fn delete_input_selection(&mut self) -> bool {
+        let selection = self.input_selection();
+        self.input_anchor = None;
+        let Some(range) = selection else {
+            return false;
+        };
+        self.input.replace_range(range.clone(), "");
+        self.place_input_cursor(range.start);
+        true
+    }
+
     /// Whether Shift/Alt/Ctrl+Enter add a line instead of submitting: true in
     /// the new-task composer and while writing a peek reply.
     pub fn draft_accepts_line_breaks(&self) -> bool {
@@ -1444,7 +1475,10 @@ impl App {
     /// does on Enter. Terminals such as Hyper report Shift+Enter as a plain
     /// Enter, so a `\` followed by Return is the only newline they can send.
     pub fn take_backslash_line_break(&mut self) -> bool {
-        if !self.draft_accepts_line_breaks() || !self.input[..self.input_cursor()].ends_with('\\') {
+        if !self.draft_accepts_line_breaks()
+            || self.input_selection().is_some()
+            || !self.input[..self.input_cursor()].ends_with('\\')
+        {
             return false;
         }
         self.pop_input();
@@ -1458,7 +1492,40 @@ impl App {
         matches!(self.overlay, Overlay::Composer(_))
     }
 
+    /// Move the cursor and drop any selection. Left/Right with a selection
+    /// land on its start/end, as in macOS text fields.
     pub fn move_input_cursor(&mut self, movement: CursorMovement) {
+        if let Some(range) = self.input_selection() {
+            match movement {
+                CursorMovement::Left => {
+                    self.input_anchor = None;
+                    self.place_input_cursor(range.start);
+                    return;
+                }
+                CursorMovement::Right => {
+                    self.input_anchor = None;
+                    self.place_input_cursor(range.end);
+                    return;
+                }
+                _ => {}
+            }
+        }
+        self.input_anchor = None;
+        self.step_input_cursor(movement);
+    }
+
+    /// Shift+movement: grow or shrink the selection from where it started.
+    pub fn extend_input_selection(&mut self, movement: CursorMovement) {
+        if !self.input_cursor_movable() {
+            return;
+        }
+        if self.input_selection().is_none() {
+            self.input_anchor = Some(self.input_cursor());
+        }
+        self.step_input_cursor(movement);
+    }
+
+    fn step_input_cursor(&mut self, movement: CursorMovement) {
         if !self.input_cursor_movable() {
             return;
         }
@@ -1523,7 +1590,7 @@ impl App {
 
     /// Delete the character after the cursor (the Delete key).
     pub fn delete_next_input(&mut self) {
-        if !self.input_cursor_movable() {
+        if !self.input_cursor_movable() || self.delete_input_selection() {
             return;
         }
         let cursor = self.input_cursor();
@@ -1545,6 +1612,7 @@ impl App {
         if self.overlay == Overlay::None {
             self.start_new_session(None);
         }
+        self.delete_input_selection();
         let lines = text.matches('\n').count() + 1;
         if self.draft_accepts_pasted_parts()
             && (lines >= PASTE_SUMMARY_LINES || text.chars().count() > PASTE_SUMMARY_CHARS)
@@ -1605,7 +1673,7 @@ impl App {
         } else if self.overlay == Overlay::DirectoryPicker {
             self.directory_filter.pop();
             self.directory_selection = 0;
-        } else {
+        } else if !self.delete_input_selection() {
             let cursor = self.input_cursor();
             if let Some(start) = self.pasted_token_before(cursor) {
                 let token = self.input[start..cursor].to_owned();
@@ -1658,6 +1726,9 @@ impl App {
     /// kept as the portable equivalent. Work on Unicode scalar boundaries so
     /// slicing can never split a UTF-8 code point.
     pub fn delete_previous_word(&mut self) {
+        if self.delete_input_selection() {
+            return;
+        }
         let cursor = self.text_field_cursor();
         let input = self.active_text_field();
         let boundary = previous_word_boundary(input, cursor);
@@ -1668,6 +1739,9 @@ impl App {
     /// Delete from the cursor to the beginning of its line. Cmd+Backspace and
     /// Ctrl+U use this path.
     pub fn delete_to_line_start(&mut self) {
+        if self.delete_input_selection() {
+            return;
+        }
         let cursor = self.text_field_cursor();
         let input = self.active_text_field();
         let boundary = input[..cursor].rfind('\n').map_or(0, |index| index + 1);

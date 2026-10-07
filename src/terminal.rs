@@ -1792,7 +1792,11 @@ fn handle_key(app: &mut App, key: KeyEvent) -> AppAction {
             _ => None,
         };
         if let Some(movement) = movement {
-            app.move_input_cursor(movement);
+            if key.modifiers.contains(KeyModifiers::SHIFT) {
+                app.extend_input_selection(movement);
+            } else {
+                app.move_input_cursor(movement);
+            }
             return AppAction::None;
         }
         if key.code == KeyCode::Delete {
@@ -3878,6 +3882,42 @@ mod tests {
         );
         assert_eq!(app.input_cursor(), 7);
         assert_eq!(app.input, "one two three");
+    }
+
+    #[test]
+    fn shift_option_arrows_select_words_and_typing_replaces_them() {
+        let word_select = KeyModifiers::ALT | KeyModifiers::SHIFT;
+        let mut app = app();
+        app.start_new_session(None);
+        app.input = "one two three".into();
+        handle_key(&mut app, modified_key(KeyCode::Left, word_select));
+        assert_eq!(app.input_selection(), Some(8..13));
+        handle_key(&mut app, modified_key(KeyCode::Left, word_select));
+        assert_eq!(app.input_selection(), Some(4..13));
+        handle_key(&mut app, modified_key(KeyCode::Right, word_select));
+        assert_eq!(app.input_selection(), Some(7..13));
+        handle_key(&mut app, key(KeyCode::Char('X')));
+        assert_eq!(app.input, "one twoX");
+        assert_eq!(app.input_selection(), None);
+
+        handle_key(&mut app, modified_key(KeyCode::Left, KeyModifiers::SHIFT));
+        handle_key(&mut app, modified_key(KeyCode::Left, KeyModifiers::SHIFT));
+        assert_eq!(app.input_selection(), Some(6..8));
+        handle_key(&mut app, key(KeyCode::Right));
+        assert_eq!((app.input_selection(), app.input_cursor()), (None, 8));
+
+        handle_key(
+            &mut app,
+            modified_key(KeyCode::Left, KeyModifiers::SUPER | KeyModifiers::SHIFT),
+        );
+        assert_eq!(app.input_selection(), Some(0..8));
+        handle_key(&mut app, key(KeyCode::Left));
+        assert_eq!((app.input_selection(), app.input_cursor()), (None, 0));
+
+        handle_key(&mut app, modified_key(KeyCode::Right, word_select));
+        handle_key(&mut app, key(KeyCode::Backspace));
+        assert_eq!(app.input, " twoX");
+        assert_eq!(app.input_cursor(), 0);
     }
 
     #[test]
