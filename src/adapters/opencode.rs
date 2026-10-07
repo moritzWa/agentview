@@ -38,6 +38,9 @@ const LAUNCH_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(8);
 /// How long a preview waits for the shared TUI to draw a session before it
 /// takes the TUI as switched anyway.
 const SHARED_CLIENT_PREVIEW_WAIT: Duration = Duration::from_millis(3_000);
+/// A TUI still starting drops a session switch sent before it subscribed to
+/// the server's events, so a switch not drawn within this is sent again.
+const SHARED_CLIENT_RESELECT: Duration = Duration::from_millis(400);
 /// Quiet after the title changes, so the frame that set it has finished.
 const SHARED_CLIENT_SETTLE: Duration = Duration::from_millis(40);
 const MAX_RESTORABLE_SESSIONS: usize = 2_000;
@@ -504,16 +507,12 @@ fn shared_client_for(reach: SharedClientReach, cwd: &Path) -> (String, String) {
     (shared_client_key(scope), shared_client_id(scope))
 }
 
-/// Wait until the shared TUI `key`, switched to `session` while hidden, has
-/// drawn it: the TUI sets the session's title once its messages are on screen.
-fn wait_for_shared_client(
+/// The title the shared TUI shows once it has drawn `session`.
+fn shared_client_title(
     supervisor: &OpenCodeSupervisor,
-    key: &str,
     session: &AgentSession,
     cwd: &Path,
-    timeout: Duration,
-    still_wanted: &dyn Fn() -> bool,
-) -> bool {
+) -> Option<String> {
     let started = std::time::Instant::now();
     let title = supervisor.session_title(&session.provider_session_id, cwd);
     crate::perf!(
@@ -523,12 +522,20 @@ fn wait_for_shared_client(
         crate::perf_log::ms(started.elapsed()),
         title.is_ok()
     );
-    let Ok(title) = title else {
-        return false;
-    };
+    title.ok()
+}
+
+/// Wait until the shared TUI `key`, switched to a session while hidden, has
+/// drawn it: the TUI sets the session's title once its messages are on screen.
+fn wait_for_shared_client(
+    key: &str,
+    title: &str,
+    timeout: Duration,
+    still_wanted: &dyn Fn() -> bool,
+) -> bool {
     crate::native_session::wait_for_background_title(
         key,
-        &|shown| crate::opencode_supervisor::tui_shows_title(&title, shown),
+        &|shown| crate::opencode_supervisor::tui_shows_title(title, shown),
         SHARED_CLIENT_SETTLE,
         timeout,
         still_wanted,
@@ -745,27 +752,45 @@ impl OpenCodeController {
         // The TUI repaints the new session before the switch returns; until
         // then its screen must not speak for the row it showed before.
         remember_shared_client(&key, server_pid, "", true);
-        let selected_on =
+        let mut selected_on =
             supervisor.select_in_shared_client(&session.provider_session_id, &cwd, &client)?;
         let selected = started.elapsed();
         // Until it is drawn, an open must not take this TUI as already showing
         // the session. One that never matches its title is still taken as
         // switched once the wait runs out.
-        let drawn = wait_for_shared_client(
-            supervisor,
-            &key,
-            session,
-            &cwd,
-            SHARED_CLIENT_PREVIEW_WAIT,
-            still_wanted,
-        );
+        let deadline = std::time::Instant::now() + SHARED_CLIENT_PREVIEW_WAIT;
+        let title = shared_client_title(supervisor, session, &cwd);
+        let mut selects = 1;
+        let drawn = loop {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            let Some(title) = title.as_deref() else {
+                break false;
+            };
+            if wait_for_shared_client(
+                &key,
+                title,
+                remaining.min(SHARED_CLIENT_RESELECT),
+                still_wanted,
+            ) {
+                break true;
+            }
+            if !still_wanted() || std::time::Instant::now() >= deadline {
+                break false;
+            }
+            if let Ok(pid) =
+                supervisor.select_in_shared_client(&session.provider_session_id, &cwd, &client)
+            {
+                selected_on = pid;
+            }
+            selects += 1;
+        };
         let marked = selected_on == server_pid && (drawn || still_wanted());
         if marked {
             remember_shared_client(&key, server_pid, &session.id, true);
         }
         crate::perf!(
             "preview",
-            "session={} gate={} selected={} total={} drawn={drawn} marked={marked}",
+            "session={} gate={} selected={} selects={selects} total={} drawn={drawn} marked={marked}",
             session.provider_session_id,
             crate::perf_log::ms(gate_wait),
             crate::perf_log::ms(selected),
