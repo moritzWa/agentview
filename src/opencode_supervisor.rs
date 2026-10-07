@@ -2529,6 +2529,66 @@ fn now_millis() -> u64 {
         .as_millis() as u64
 }
 
+/// A stand-in OpenCode server for tests elsewhere in the crate. It records
+/// this test process as the server, so the identity and listener checks pass,
+/// and answers every request with `respond(path)`.
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(crate) fn start_test_server(
+    state_dir: &Path,
+    owned: &[(&str, &Path)],
+    respond: impl Fn(&str) -> Value + Send + 'static,
+) -> Result<()> {
+    let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))?;
+    let pid = std::process::id();
+    let record = ServerRecord {
+        version: RECORD_VERSION,
+        pid,
+        process_start_token: process_start_token(pid)?,
+        process_cmdline: process_cmdline(pid)?,
+        executable: "opencode".into(),
+        port: listener.local_addr()?.port(),
+        username: "opencode".into(),
+        password: "0".repeat(64),
+        created_at_ms: now_millis(),
+        sessions: owned
+            .iter()
+            .map(|(id, cwd)| {
+                let session = OwnedSession {
+                    id: (*id).into(),
+                    cwd: cwd.to_path_buf(),
+                    title: (*id).into(),
+                    summary: String::new(),
+                    created_at_ms: 1,
+                    updated_at_ms: 1,
+                };
+                ((*id).to_owned(), session)
+            })
+            .collect(),
+    };
+    save_record(&state_dir.join("server.json"), &record)?;
+    std::thread::spawn(move || {
+        for mut stream in listener.incoming().filter_map(Result::ok) {
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            while find_bytes(&request, b"\r\n\r\n").is_none() {
+                match stream.read(&mut buffer) {
+                    Ok(0) | Err(_) => break,
+                    Ok(read) => request.extend_from_slice(&buffer[..read]),
+                }
+            }
+            let request = String::from_utf8_lossy(&request);
+            let path = request.split_whitespace().nth(1).unwrap_or_default();
+            let body = respond(path).to_string();
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+        }
+    });
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

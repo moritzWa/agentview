@@ -125,6 +125,8 @@ pub struct OpenCodeSource {
     probe: HolderProbe,
     ownership: Option<Arc<OpenCodeOwnership>>,
     background_shells: Option<Arc<BackgroundShells>>,
+    /// Where plugins write the holds that keep a session working.
+    holds: Option<PathBuf>,
 }
 
 /// Read-only history control plus optional exact owned-server lifecycle.
@@ -260,9 +262,12 @@ impl ProviderController for OpenCodeController {
             overlay_managed(session, owned);
             grant_managed_capabilities(session, owned);
         }
-        apply_holds(snapshot.sessions.iter_mut().filter(|session| {
-            session.provider == Provider::OpenCode && session.runtime == Runtime::Host
-        }));
+        apply_holds(
+            self.source.holds.as_deref(),
+            snapshot.sessions.iter_mut().filter(|session| {
+                session.provider == Provider::OpenCode && session.runtime == Runtime::Host
+            }),
+        );
         if let Some(shells) = &self.source.background_shells {
             apply_background_shells(
                 snapshot.sessions.iter_mut().filter(|session| {
@@ -939,6 +944,7 @@ impl OpenCodeSource {
             discover_external_history: true,
             ownership: None,
             background_shells: Some(BackgroundShells::host()),
+            holds: crate::holds::default_holds_dir(),
         }
     }
 
@@ -954,6 +960,7 @@ impl OpenCodeSource {
             discover_external_history: true,
             ownership: None,
             background_shells: Some(BackgroundShells::host()),
+            holds: crate::holds::default_holds_dir(),
         }
     }
 
@@ -973,6 +980,7 @@ impl OpenCodeSource {
             discover_external_history: false,
             ownership: None,
             background_shells: Some(BackgroundShells::host()),
+            holds: crate::holds::default_holds_dir(),
         }
     }
 
@@ -997,6 +1005,7 @@ impl OpenCodeSource {
             probe: Arc::new(Vec::new),
             ownership: None,
             background_shells: None,
+            holds: None,
         }
     }
 
@@ -1064,6 +1073,7 @@ impl OpenCodeSource {
             probe: Arc::new(Vec::new),
             ownership: None,
             background_shells: None,
+            holds: None,
         }
     }
 
@@ -1244,7 +1254,7 @@ impl OpenCodeSource {
             }
         }
         if self.runtime == Runtime::Host {
-            apply_holds(sessions.values_mut());
+            apply_holds(self.holds.as_deref(), sessions.values_mut());
         }
         Ok(SourceDiscovery {
             sessions: sessions.into_values().collect(),
@@ -1599,13 +1609,13 @@ pub(super) fn background_screen_state(
     opencode_live::settle_from_screen(opencode_live::screen_state(&screen)?)
 }
 
-fn apply_holds<'a>(sessions: impl Iterator<Item = &'a mut AgentSession>) {
-    let Some(root) = crate::holds::default_holds_dir() else {
+fn apply_holds<'a>(root: Option<&Path>, sessions: impl Iterator<Item = &'a mut AgentSession>) {
+    let Some(root) = root else {
         return;
     };
     for session in sessions {
         if let Some(reason) =
-            crate::holds::live_hold(&root, "opencode", &session.provider_session_id)
+            crate::holds::live_hold(root, "opencode", &session.provider_session_id)
         {
             apply_hold(session, &reason);
         }
@@ -2424,6 +2434,167 @@ mod tests {
             .unwrap();
         assert_eq!(shared.raw_state.as_deref(), Some("server busy"));
         assert_eq!(shared.pid, Some(7));
+    }
+
+    /// Answers `ps` and the `opencode db` queries of one discovery.
+    struct PipelineRunner {
+        processes: String,
+        sessions: String,
+        parts: String,
+    }
+
+    impl CommandRunner for PipelineRunner {
+        fn run(&self, request: &CommandRequest) -> Result<CommandOutput> {
+            let stdout = if request.program == "ps" {
+                &self.processes
+            } else if request.args[1].contains("json_object('session'") {
+                &self.parts
+            } else if request.args[1].contains("json_object('id', s.id") {
+                &self.sessions
+            } else {
+                panic!("unexpected command {request:?}")
+            };
+            Ok(CommandOutput {
+                status: 0,
+                stdout: stdout.as_bytes().to_vec(),
+                stderr: vec![],
+            })
+        }
+    }
+
+    /// The dashboard's refresh as `main` wires it: discovery by one source,
+    /// then `enrich` by a separately built controller. Each kind of live work
+    /// must survive both steps.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_refresh_keeps_every_kind_of_live_work_through_discovery_and_enrich() {
+        let state = tempfile::tempdir().unwrap();
+        let work = tempfile::tempdir().unwrap();
+        let holds = tempfile::tempdir().unwrap();
+        let me = std::process::id();
+        let now = opencode_live::now_ms();
+
+        crate::opencode_supervisor::start_test_server(
+            state.path(),
+            &[
+                ("ses_managed", work.path()),
+                ("ses_shell", work.path()),
+                ("ses_hold", work.path()),
+            ],
+            |path| {
+                if path.starts_with("/global/health") {
+                    serde_json::json!({"healthy": true})
+                } else if path.starts_with("/session/status") {
+                    serde_json::json!({
+                        "ses_managed": {"type": "busy"},
+                        "ses_shared": {"type": "busy"},
+                    })
+                } else {
+                    serde_json::json!([])
+                }
+            },
+        )
+        .unwrap();
+        let supervisor = Arc::new(
+            OpenCodeSupervisor::with_state_dir("opencode", state.path().to_owned()).unwrap(),
+        );
+
+        let mut shell = std::process::Command::new("sleep")
+            .arg("60")
+            .spawn()
+            .unwrap();
+        let log = std::env::temp_dir().join(format!("cursor-opencode-bg.pipeline{me}"));
+        std::fs::write(&log, "").unwrap();
+        let hold = holds.path().join("opencode/ses_hold");
+        std::fs::create_dir_all(&hold).unwrap();
+        std::fs::write(
+            hold.join("m1.json"),
+            format!(r#"{{"pid": {me}, "reason": "CI on PR 8"}}"#),
+        )
+        .unwrap();
+
+        let directory = work.path().display();
+        let row = |id: &str, created: u64, updated: u64, completed: &str| {
+            format!(
+                "{{\"id\":\"{id}\",\"title\":\"{id}\",\"updated\":{updated},\"created\":{created},\"projectId\":\"global\",\"directory\":\"{directory}\",\"last\":{{\"role\":\"assistant\",\"created\":{updated},\"completed\":{completed},\"question\":0}}}}"
+            )
+        };
+        let finished = (now - 600_000).to_string();
+        let sessions = [
+            row("ses_run", now - 300_000, now - 120_000, "null"),
+            row("ses_shared", now - 3_600_000, now - 1_000, "null"),
+            row("ses_managed", now - 3_600_000, now - 2_000, "null"),
+            row("ses_shell", now - 3_600_000, now - 600_000, &finished),
+            row("ses_hold", now - 3_600_000, now - 600_000, &finished),
+            row("ses_idle", now - 7_200_000, now - 600_000, &finished),
+        ];
+        let runner = Arc::new(PipelineRunner {
+            processes: format!("{} 00:00\n", shell.id()),
+            sessions: format!("record\n{}\n", sessions.join("\n")),
+            parts: format!(
+                "record\n{{\"session\":\"ses_shell\",\"created\":{},\"text\":\"Started in the background (pid {}).\"}}\n",
+                opencode_live::now_ms(),
+                shell.id()
+            ),
+        });
+        let headless = work.path().to_owned();
+
+        let mut source = OpenCodeSource::managed("opencode", supervisor.clone());
+        source.runner = runner;
+        source.probe = Arc::new(move || {
+            vec![Holder {
+                pid: 42,
+                started_ms: now - 301_000,
+                target: opencode_live::Target::Directory(Some(headless.clone())),
+            }]
+        });
+        source.holds = Some(holds.path().to_owned());
+        let mut controller = OpenCodeController::managed("opencode", supervisor);
+        controller.source.holds = Some(holds.path().to_owned());
+
+        let discovery = source.discover_with_warnings(&DiscoveryRequest {
+            include_completed: true,
+            include_external: true,
+            ..DiscoveryRequest::default()
+        });
+        let _ = shell.kill();
+        let _ = shell.wait();
+        let _ = std::fs::remove_file(&log);
+        let discovery = discovery.unwrap();
+        let mut snapshot = SessionSnapshot {
+            sessions: discovery.sessions,
+            warnings: discovery.warnings,
+        };
+        controller.enrich(&mut snapshot);
+
+        assert_eq!(snapshot.warnings, Vec::<String>::new());
+        let row = |id: &str| {
+            let session = snapshot
+                .sessions
+                .iter()
+                .find(|session| session.provider_session_id == id)
+                .unwrap_or_else(|| panic!("{id} is missing"));
+            (
+                session.state,
+                session.raw_state.clone().unwrap_or_default(),
+                session.pid,
+            )
+        };
+        assert_eq!(
+            row("ses_managed"),
+            (SessionState::Working, "managed_server".into(), Some(me))
+        );
+        assert_eq!(
+            row("ses_shared"),
+            (SessionState::Working, "server busy".into(), Some(me))
+        );
+        assert_eq!(
+            row("ses_run"),
+            (SessionState::Working, "running turn".into(), Some(42))
+        );
+        assert_eq!(row("ses_shell").1, "background: shell");
+        assert_eq!(row("ses_hold").1, "background: CI on PR 8");
+        assert_eq!(row("ses_idle").0, SessionState::Completed);
     }
 
     /// Answers each `opencode db` query by a substring of its SQL, since the
