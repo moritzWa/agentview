@@ -39,7 +39,8 @@ cargo install --locked --git https://github.com/moritzWa/agentview
 </details>
 
 Run `agentview`, or the shorter `av` command the installer adds. Type a task,
-press `Tab` to pick a harness and `Shift+Tab` to pick a model.
+press `Tab` to pick a harness and `Shift+Tab` to pick a model. `Shift+Tab` also
+works from the session list before you type.
 
 ## Why
 

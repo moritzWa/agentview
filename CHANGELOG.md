@@ -10,6 +10,10 @@ and released versions are intended to follow Semantic Versioning.
 
 ### Added
 
+- Shift+Tab opens the model picker from the session list too, not only from an
+  open composer. While a new-task draft is a bare `/word`, the footer lists the
+  commands it could become.
+
 - An OpenCode session whose Cursor model left a command running in the
   background, such as a watcher the agent reports back from, shows as working
   until that command exits, instead of as done or waiting for input.

@@ -1663,6 +1663,23 @@ impl App {
         DASHBOARD_COMMANDS.contains(&command.as_str())
     }
 
+    /// Commands the new-task draft could still become, while it is a bare
+    /// `/word` with no argument yet.
+    pub fn command_suggestions(&self) -> Vec<&'static str> {
+        if self.overlay != Overlay::Composer(ComposerMode::NewSession)
+            || !self.input.starts_with('/')
+            || self.input.contains(char::is_whitespace)
+        {
+            return Vec::new();
+        }
+        let typed = self.input.to_ascii_lowercase();
+        DASHBOARD_COMMANDS
+            .iter()
+            .copied()
+            .filter(|command| command.starts_with(typed.as_str()))
+            .collect()
+    }
+
     pub fn pop_input(&mut self) {
         if self.overlay == Overlay::ModelPicker {
             self.model_filter.pop();
@@ -3975,6 +3992,21 @@ mod tests {
         app.set_hidden_picker_rows(hidden_picker_rows_for_height(60));
         app.move_hidden_page(1);
         assert_eq!(app.hidden_selection, 11, "clamped to the last choice");
+    }
+
+    #[test]
+    fn a_bare_slash_word_suggests_the_commands_it_could_become() {
+        let mut app = app_with(vec![]);
+        app.start_new_session(Some('/'));
+        assert_eq!(app.command_suggestions().len(), DASHBOARD_COMMANDS.len());
+        app.input = "/m".into();
+        assert_eq!(app.command_suggestions(), vec!["/model", "/migrate"]);
+        app.input = "/MOD".into();
+        assert_eq!(app.command_suggestions(), vec!["/model"]);
+        app.input = "/model cursor/x".into();
+        assert!(app.command_suggestions().is_empty());
+        app.input = "fix /model".into();
+        assert!(app.command_suggestions().is_empty());
     }
 
     #[test]

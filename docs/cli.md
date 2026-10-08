@@ -516,7 +516,7 @@ label.
 | New-task composer | `←` / `→`, `↑` / `↓`, `home` / `end`, `alt+←` / `alt+→`, `ctrl+a` / `ctrl+e` | Move the cursor through the draft by character, line, or word; typing, `backspace`, and `delete` edit at the cursor. |
 | New-task composer | `shift` with any of those, e.g. `shift+←` / `shift+→`, `option+shift+←` / `option+shift+→`, `cmd+shift+←` / `cmd+shift+→` | Select by character, word, or to the line edge, growing the selection on each press, as in OpenCode. Typing, pasting, `backspace`, or `delete` replaces the selection; a plain arrow collapses it. |
 | New-task composer | `tab` | Open the visible harness picker. |
-| New-task composer | `shift+tab` | Open the selected harness's model picker—or Terminal shell picker—without changing the task draft. |
+| New-task composer | `shift+tab` | Open the selected harness's model picker—or Terminal shell picker—without changing the task draft. From the session list it opens an empty composer first. |
 | Harness picker | `↑` / `↓`, `←` / `→`, or `tab` / `shift+tab` | Preview configured launch-capable harnesses with wraparound. |
 | Harness picker | `enter` or `1`–`9` | Select the highlighted or numbered harness and return to the unchanged draft; changing harness resets the model to its default. |
 | Harness picker | `esc` | Return to the unchanged draft without switching harnesses. |

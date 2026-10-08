@@ -1955,6 +1955,10 @@ fn handle_key(app: &mut App, key: KeyEvent) -> AppAction {
         {
             app.open_model_picker()
         }
+        KeyCode::BackTab if app.overlay == Overlay::None => {
+            app.start_new_session(None);
+            app.open_model_picker()
+        }
         KeyCode::Tab if app.overlay == Overlay::HarnessPicker => {
             app.move_harness_selection(1);
             AppAction::None
@@ -3939,6 +3943,36 @@ mod tests {
         handle_key(&mut app, key(KeyCode::Backspace));
         assert_eq!(app.input, " twoX");
         assert_eq!(app.input_cursor(), 0);
+    }
+
+    #[test]
+    fn shift_tab_opens_the_model_picker_from_the_session_list() {
+        let targets = vec![
+            LaunchTarget {
+                provider: Provider::Claude,
+                supports_model: true,
+            },
+            LaunchTarget {
+                provider: Provider::Codex,
+                supports_model: true,
+            },
+        ];
+        let mut app = App::with_launch_targets(
+            SessionSnapshot::default(),
+            false,
+            Provider::Claude,
+            targets,
+        );
+        assert_eq!(app.overlay, Overlay::None);
+        assert_eq!(
+            handle_key(&mut app, key(KeyCode::BackTab)),
+            AppAction::LoadModels {
+                provider: Provider::Claude
+            }
+        );
+        assert_eq!(app.overlay, Overlay::ModelPicker);
+        handle_key(&mut app, key(KeyCode::Esc));
+        assert_eq!(app.overlay, Overlay::Composer(ComposerMode::NewSession));
     }
 
     #[test]

@@ -997,6 +997,11 @@ fn contextual_footer(app: &App, width: u16) -> String {
         Overlay::Composer(ComposerMode::MigrationName { .. }) => {
             "enter migrate · esc targets".into()
         }
+        Overlay::Composer(ComposerMode::NewSession) if !app.command_suggestions().is_empty() => {
+            let suggestions = app.command_suggestions();
+            let verb = if suggestions.len() == 1 { "enter runs" } else { "commands" };
+            format!("{verb} {}", suggestions.join(" · "))
+        }
         Overlay::Composer(ComposerMode::NewSession) if width >= 100 => format!(
             "tab harness · shift+tab {} · ctrl+o folder · ctrl+g past sessions · ctrl+v image · /help",
             if app.launch_provider == Provider::Terminal { "shell" } else { "model" }
@@ -1263,6 +1268,7 @@ fn help_sections(app: &App) -> Vec<HelpSection> {
         title: "new session",
         entries: vec![
             ("tab", "pick harness"),
+            ("shift+tab", "pick model"),
             (FOLDER_PICKER_KEYS, "pick folder"),
             ("ctrl+j", "newline"),
             ("ctrl+v", "paste image"),
