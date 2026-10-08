@@ -403,13 +403,22 @@ impl ProviderController for OpenCodeController {
     }
 }
 
-/// `cwd`, or its nearest existing ancestor once the directory is gone (a
-/// removed worktree). OpenCode keys projects by the repository's root commit,
-/// so the parent checkout still finds the session.
+/// `cwd`, or once the directory is gone (a removed worktree) the checkout that
+/// held it: the nearest existing ancestor, raised to the repository root when
+/// that ancestor is inside one, such as `repo/.claude/worktrees`. OpenCode
+/// keys projects by the repository's root commit, so the parent checkout
+/// still finds the session.
 fn openable_dir(cwd: &Path) -> PathBuf {
-    cwd.ancestors()
-        .find(|dir| dir.is_dir())
-        .unwrap_or(cwd)
+    if cwd.is_dir() {
+        return cwd.to_path_buf();
+    }
+    let Some(existing) = cwd.ancestors().find(|dir| dir.is_dir()) else {
+        return cwd.to_path_buf();
+    };
+    existing
+        .ancestors()
+        .find(|dir| dir.join(".git").exists())
+        .unwrap_or(existing)
         .to_path_buf()
 }
 
@@ -1981,6 +1990,12 @@ mod tests {
         let removed = directory.path().join(".claude/worktrees/gone");
         assert_eq!(openable_dir(&removed), directory.path());
         assert_eq!(openable_dir(directory.path()), directory.path());
+
+        std::fs::create_dir_all(directory.path().join(".git")).unwrap();
+        std::fs::create_dir_all(directory.path().join(".claude/worktrees/kept")).unwrap();
+        assert_eq!(openable_dir(&removed), directory.path());
+        let kept = directory.path().join(".claude/worktrees/kept");
+        assert_eq!(openable_dir(&kept), kept);
     }
 
     #[test]
