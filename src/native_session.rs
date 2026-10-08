@@ -94,7 +94,7 @@ struct PtyDrain {
     stop: Arc<AtomicBool>,
     /// Wakes the drain's poll so a resume does not wait out its timeout.
     wake: std::fs::File,
-    done: thread::JoinHandle<(std::fs::File, vt100::Parser)>,
+    done: thread::JoinHandle<(std::fs::File, vt100::Parser, KeyboardModes)>,
     contents: Arc<Mutex<String>>,
     /// The terminal title and when output last arrived, kept current on every
     /// read rather than every [`SCREEN_PUBLISH_INTERVAL`].
@@ -293,14 +293,23 @@ pub fn resume(session_key: &str) -> Result<NativeSessionExit> {
         let started = Instant::now();
         let detached =
             take_detached(session_key)?.context("the background terminal is no longer running")?;
-        let (child, mut master, screen, warning) = detached.into_frontend()?;
+        let (child, mut master, screen, keyboard, warning) = detached.into_frontend()?;
         report_focus(&mut master, session_key, true);
         crate::perf!(
             "resume",
             "key={session_key} handoff={}",
             crate::perf_log::ms(started.elapsed())
         );
-        bridge_session(child, master, screen, session_key, false, None, warning)
+        bridge_session(
+            child,
+            master,
+            screen,
+            keyboard,
+            session_key,
+            false,
+            None,
+            warning,
+        )
     }
     #[cfg(not(unix))]
     bail!("background terminal resume is unavailable on this platform")
@@ -331,6 +340,7 @@ pub fn start_in_background(mut command: Command, session_key: &str) -> Result<()
         let drain = start_output_drain(
             master,
             vt100::Parser::new(size.ws_row, size.ws_col, 0),
+            KeyboardModes::default(),
             Some(session_key.to_owned()),
         )?;
         registry.insert(
@@ -606,10 +616,10 @@ fn run_pty(
 ) -> Result<NativeSessionExit> {
     let session_key = &current_key(session_key);
     let detached = take_detached(session_key)?;
-    let (child, master, screen, fresh, warning) = match detached {
+    let (child, master, screen, keyboard, fresh, warning) = match detached {
         Some(detached) => {
-            let (child, master, screen, warning) = detached.into_frontend()?;
-            (child, master, screen, false, warning)
+            let (child, master, screen, keyboard, warning) = detached.into_frontend()?;
+            (child, master, screen, keyboard, false, warning)
         }
         None => {
             clear_physical_screen()?;
@@ -624,6 +634,7 @@ fn run_pty(
                 child,
                 master,
                 vt100::Parser::new(size.ws_row, size.ws_col, 0),
+                KeyboardModes::default(),
                 true,
                 warning,
             )
@@ -633,6 +644,7 @@ fn run_pty(
         child,
         master,
         screen,
+        keyboard,
         session_key,
         fresh,
         fresh.then_some(initial_input).flatten(),
@@ -824,10 +836,12 @@ fn spawn_pty(command: &mut Command) -> Result<(std::process::Child, std::fs::Fil
 }
 
 #[cfg(unix)]
+#[allow(clippy::too_many_arguments)]
 fn bridge_session(
     mut child: std::process::Child,
     mut master: std::fs::File,
     mut screen: vt100::Parser,
+    mut keyboard: KeyboardModes,
     session_key: &str,
     fresh: bool,
     mut initial_input: Option<ScreenTriggeredInput>,
@@ -847,6 +861,9 @@ fn bridge_session(
     if !fresh {
         stdout.write_all(b"\x1b[2J\x1b[H")?;
         stdout.write_all(&screen.screen().state_formatted())?;
+        if let Some(sequence) = keyboard.resume_sequence() {
+            stdout.write_all(sequence.as_bytes())?;
+        }
         stdout.flush()?;
         signal_group(child.id(), libc::SIGCONT);
     }
@@ -861,7 +878,8 @@ fn bridge_session(
     let mut return_gesture = ReturnGesture::for_session(session_key);
     let mut redraw_restore_at = None;
     let mut hidden_queries = TerminalQueryScanner::default();
-    let mut color_queries = answers_color_queries(session_key).then(TerminalQueryScanner::default);
+    let mut shown_queries = TerminalQueryScanner::default();
+    let answer_colors = answers_color_queries(session_key);
     let mut pending_input = PendingInput::default();
     // Resuming shows the saved screen as is: forcing OpenCode to repaint
     // costs about a quarter second on every open. If the terminal ever
@@ -911,13 +929,15 @@ fn bridge_session(
                 );
             }
             if redraw_restore_at.is_some() {
-                absorb_available(&mut master, &mut screen, &mut hidden_queries)?;
+                absorb_available(&mut master, &mut screen, &mut hidden_queries, &mut keyboard)?;
             } else {
                 copy_available(
                     &mut master,
                     &mut stdout,
                     &mut screen,
-                    color_queries.as_mut(),
+                    &mut shown_queries,
+                    answer_colors,
+                    &mut keyboard,
                 )?;
             }
             forward_ready_initial_input(&mut initial_input, &screen, &mut pending_input)?;
@@ -1016,7 +1036,7 @@ fn bridge_session(
             // aborts an in-flight model request.
             restore_dashboard_terminal_modes(&mut stdout)?;
             report_focus(&mut master, session_key, false);
-            let drain = start_output_drain(master, screen, None)?;
+            let drain = start_output_drain(master, screen, keyboard, None)?;
             detached_registry()
                 .lock()
                 .map_err(|_| anyhow!("provider-native background registry lock was poisoned"))?
@@ -1053,7 +1073,14 @@ fn bridge_session(
             }
         }
         if let Some(status) = child.try_wait()? {
-            copy_available(&mut master, &mut stdout, &mut screen, None)?;
+            copy_available(
+                &mut master,
+                &mut stdout,
+                &mut screen,
+                &mut shown_queries,
+                false,
+                &mut keyboard,
+            )?;
             return Ok(NativeSessionExit::Exited(status));
         }
     }
@@ -1134,6 +1161,7 @@ const DRAIN_ERROR_BACKOFF: Duration = Duration::from_millis(50);
 fn start_output_drain(
     mut master: std::fs::File,
     mut screen: vt100::Parser,
+    mut keyboard: KeyboardModes,
     mut blur_once_started: Option<String>,
 ) -> Result<PtyDrain> {
     set_nonblocking(master.as_raw_fd(), true)?;
@@ -1206,6 +1234,7 @@ fn start_output_drain(
                                 &bytes[..count],
                                 &mut screen,
                                 &mut queries,
+                                &mut keyboard,
                                 &mut master,
                             );
                         }
@@ -1238,7 +1267,7 @@ fn start_output_drain(
                 }
             }
             publish(&screen);
-            (master, screen)
+            (master, screen, keyboard)
         })
         .context("failed to keep the provider terminal running")?;
     Ok(PtyDrain {
@@ -1279,6 +1308,7 @@ fn process_detached_output(
     bytes: &[u8],
     screen: &mut vt100::Parser,
     queries: &mut TerminalQueryScanner,
+    keyboard: &mut KeyboardModes,
     reply: &mut impl Write,
 ) {
     let mut processed = 0;
@@ -1300,6 +1330,12 @@ fn process_detached_output(
             }
             TerminalQuery::PrimaryAttributes => Some("\x1b[?1;2c".to_owned()),
             TerminalQuery::Color(code) => crate::theme::osc_color_reply(code),
+            TerminalQuery::KeyboardFlags => outer_terminal_has_kitty_keyboard()
+                .then(|| format!("\x1b[?{}u", keyboard.current())),
+            TerminalQuery::KeyboardChange(change) => {
+                keyboard.apply(change);
+                None
+            }
         };
         if let Some(answer) = answer {
             let _ = reply.write_all(answer.as_bytes());
@@ -1308,17 +1344,28 @@ fn process_detached_output(
     screen.process(&bytes[processed..]);
 }
 
-/// Answer OpenCode's foreground and background color queries from the
-/// dashboard's scheme. OpenCode falls back to its dark palette when the
-/// terminal's replies are late, and duplicate replies from the terminal are
-/// ignored once it has decided.
+/// Follow the keyboard modes of output shown in front, and with
+/// `answer_colors` answer OpenCode's foreground and background color queries
+/// from the dashboard's scheme. OpenCode falls back to its dark palette when
+/// the terminal's replies are late, and duplicate replies from the terminal
+/// are ignored once it has decided.
 #[cfg(unix)]
-fn answer_color_queries(bytes: &[u8], queries: &mut TerminalQueryScanner, reply: &mut impl Write) {
+fn observe_shown_output(
+    bytes: &[u8],
+    queries: &mut TerminalQueryScanner,
+    answer_colors: bool,
+    keyboard: &mut KeyboardModes,
+    reply: &mut impl Write,
+) {
     for byte in bytes {
-        if let Some(TerminalQuery::Color(code)) = queries.feed(*byte) {
-            if let Some(answer) = crate::theme::osc_color_reply(code) {
-                let _ = reply.write_all(answer.as_bytes());
+        match queries.feed(*byte) {
+            Some(TerminalQuery::Color(code)) if answer_colors => {
+                if let Some(answer) = crate::theme::osc_color_reply(code) {
+                    let _ = reply.write_all(answer.as_bytes());
+                }
             }
+            Some(TerminalQuery::KeyboardChange(change)) => keyboard.apply(change),
+            _ => {}
         }
     }
 }
@@ -1332,6 +1379,91 @@ enum TerminalQuery {
     PrimaryAttributes,
     /// `OSC 10 ; ?` or `OSC 11 ; ?`
     Color(u8),
+    /// `CSI ? u`, the kitty keyboard protocol's support probe
+    KeyboardFlags,
+    /// `CSI > flags u`, `CSI < count u` or `CSI = flags ; mode u`
+    KeyboardChange(KeyboardChange),
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KeyboardChange {
+    Push(u16),
+    Pop(u16),
+    Set { flags: u16, mode: u16 },
+}
+
+/// The kitty keyboard modes a provider has pushed. Whatever it pushed while
+/// hidden went to the screen model, not the outer terminal, so the outer
+/// terminal is given the current mode each time the provider comes to front.
+/// Without it OpenCode never receives Cmd+V from Ghostty, which only sends
+/// that key, for an image-only clipboard, as a kitty key event.
+#[cfg(unix)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct KeyboardModes {
+    stack: Vec<u16>,
+}
+
+#[cfg(unix)]
+impl KeyboardModes {
+    const MAX_DEPTH: usize = 16;
+
+    fn current(&self) -> u16 {
+        self.stack.last().copied().unwrap_or(0)
+    }
+
+    fn apply(&mut self, change: KeyboardChange) {
+        match change {
+            KeyboardChange::Push(flags) => {
+                if self.stack.len() == Self::MAX_DEPTH {
+                    self.stack.remove(0);
+                }
+                self.stack.push(flags);
+            }
+            KeyboardChange::Pop(count) => {
+                let keep = self.stack.len().saturating_sub(usize::from(count.max(1)));
+                self.stack.truncate(keep);
+            }
+            KeyboardChange::Set { flags, mode } => {
+                let current = self.current();
+                let next = match mode {
+                    2 => current | flags,
+                    3 => current & !flags,
+                    _ => flags,
+                };
+                match self.stack.last_mut() {
+                    Some(top) => *top = next,
+                    None => self.stack.push(next),
+                }
+            }
+        }
+    }
+
+    /// The one entry pushed onto the outer terminal on resume, popped again
+    /// by [`restore_dashboard_terminal_modes`].
+    fn resume_sequence(&self) -> Option<String> {
+        let flags = self.current();
+        (flags != 0).then(|| format!("\x1b[>{flags}u"))
+    }
+}
+
+/// Only claim kitty keyboard support for a hidden provider when the outer
+/// terminal has it: a provider told otherwise would wait for key events
+/// Terminal.app never sends.
+#[cfg(unix)]
+fn outer_terminal_has_kitty_keyboard() -> bool {
+    static SUPPORTED: OnceLock<bool> = OnceLock::new();
+    *SUPPORTED.get_or_init(|| {
+        let term = std::env::var("TERM").unwrap_or_default();
+        let program = std::env::var("TERM_PROGRAM").unwrap_or_default();
+        kitty_keyboard_terminal(&term, &program)
+    })
+}
+
+#[cfg(unix)]
+fn kitty_keyboard_terminal(term: &str, program: &str) -> bool {
+    matches!(term, "xterm-ghostty" | "xterm-kitty")
+        || matches!(program, "ghostty" | "WezTerm" | "kitty")
 }
 
 /// Incremental CSI and OSC scanner, so a query split across two reads is
@@ -1427,6 +1559,7 @@ impl TerminalQueryScanner {
                     match (byte, self.parameters.as_slice()) {
                         (b'n', b"6") => Some(TerminalQuery::CursorPosition),
                         (b'c', b"" | b"0") => Some(TerminalQuery::PrimaryAttributes),
+                        (b'u', parameters) => keyboard_query(parameters),
                         _ => None,
                     }
                 }
@@ -1444,6 +1577,34 @@ impl TerminalQueryScanner {
 }
 
 #[cfg(unix)]
+fn keyboard_query(parameters: &[u8]) -> Option<TerminalQuery> {
+    let (&marker, rest) = parameters.split_first()?;
+    let rest = std::str::from_utf8(rest).ok()?;
+    let mut numbers = rest.split(';').map(|part| {
+        if part.is_empty() {
+            Some(None)
+        } else {
+            part.parse::<u16>().ok().map(Some)
+        }
+    });
+    let mut next = || numbers.next().unwrap_or(Some(None));
+    let change = match marker {
+        b'?' if rest.is_empty() => return Some(TerminalQuery::KeyboardFlags),
+        b'>' => KeyboardChange::Push(next()?.unwrap_or(0)),
+        b'<' => KeyboardChange::Pop(next()?.unwrap_or(1)),
+        b'=' => {
+            let flags = next()?.unwrap_or(0);
+            KeyboardChange::Set {
+                flags,
+                mode: next()?.unwrap_or(1),
+            }
+        }
+        _ => return None,
+    };
+    Some(TerminalQuery::KeyboardChange(change))
+}
+
+#[cfg(unix)]
 impl DetachedSession {
     fn into_frontend(
         mut self,
@@ -1451,6 +1612,7 @@ impl DetachedSession {
         std::process::Child,
         std::fs::File,
         vt100::Parser,
+        KeyboardModes,
         Option<String>,
     )> {
         let child = self
@@ -1462,11 +1624,11 @@ impl DetachedSession {
             .take()
             .context("detached provider terminal has no output drain")?;
         drain.halt();
-        let (master, screen) = drain
+        let (master, screen, keyboard) = drain
             .done
             .join()
             .map_err(|_| anyhow!("provider terminal drain stopped unexpectedly"))?;
-        Ok((child, master, screen, self.warning.take()))
+        Ok((child, master, screen, keyboard, self.warning.take()))
     }
 }
 
@@ -1485,7 +1647,9 @@ fn copy_available(
     master: &mut std::fs::File,
     output: &mut impl Write,
     screen: &mut vt100::Parser,
-    mut color_queries: Option<&mut TerminalQueryScanner>,
+    queries: &mut TerminalQueryScanner,
+    answer_colors: bool,
+    keyboard: &mut KeyboardModes,
 ) -> Result<()> {
     set_nonblocking(master.as_raw_fd(), true)?;
     let mut bytes = [0_u8; 8192];
@@ -1495,9 +1659,7 @@ fn copy_available(
             Ok(count) => {
                 screen.process(&bytes[..count]);
                 output.write_all(&bytes[..count])?;
-                if let Some(queries) = color_queries.as_deref_mut() {
-                    answer_color_queries(&bytes[..count], queries, master);
-                }
+                observe_shown_output(&bytes[..count], queries, answer_colors, keyboard, master);
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
             Err(error) if error.raw_os_error() == Some(libc::EIO) => break,
@@ -1572,13 +1734,16 @@ fn absorb_available(
     master: &mut std::fs::File,
     screen: &mut vt100::Parser,
     queries: &mut TerminalQueryScanner,
+    keyboard: &mut KeyboardModes,
 ) -> Result<()> {
     set_nonblocking(master.as_raw_fd(), true)?;
     let mut bytes = [0_u8; 8192];
     loop {
         match master.read(&mut bytes) {
             Ok(0) => break,
-            Ok(count) => process_detached_output(&bytes[..count], screen, queries, master),
+            Ok(count) => {
+                process_detached_output(&bytes[..count], screen, queries, keyboard, master)
+            }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
             Err(error) if error.raw_os_error() == Some(libc::EIO) => break,
             Err(error) => return Err(error.into()),
@@ -2355,7 +2520,13 @@ mod tests {
             "i=0; while [ \"$i\" -lt 20 ]; do echo tick-$i; i=$((i+1)); sleep 0.05; done",
         ]);
         let (mut child, master) = spawn_pty(&mut command).unwrap();
-        let drain = start_output_drain(master, vt100::Parser::new(24, 80, 0), None).unwrap();
+        let drain = start_output_drain(
+            master,
+            vt100::Parser::new(24, 80, 0),
+            KeyboardModes::default(),
+            None,
+        )
+        .unwrap();
         thread::sleep(Duration::from_millis(400));
         let state = Command::new("ps")
             .args(["-o", "state=", "-p", &child.id().to_string()])
@@ -2376,7 +2547,7 @@ mod tests {
             thread::sleep(Duration::from_millis(20));
         }
         drain.halt();
-        let (_master, screen) = drain.done.join().unwrap();
+        let (_master, screen, _keyboard) = drain.done.join().unwrap();
         let contents = screen.screen().contents();
         assert!(contents.contains("tick-0"), "{contents}");
         assert!(contents.contains("tick-5"), "{contents}");
@@ -2389,6 +2560,7 @@ mod tests {
     fn detached_output_answers_cursor_and_attribute_queries_across_reads() {
         let mut screen = vt100::Parser::new(24, 80, 0);
         let mut queries = TerminalQueryScanner::default();
+        let mut keyboard = KeyboardModes::default();
         let mut replies = Vec::new();
         // The cursor query is split across two reads, and output after it in
         // the same read must not move the reported position.
@@ -2396,14 +2568,33 @@ mod tests {
             b"\x1b[3;5Habc\x1b[",
             &mut screen,
             &mut queries,
+            &mut keyboard,
             &mut replies,
         );
         assert!(replies.is_empty());
-        process_detached_output(b"6nlater", &mut screen, &mut queries, &mut replies);
+        process_detached_output(
+            b"6nlater",
+            &mut screen,
+            &mut queries,
+            &mut keyboard,
+            &mut replies,
+        );
         assert_eq!(replies, b"\x1b[3;8R");
         replies.clear();
-        process_detached_output(b"\x1b[c\x1b", &mut screen, &mut queries, &mut replies);
-        process_detached_output(b"[0c", &mut screen, &mut queries, &mut replies);
+        process_detached_output(
+            b"\x1b[c\x1b",
+            &mut screen,
+            &mut queries,
+            &mut keyboard,
+            &mut replies,
+        );
+        process_detached_output(
+            b"[0c",
+            &mut screen,
+            &mut queries,
+            &mut keyboard,
+            &mut replies,
+        );
         assert_eq!(replies, b"\x1b[?1;2c\x1b[?1;2c");
         replies.clear();
         // Private and secondary variants, and ordinary sequences, are not ours.
@@ -2411,6 +2602,7 @@ mod tests {
             b"\x1b[?6n\x1b[>c\x1b[16n\x1b[2J",
             &mut screen,
             &mut queries,
+            &mut keyboard,
             &mut replies,
         );
         assert!(replies.is_empty());
@@ -2422,10 +2614,11 @@ mod tests {
     fn color_queries_are_answered_from_the_dashboard_scheme_across_reads() {
         crate::theme::set_terminal_scheme(crate::theme::ColorScheme::Light);
         let mut queries = TerminalQueryScanner::default();
+        let mut keyboard = KeyboardModes::default();
         let mut replies = Vec::new();
-        answer_color_queries(b"\x1b]10;?\x07\x1b]11", &mut queries, &mut replies);
-        answer_color_queries(b";?\x1b", &mut queries, &mut replies);
-        answer_color_queries(b"\\", &mut queries, &mut replies);
+        for bytes in [&b"\x1b]10;?\x07\x1b]11"[..], b";?\x1b", b"\\"] {
+            observe_shown_output(bytes, &mut queries, true, &mut keyboard, &mut replies);
+        }
         assert_eq!(
             String::from_utf8(replies).unwrap(),
             "\x1b]10;rgb:3b3b/3b3b/3b3b\x1b\\\x1b]11;rgb:ffff/ffff/ffff\x1b\\"
@@ -2433,12 +2626,100 @@ mod tests {
         // Setting colors, titles, palette queries, and cursor queries are not
         // color queries, and an unterminated OSC never answers.
         let mut replies = Vec::new();
-        answer_color_queries(
+        observe_shown_output(
             b"\x1b]11;rgb:0/0/0\x07\x1b]0;title 11;?\x07\x1b]4;1;?\x07\x1b[6n\x1b]10;?\x1b[c",
             &mut queries,
+            true,
+            &mut keyboard,
             &mut replies,
         );
         assert!(replies.is_empty());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn kitty_keyboard_sequences_are_parsed() {
+        let change = |change| Some(TerminalQuery::KeyboardChange(change));
+        assert_eq!(keyboard_query(b"?"), Some(TerminalQuery::KeyboardFlags));
+        assert_eq!(keyboard_query(b">5"), change(KeyboardChange::Push(5)));
+        assert_eq!(keyboard_query(b">"), change(KeyboardChange::Push(0)));
+        assert_eq!(keyboard_query(b"<"), change(KeyboardChange::Pop(1)));
+        assert_eq!(keyboard_query(b"<3"), change(KeyboardChange::Pop(3)));
+        assert_eq!(
+            keyboard_query(b"=1;2"),
+            change(KeyboardChange::Set { flags: 1, mode: 2 })
+        );
+        assert_eq!(
+            keyboard_query(b"=4"),
+            change(KeyboardChange::Set { flags: 4, mode: 1 })
+        );
+        // Cursor restore (`CSI u`) and the reply to a query are not changes.
+        assert_eq!(keyboard_query(b""), None);
+        assert_eq!(keyboard_query(b"?5"), None);
+        assert_eq!(keyboard_query(b">x"), None);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_hidden_provider_keeps_the_keyboard_mode_it_pushes_for_its_resume() {
+        let mut screen = vt100::Parser::new(24, 80, 0);
+        let mut queries = TerminalQueryScanner::default();
+        let mut keyboard = KeyboardModes::default();
+        let mut replies = Vec::new();
+        assert_eq!(keyboard.resume_sequence(), None);
+        process_detached_output(
+            b"frame\x1b[>",
+            &mut screen,
+            &mut queries,
+            &mut keyboard,
+            &mut replies,
+        );
+        process_detached_output(
+            b"5u",
+            &mut screen,
+            &mut queries,
+            &mut keyboard,
+            &mut replies,
+        );
+        assert_eq!(keyboard.resume_sequence().as_deref(), Some("\x1b[>5u"));
+        assert!(screen.screen().contents().contains("frame"));
+        keyboard.apply(KeyboardChange::Set { flags: 8, mode: 2 });
+        assert_eq!(keyboard.current(), 13);
+        keyboard.apply(KeyboardChange::Set { flags: 1, mode: 3 });
+        assert_eq!(keyboard.current(), 12);
+        keyboard.apply(KeyboardChange::Pop(1));
+        assert_eq!(keyboard.resume_sequence(), None);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn keyboard_modes_pushed_in_front_survive_going_to_the_background() {
+        let mut queries = TerminalQueryScanner::default();
+        let mut keyboard = KeyboardModes::default();
+        let mut replies = Vec::new();
+        observe_shown_output(
+            b"\x1b[>5u",
+            &mut queries,
+            false,
+            &mut keyboard,
+            &mut replies,
+        );
+        assert_eq!(keyboard.current(), 5);
+        // The outer terminal answers the probe itself while the provider is in
+        // front.
+        observe_shown_output(b"\x1b[?u", &mut queries, true, &mut keyboard, &mut replies);
+        assert!(replies.is_empty());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn kitty_keyboard_support_is_claimed_only_for_terminals_that_have_it() {
+        assert!(kitty_keyboard_terminal("xterm-ghostty", "ghostty"));
+        assert!(kitty_keyboard_terminal("xterm-ghostty", ""));
+        assert!(kitty_keyboard_terminal("xterm-kitty", ""));
+        assert!(kitty_keyboard_terminal("xterm-256color", "WezTerm"));
+        assert!(!kitty_keyboard_terminal("xterm-256color", "Apple_Terminal"));
+        assert!(!kitty_keyboard_terminal("screen-256color", "tmux"));
     }
 
     #[test]
@@ -2461,7 +2742,13 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(5);
         while !screen.screen().contents().contains("hidden-frame") {
             assert!(Instant::now() < deadline, "{}", screen.screen().contents());
-            absorb_available(&mut master, &mut screen, &mut queries).unwrap();
+            absorb_available(
+                &mut master,
+                &mut screen,
+                &mut queries,
+                &mut KeyboardModes::default(),
+            )
+            .unwrap();
             thread::sleep(Duration::from_millis(20));
         }
         let _ = child.kill();
@@ -2483,7 +2770,13 @@ mod tests {
         command.args(["-c", script]);
         let (child, master) = spawn_pty(&mut command).unwrap();
         let pid = child.id();
-        let drain = start_output_drain(master, vt100::Parser::new(24, 80, 0), None).unwrap();
+        let drain = start_output_drain(
+            master,
+            vt100::Parser::new(24, 80, 0),
+            KeyboardModes::default(),
+            None,
+        )
+        .unwrap();
         detached_registry().lock().unwrap().insert(
             session_key.to_owned(),
             DetachedSession {
@@ -2607,7 +2900,7 @@ mod tests {
         let detached = take_detached(key)
             .unwrap()
             .expect("provider is still running");
-        let (mut child, _master, screen, _warning) = detached.into_frontend().unwrap();
+        let (mut child, _master, screen, _keyboard, _warning) = detached.into_frontend().unwrap();
         let contents = screen.screen().contents();
         assert!(contents.contains("LARGE_OUTPUT_DONE"), "{contents}");
         signal_group(child.id(), libc::SIGKILL);
