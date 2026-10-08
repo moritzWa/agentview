@@ -531,35 +531,67 @@ fn shared_client_for(reach: SharedClientReach, cwd: &Path) -> (String, String) {
     (shared_client_key(scope), shared_client_id(scope))
 }
 
-/// The title the shared TUI shows once it has drawn `session`.
-fn shared_client_title(
-    supervisor: &OpenCodeSupervisor,
-    session: &AgentSession,
-    cwd: &Path,
-) -> Option<String> {
-    let started = std::time::Instant::now();
-    let title = supervisor.session_title(&session.provider_session_id, cwd);
-    crate::perf!(
-        "session-title",
-        "session={} took={} ok={}",
-        session.provider_session_id,
-        crate::perf_log::ms(started.elapsed()),
-        title.is_ok()
-    );
-    title.ok()
+/// The titles the shared TUI may show once it has drawn a session: the one the
+/// dashboard listed, and the server's once it answers. The server's covers a
+/// session renamed in agentview or retitled since the last refresh, but asking
+/// it can take seconds while it is busy, and the TUI usually draws long before
+/// that, so the wait never blocks on it.
+struct ExpectedTitle {
+    listed: Option<String>,
+    fetched: Arc<Mutex<Option<String>>>,
+}
+
+impl ExpectedTitle {
+    fn start(supervisor: &Arc<OpenCodeSupervisor>, session: &AgentSession, cwd: &Path) -> Self {
+        let fetched = Arc::new(Mutex::new(None));
+        let slot = Arc::clone(&fetched);
+        let supervisor = Arc::clone(supervisor);
+        let session_id = session.provider_session_id.clone();
+        let cwd = cwd.to_path_buf();
+        let _ = std::thread::Builder::new()
+            .name("opencode-title".into())
+            .spawn(move || {
+                let started = std::time::Instant::now();
+                let title = supervisor.session_title(&session_id, &cwd);
+                crate::perf!(
+                    "session-title",
+                    "session={session_id} took={} ok={}",
+                    crate::perf_log::ms(started.elapsed()),
+                    title.is_ok()
+                );
+                if let (Ok(title), Ok(mut slot)) = (title, slot.lock()) {
+                    *slot = Some(title);
+                }
+            });
+        Self {
+            listed: (!session.name.is_empty()).then(|| session.name.clone()),
+            fetched,
+        }
+    }
+
+    fn shown_by(&self, terminal_title: &str) -> bool {
+        let shows = |title: &str| crate::opencode_supervisor::tui_shows_title(title, terminal_title);
+        self.listed.as_deref().is_some_and(shows)
+            || self
+                .fetched
+                .lock()
+                .ok()
+                .and_then(|slot| slot.clone())
+                .is_some_and(|title| shows(&title))
+    }
 }
 
 /// Wait until the shared TUI `key`, switched to a session while hidden, has
 /// drawn it: the TUI sets the session's title once its messages are on screen.
 fn wait_for_shared_client(
     key: &str,
-    title: &str,
+    title: &ExpectedTitle,
     timeout: Duration,
     still_wanted: &dyn Fn() -> bool,
 ) -> bool {
     crate::native_session::wait_for_background_title(
         key,
-        &|shown| crate::opencode_supervisor::tui_shows_title(title, shown),
+        &|shown| title.shown_by(shown),
         SHARED_CLIENT_SETTLE,
         timeout,
         still_wanted,
@@ -780,6 +812,7 @@ impl OpenCodeController {
         // The TUI repaints the new session before the switch returns; until
         // then its screen must not speak for the row it showed before.
         remember_shared_client(&key, server_pid, "", true);
+        let title = ExpectedTitle::start(supervisor, session, &cwd);
         let mut selected_on =
             supervisor.select_in_shared_client(&session.provider_session_id, &cwd, &client)?;
         let selected = started.elapsed();
@@ -787,16 +820,12 @@ impl OpenCodeController {
         // the session. One that never matches its title is still taken as
         // switched once the wait runs out.
         let deadline = std::time::Instant::now() + SHARED_CLIENT_PREVIEW_WAIT;
-        let title = shared_client_title(supervisor, session, &cwd);
         let mut selects = 1;
         let drawn = loop {
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-            let Some(title) = title.as_deref() else {
-                break false;
-            };
             if wait_for_shared_client(
                 &key,
-                title,
+                &title,
                 remaining.min(SHARED_CLIENT_RESELECT),
                 still_wanted,
             ) {
