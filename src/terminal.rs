@@ -771,7 +771,8 @@ pub fn run_dashboard(
                             }
                         }
                         if let Some((provider, model)) = app.take_model_change() {
-                            if let Err(error) = last_harness.save_model(&provider, model.as_deref()) {
+                            if let Err(error) = last_harness.save_model(&provider, model.as_deref())
+                            {
                                 app.set_notice(format!("failed to remember model: {error:#}"));
                             }
                         }
@@ -3977,12 +3978,8 @@ mod tests {
                 supports_model: true,
             },
         ];
-        let mut app = App::with_launch_targets(
-            SessionSnapshot::default(),
-            false,
-            Provider::Claude,
-            targets,
-        );
+        let mut app =
+            App::with_launch_targets(SessionSnapshot::default(), false, Provider::Claude, targets);
         assert_eq!(app.overlay, Overlay::None);
         assert_eq!(
             handle_key(&mut app, key(KeyCode::BackTab)),

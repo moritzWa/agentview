@@ -1014,7 +1014,9 @@ impl App {
             return None;
         }
         match &self.launch_model {
-            Some(model) => self.remembered_models.insert(provider.clone(), model.clone()),
+            Some(model) => self
+                .remembered_models
+                .insert(provider.clone(), model.clone()),
             None => self.remembered_models.remove(&provider),
         };
         Some((provider, self.launch_model.clone()))
@@ -4156,7 +4158,10 @@ mod tests {
                 provider: Provider::OpenCode
             }
         );
-        assert_eq!(app.launch_model.as_deref(), Some("anthropic/claude-opus-5-5"));
+        assert_eq!(
+            app.launch_model.as_deref(),
+            Some("anthropic/claude-opus-5-5")
+        );
         app.set_available_models(Provider::OpenCode, catalog());
         assert_eq!(app.launch_model.as_deref(), Some("cursor/claude-opus-5-5"));
         assert_eq!(
@@ -4167,18 +4172,27 @@ mod tests {
 
         // With the catalog here it switches at once, and wraps around.
         assert_eq!(app.switch_model_provider(), AppAction::None);
-        assert_eq!(app.launch_model.as_deref(), Some("anthropic/claude-opus-5-5"));
+        assert_eq!(
+            app.launch_model.as_deref(),
+            Some("anthropic/claude-opus-5-5")
+        );
 
         // A model only one provider serves stays put.
         app.launch_model = Some("anthropic/claude-haiku-5-5".into());
         app.switch_model_provider();
-        assert_eq!(app.launch_model.as_deref(), Some("anthropic/claude-haiku-5-5"));
+        assert_eq!(
+            app.launch_model.as_deref(),
+            Some("anthropic/claude-haiku-5-5")
+        );
         assert!(app.notice.as_deref().unwrap().contains("no other provider"));
 
         // The id keeps everything after the first slash.
         app.launch_model = Some("groq/openai/gpt-oss-120b".into());
         app.switch_model_provider();
-        assert_eq!(app.launch_model.as_deref(), Some("groq/openai/gpt-oss-120b"));
+        assert_eq!(
+            app.launch_model.as_deref(),
+            Some("groq/openai/gpt-oss-120b")
+        );
     }
 
     #[test]

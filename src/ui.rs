@@ -884,23 +884,10 @@ fn composer_draft_layout(app: &App, width: u16) -> Option<DraftLayout> {
 }
 
 fn render_help(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let block = Block::default()
-        .borders(Borders::TOP)
-        .border_style(Style::default().fg(palette().accent))
-        .title(Span::styled(
-            " shortcuts ",
-            Style::default()
-                .fg(palette().accent)
-                .add_modifier(Modifier::BOLD),
-        ))
-        .style(Style::default().bg(palette().bg));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
     let lines = help_lines(app, area.width.saturating_sub(4) as usize);
     frame.render_widget(
         Paragraph::new(lines).style(Style::default().bg(palette().bg).fg(palette().fg)),
-        inner,
+        area,
     );
 }
 
@@ -2057,7 +2044,11 @@ fn render_confirmation(frame: &mut Frame<'_>, _: &App, target: &ConfirmTarget, a
 fn next_launch_label(app: &App) -> String {
     match &app.launch_model {
         Some(model) if app.launch_provider != Provider::Terminal => {
-            format!(" · new: {} {}", app.launch_provider.label(), sanitize_inline(model))
+            format!(
+                " · new: {} {}",
+                app.launch_provider.label(),
+                sanitize_inline(model)
+            )
         }
         _ => String::new(),
     }
@@ -2897,7 +2888,6 @@ mod tests {
                 })
             })
         };
-        assert!(rendered.contains("shortcuts"));
         assert!(has_entry("ctrl+r", "rename"));
         assert!(has_entry("ctrl+t / ctrl+p", "pause"));
         assert!(has_entry(MOVE_KEYS, "move to another folder"));
@@ -2919,8 +2909,8 @@ mod tests {
                 .position(|line| line.contains(needle))
                 .unwrap_or_else(|| panic!("missing {needle}"))
         };
-        assert!(row("describe a task") < row("shortcuts"));
-        assert!(row("shortcuts") < row("dashboard"));
+        assert!(row("describe a task") < row("dashboard"));
+        assert!(!rendered.contains(" shortcuts "));
         assert!(row("dashboard") < row("selected session"));
         assert!(row("selected session") < row("open session"));
         assert!(
