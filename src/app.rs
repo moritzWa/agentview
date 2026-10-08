@@ -574,6 +574,43 @@ impl App {
         self.notice = None;
     }
 
+    /// Jump to a folder header. Up goes to the header of the row's own folder,
+    /// or to the previous folder's header when a header is already selected;
+    /// down goes to the next folder's header. Both wrap like the arrows.
+    pub fn select_group_header(&mut self, delta: isize) {
+        let keys = self.selectable_keys();
+        let headers: Vec<usize> = keys
+            .iter()
+            .enumerate()
+            .filter(|(_, key)| matches!(key, SelectionKey::Group(_)))
+            .map(|(index, _)| index)
+            .collect();
+        if headers.is_empty() {
+            return;
+        }
+        let current = self
+            .selection
+            .as_ref()
+            .and_then(|selected| keys.iter().position(|key| key == selected));
+        let target = match current {
+            None if delta < 0 => *headers.last().unwrap(),
+            None => headers[0],
+            Some(index) if delta < 0 => headers
+                .iter()
+                .rev()
+                .find(|header| **header < index)
+                .copied()
+                .unwrap_or(*headers.last().unwrap()),
+            Some(index) => headers
+                .iter()
+                .find(|header| **header > index)
+                .copied()
+                .unwrap_or(headers[0]),
+        };
+        self.selection = Some(keys[target].clone());
+        self.notice = None;
+    }
+
     pub fn selected_session(&self) -> Option<&AgentSession> {
         let SelectionKey::Session(id) = self.selection.as_ref()? else {
             return None;
@@ -3569,6 +3606,38 @@ mod tests {
         app.activate();
 
         assert_eq!(app.selectable_keys().len(), 1);
+    }
+
+    #[test]
+    fn group_header_jumps_go_to_own_then_previous_header_and_wrap() {
+        let mut app = App::new(SessionSnapshot {
+            sessions: vec![
+                session("a1", SessionState::Working),
+                session("a2", SessionState::Working),
+                session("b1", SessionState::Completed),
+                session("b2", SessionState::Completed),
+            ],
+            warnings: vec![],
+        });
+        let headers: Vec<SelectionKey> = app
+            .selectable_keys()
+            .into_iter()
+            .filter(|key| matches!(key, SelectionKey::Group(_)))
+            .collect();
+        assert_eq!(headers.len(), 2);
+        let last_row = app.selectable_keys().last().cloned();
+        app.selection = last_row;
+
+        app.select_group_header(-1);
+        assert_eq!(app.selection.as_ref(), Some(&headers[1]));
+        app.select_group_header(-1);
+        assert_eq!(app.selection.as_ref(), Some(&headers[0]));
+        app.select_group_header(-1);
+        assert_eq!(app.selection.as_ref(), Some(&headers[1]));
+        app.select_group_header(1);
+        assert_eq!(app.selection.as_ref(), Some(&headers[0]));
+        app.select_group_header(1);
+        assert_eq!(app.selection.as_ref(), Some(&headers[1]));
     }
 
     #[test]

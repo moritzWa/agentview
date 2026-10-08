@@ -1186,6 +1186,7 @@ fn help_sections(app: &App) -> Vec<HelpSection> {
         title: "dashboard",
         entries: vec![
             ("ctrl+f", "filter sessions"),
+            ("cmd+↑ / ↓", "jump between folders"),
             ("ctrl+g", "bring back a hidden session"),
             ("ctrl+s", "switch view"),
             ("ctrl+l", "refresh"),
