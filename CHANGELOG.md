@@ -10,6 +10,11 @@ and released versions are intended to follow Semantic Versioning.
 
 ### Added
 
+- Ctrl+B keeps the model and switches who serves it, from the session list or
+  the new-task composer: OpenCode's `anthropic/claude-opus-5-5` becomes
+  `cursor/claude-opus-5-5` and back. The header shows what a new task starts
+  with, and the model picked for each harness is remembered across restarts.
+
 - Shift+Tab opens the model picker from the session list too, not only from an
   open composer. While a new-task draft is a bare `/word`, the footer lists the
   commands it could become.

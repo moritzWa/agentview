@@ -238,6 +238,11 @@ pub struct App {
     pub launch_targets: Vec<LaunchTarget>,
     pub launch_provider: Provider,
     pub launch_model: Option<String>,
+    /// Model last chosen per harness, restored when that harness is picked
+    /// again and saved across restarts (`last-harness.json`).
+    pub remembered_models: BTreeMap<Provider, String>,
+    /// Ctrl+B is waiting for the model catalog before it switches providers.
+    pending_provider_switch: bool,
     /// Directory chosen with `/cd` for the next new session. It wins over the
     /// directory view selection and is cleared once a session launches there.
     pub launch_directory_override: Option<PathBuf>,
@@ -347,6 +352,8 @@ impl App {
             launch_targets,
             launch_provider,
             launch_model: None,
+            remembered_models: BTreeMap::new(),
+            pending_provider_switch: false,
             launch_directory_override: None,
             directory_candidates: Vec::new(),
             directory_filter: String::new(),
@@ -876,7 +883,7 @@ impl App {
         };
         if self.launch_provider != target.provider {
             self.launch_provider = target.provider.clone();
-            self.launch_model = None;
+            self.launch_model = self.remembered_models.get(&target.provider).cloned();
         }
         self.notice = None;
         self.overlay = Overlay::Composer(ComposerMode::NewSession);
@@ -919,6 +926,100 @@ impl App {
         }
     }
 
+    /// Ctrl+B: keep the model and switch who serves it, for harnesses whose
+    /// models are `provider/model` (OpenCode: `anthropic/claude-opus-5-5` ⇄
+    /// `cursor/claude-opus-5-5`). Cycles through every provider in the
+    /// catalog that offers the same model id, loading the catalog first when
+    /// it is not here yet.
+    pub fn switch_model_provider(&mut self) -> AppAction {
+        if self.launch_provider == Provider::Terminal
+            || !self
+                .launch_target()
+                .is_some_and(|target| target.supports_model)
+        {
+            self.set_notice(format!(
+                "{} has no model provider to switch",
+                self.launch_provider.label()
+            ));
+            return AppAction::None;
+        }
+        let Some(model) = self.launch_model.clone() else {
+            if self.overlay == Overlay::None {
+                self.start_new_session(None);
+            }
+            let action = self.open_model_picker();
+            self.set_notice("pick a model first; ctrl+b then switches who serves it");
+            return action;
+        };
+        let Some((_, id)) = model.split_once('/') else {
+            self.set_notice(format!("{model} names no provider to switch"));
+            return AppAction::None;
+        };
+        if self.models_provider.as_ref() == Some(&self.launch_provider)
+            && !self.models_loading
+            && !self.available_models.is_empty()
+        {
+            self.apply_provider_switch();
+            return AppAction::None;
+        }
+        let id = id.to_owned();
+        self.pending_provider_switch = true;
+        self.models_provider = Some(self.launch_provider.clone());
+        self.models_loading = true;
+        self.models_error = None;
+        self.available_models.clear();
+        self.set_notice(format!("looking up who serves {id}…"));
+        AppAction::LoadModels {
+            provider: self.launch_provider.clone(),
+        }
+    }
+
+    fn apply_provider_switch(&mut self) {
+        let Some(model) = self.launch_model.clone() else {
+            return;
+        };
+        let Some((current, id)) = model.split_once('/') else {
+            return;
+        };
+        let mut providers: Vec<&str> = Vec::new();
+        for (provider, other) in self
+            .available_models
+            .iter()
+            .filter_map(|candidate| candidate.split_once('/'))
+        {
+            if other == id && !providers.contains(&provider) {
+                providers.push(provider);
+            }
+        }
+        if providers.len() < 2 {
+            self.set_notice(format!("no other provider serves {id}"));
+            return;
+        }
+        let next = providers
+            .iter()
+            .position(|provider| *provider == current)
+            .map_or(0, |index| (index + 1) % providers.len());
+        let switched = format!("{}/{id}", providers[next]);
+        self.set_notice(format!(
+            "new {} sessions use {switched}",
+            self.launch_provider.label()
+        ));
+        self.launch_model = Some(switched);
+    }
+
+    /// The model change since the last call, for the caller to persist.
+    pub fn take_model_change(&mut self) -> Option<(Provider, Option<String>)> {
+        let provider = self.launch_provider.clone();
+        if self.remembered_models.get(&provider) == self.launch_model.as_ref() {
+            return None;
+        }
+        match &self.launch_model {
+            Some(model) => self.remembered_models.insert(provider.clone(), model.clone()),
+            None => self.remembered_models.remove(&provider),
+        };
+        Some((provider, self.launch_model.clone()))
+    }
+
     pub fn set_available_models(
         &mut self,
         provider: Provider,
@@ -928,6 +1029,23 @@ impl App {
             return;
         }
         self.models_loading = false;
+        let switching = std::mem::take(&mut self.pending_provider_switch);
+        if let (true, Err(error)) = (switching, &result) {
+            if self.overlay != Overlay::ModelPicker {
+                self.available_models.clear();
+                self.models_error = Some(error.clone());
+                self.set_notice(format!("cannot switch providers: {error}"));
+                return;
+            }
+        }
+        let result_ok = result.is_ok();
+        self.apply_model_result(result);
+        if switching && result_ok {
+            self.apply_provider_switch();
+        }
+    }
+
+    fn apply_model_result(&mut self, result: Result<Vec<String>, String>) {
         match result {
             Ok(models) => {
                 let mut seen = BTreeSet::new();
@@ -2857,10 +2975,14 @@ impl App {
                 .iter()
                 .position(|candidate| candidate.provider == target.provider)
                 .unwrap_or(0);
-            self.launch_model = None;
+            self.launch_model = self.remembered_models.get(&target.provider).cloned();
             self.set_notice(format!(
-                "new tasks will use the {} harness with its default model",
-                target.provider.label()
+                "new tasks will use the {} harness with {}",
+                target.provider.label(),
+                match &self.launch_model {
+                    Some(model) => model.clone(),
+                    None => "its default model".into(),
+                }
             ));
         } else {
             self.set_notice(format!(
@@ -3992,6 +4114,101 @@ mod tests {
         app.set_hidden_picker_rows(hidden_picker_rows_for_height(60));
         app.move_hidden_page(1);
         assert_eq!(app.hidden_selection, 11, "clamped to the last choice");
+    }
+
+    #[test]
+    fn ctrl_b_keeps_the_model_and_cycles_who_serves_it() {
+        let mut app = App::with_launch_targets(
+            SessionSnapshot::default(),
+            false,
+            Provider::OpenCode,
+            vec![LaunchTarget {
+                provider: Provider::OpenCode,
+                supports_model: true,
+            }],
+        );
+        let catalog = || {
+            Ok(vec![
+                "anthropic/claude-opus-5-5".to_owned(),
+                "anthropic/claude-haiku-5-5".to_owned(),
+                "cursor/claude-opus-5-5".to_owned(),
+                "groq/openai/gpt-oss-120b".to_owned(),
+            ])
+        };
+
+        // No model chosen yet: the picker opens instead.
+        assert_eq!(
+            app.switch_model_provider(),
+            AppAction::LoadModels {
+                provider: Provider::OpenCode
+            }
+        );
+        assert_eq!(app.overlay, Overlay::ModelPicker);
+        app.escape();
+        app.escape();
+
+        // Without a catalog it loads one, then switches when it arrives.
+        app.launch_model = Some("anthropic/claude-opus-5-5".into());
+        app.models_provider = None;
+        assert_eq!(
+            app.switch_model_provider(),
+            AppAction::LoadModels {
+                provider: Provider::OpenCode
+            }
+        );
+        assert_eq!(app.launch_model.as_deref(), Some("anthropic/claude-opus-5-5"));
+        app.set_available_models(Provider::OpenCode, catalog());
+        assert_eq!(app.launch_model.as_deref(), Some("cursor/claude-opus-5-5"));
+        assert_eq!(
+            app.take_model_change(),
+            Some((Provider::OpenCode, Some("cursor/claude-opus-5-5".into())))
+        );
+        assert_eq!(app.take_model_change(), None);
+
+        // With the catalog here it switches at once, and wraps around.
+        assert_eq!(app.switch_model_provider(), AppAction::None);
+        assert_eq!(app.launch_model.as_deref(), Some("anthropic/claude-opus-5-5"));
+
+        // A model only one provider serves stays put.
+        app.launch_model = Some("anthropic/claude-haiku-5-5".into());
+        app.switch_model_provider();
+        assert_eq!(app.launch_model.as_deref(), Some("anthropic/claude-haiku-5-5"));
+        assert!(app.notice.as_deref().unwrap().contains("no other provider"));
+
+        // The id keeps everything after the first slash.
+        app.launch_model = Some("groq/openai/gpt-oss-120b".into());
+        app.switch_model_provider();
+        assert_eq!(app.launch_model.as_deref(), Some("groq/openai/gpt-oss-120b"));
+    }
+
+    #[test]
+    fn a_remembered_model_comes_back_with_its_harness() {
+        let mut app = App::with_launch_targets(
+            SessionSnapshot::default(),
+            false,
+            Provider::Claude,
+            vec![
+                LaunchTarget {
+                    provider: Provider::Claude,
+                    supports_model: true,
+                },
+                LaunchTarget {
+                    provider: Provider::OpenCode,
+                    supports_model: true,
+                },
+            ],
+        );
+        app.remembered_models
+            .insert(Provider::OpenCode, "cursor/claude-opus-5-5".into());
+        app.start_new_session(None);
+        app.input = "/harness opencode".into();
+        app.activate();
+        assert_eq!(app.launch_model.as_deref(), Some("cursor/claude-opus-5-5"));
+        app.start_new_session(None);
+        app.input = "/harness claude".into();
+        app.activate();
+        assert_eq!(app.launch_model, None);
+        assert_eq!(app.take_model_change(), None);
     }
 
     #[test]

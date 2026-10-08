@@ -290,6 +290,8 @@ pub fn run_dashboard(
     app.set_yolo(control.yolo_enabled(), control.yolo_supported_providers());
     app.set_paused(paused_sessions.paused());
     app.set_sort_keys(session_order.sort_keys());
+    app.remembered_models = last_harness.models().into_iter().collect();
+    app.launch_model = app.remembered_models.get(&app.launch_provider).cloned();
     if let Some(view_mode) = last_view.view_mode() {
         app.set_view_mode(view_mode);
     }
@@ -426,6 +428,11 @@ pub fn run_dashboard(
                 Ok((provider, auth_available, result)) => {
                     app.set_models_auth_available(&provider, auth_available);
                     app.set_available_models(provider, result);
+                    if let Some((provider, model)) = app.take_model_change() {
+                        if let Err(error) = last_harness.save_model(&provider, model.as_deref()) {
+                            app.set_notice(format!("failed to remember model: {error:#}"));
+                        }
+                    }
                     needs_draw = true;
                 }
                 Err(TryRecvError::Empty) => break,
@@ -761,6 +768,11 @@ pub fn run_dashboard(
                         if app.view_mode != view_before {
                             if let Err(error) = last_view.save(app.view_mode) {
                                 app.set_notice(format!("failed to remember view: {error:#}"));
+                            }
+                        }
+                        if let Some((provider, model)) = app.take_model_change() {
+                            if let Err(error) = last_harness.save_model(&provider, model.as_deref()) {
+                                app.set_notice(format!("failed to remember model: {error:#}"));
                             }
                         }
                         if action == AppAction::Quit && migrating_target.is_some() {
@@ -1683,6 +1695,14 @@ fn handle_key(app: &mut App, key: KeyEvent) -> AppAction {
             }
             KeyCode::Char('o') if app.overlay == Overlay::DirectoryPicker => app.escape(),
             KeyCode::Char('l') if app.overlay == Overlay::None => AppAction::Refresh,
+            KeyCode::Char('b')
+                if matches!(
+                    app.overlay,
+                    Overlay::None | Overlay::Composer(ComposerMode::NewSession)
+                ) =>
+            {
+                app.switch_model_provider()
+            }
             KeyCode::Char('x') => match app.overlay.clone() {
                 Overlay::Confirm(_) => app.activate(),
                 Overlay::None | Overlay::Peek => app.start_confirm(),

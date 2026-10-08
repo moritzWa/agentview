@@ -160,7 +160,10 @@ fn render_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 Span::styled("  ○ ", ring),
                 Span::styled("●", core),
                 Span::styled(" ○  ", ring),
-                Span::styled(format!("{providers} · {cwd}"), Style::default().fg(palette().dim)),
+                Span::styled(
+                    format!("{providers} · {cwd}{}", next_launch_label(app)),
+                    Style::default().fg(palette().dim),
+                ),
             ]),
             Line::from(vec![
                 Span::styled("   ○ ○   ", ring),
@@ -1003,7 +1006,7 @@ fn contextual_footer(app: &App, width: u16) -> String {
             format!("{verb} {}", suggestions.join(" · "))
         }
         Overlay::Composer(ComposerMode::NewSession) if width >= 100 => format!(
-            "tab harness · shift+tab {} · ctrl+o folder · ctrl+g past sessions · ctrl+v image · /help",
+            "tab harness · shift+tab {} · ctrl+b provider · ctrl+o folder · ctrl+g past · /help",
             if app.launch_provider == Provider::Terminal { "shell" } else { "model" }
         ),
         Overlay::Composer(ComposerMode::NewSession) if width >= 70 => format!(
@@ -1269,6 +1272,7 @@ fn help_sections(app: &App) -> Vec<HelpSection> {
         entries: vec![
             ("tab", "pick harness"),
             ("shift+tab", "pick model"),
+            ("ctrl+b", "same model, next provider"),
             (FOLDER_PICKER_KEYS, "pick folder"),
             ("ctrl+j", "newline"),
             ("ctrl+v", "paste image"),
@@ -2046,6 +2050,17 @@ fn render_confirmation(frame: &mut Frame<'_>, _: &App, target: &ConfirmTarget, a
             .wrap(Wrap { trim: true }),
         popup,
     );
+}
+
+/// What a new task would start with, when a model was chosen: Ctrl+B
+/// switches it from the list, so it is shown there too.
+fn next_launch_label(app: &App) -> String {
+    match &app.launch_model {
+        Some(model) if app.launch_provider != Provider::Terminal => {
+            format!(" · new: {} {}", app.launch_provider.label(), sanitize_inline(model))
+        }
+        _ => String::new(),
+    }
 }
 
 fn provider_summary(app: &App) -> String {
