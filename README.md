@@ -110,6 +110,7 @@ Harnesses are read in parallel, and none of it runs on the input thread.
 | Do this | Press |
 | --- | --- |
 | Move through sessions | `↑` / `↓` |
+| Jump between folders | `Cmd+↑` / `↓` in kitty, or in Ghostty with `keybind = cmd+up=unbind` and `keybind = cmd+down=unbind` |
 | Open the selected session | `Enter` or `→` |
 | Return to agentview | `Shift+←`, or `←` twice at an empty prompt (once in Claude Code and OpenCode) |
 | Bring back a past session | `Ctrl+G` or `/hidden` |

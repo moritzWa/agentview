@@ -1086,7 +1086,9 @@ fn contextual_footer(app: &App, width: u16) -> String {
                 })
                 .unwrap_or("collapse/expand");
             if width >= 80 {
-                format!("enter to {verb}{action} · ? for shortcuts")
+                format!("enter to {verb}{action} · cmd+↑/↓ folders · ? for shortcuts")
+            } else if width >= 55 {
+                format!("enter to {verb} · cmd+↑/↓ folders · ? for shortcuts")
             } else {
                 format!("enter to {verb} · ? for shortcuts")
             }
