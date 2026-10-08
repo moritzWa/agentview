@@ -52,12 +52,14 @@ const DASHBOARD_COMMANDS: &[&str] = &[
     "/completed",
     "/filter",
     "/migrate",
+    "/usage",
 ];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Overlay {
     None,
     Help,
+    Usage,
     Peek,
     HarnessPicker,
     ModelPicker,
@@ -696,7 +698,7 @@ impl App {
 
     pub fn activate(&mut self) -> AppAction {
         match self.overlay.clone() {
-            Overlay::Help => {
+            Overlay::Help | Overlay::Usage => {
                 self.overlay = Overlay::None;
                 AppAction::None
             }
@@ -2791,6 +2793,13 @@ impl App {
             // to their own lock mode before agentview can see it.
             "/hidden" | "/restore" => return AppAction::BrowseHidden,
             "/migrate" => self.start_migration(),
+            "/usage" if self.usage.is_empty() => self.set_notice(
+                "no subscription usage yet; agentview reads Claude Code and Codex logins",
+            ),
+            "/usage" => {
+                self.notice = None;
+                self.overlay = Overlay::Usage;
+            }
             "/filter" => {
                 self.set_filter(argument);
                 self.set_notice(if argument.is_empty() {

@@ -105,6 +105,45 @@ impl Usage {
     }
 }
 
+impl Window {
+    /// `resets in 2h 14m · 6:51 PM`, or `Mon 4:59 AM` past today.
+    pub fn reset_text(&self, now: u64) -> Option<String> {
+        let at = self.resets_at?;
+        let countdown = countdown(at.saturating_sub(now));
+        Some(match local_clock(at, now) {
+            Some(clock) => format!("resets in {countdown} · {clock}"),
+            None => format!("resets in {countdown}"),
+        })
+    }
+}
+
+#[cfg(unix)]
+fn local_clock(at: u64, now: u64) -> Option<String> {
+    fn local(seconds: u64) -> Option<libc::tm> {
+        let time = libc::time_t::try_from(seconds).ok()?;
+        let mut tm = unsafe { std::mem::zeroed::<libc::tm>() };
+        (!unsafe { libc::localtime_r(&time, &mut tm) }.is_null()).then_some(tm)
+    }
+    let (then, today) = (local(at)?, local(now)?);
+    let hour = match then.tm_hour % 12 {
+        0 => 12,
+        hour => hour,
+    };
+    let meridiem = if then.tm_hour < 12 { "AM" } else { "PM" };
+    let clock = format!("{hour}:{:02} {meridiem}", then.tm_min);
+    if (then.tm_year, then.tm_yday) == (today.tm_year, today.tm_yday) {
+        return Some(clock);
+    }
+    let weekday = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+        .get(usize::try_from(then.tm_wday).ok()?)?;
+    Some(format!("{weekday} {clock}"))
+}
+
+#[cfg(not(unix))]
+fn local_clock(_at: u64, _now: u64) -> Option<String> {
+    None
+}
+
 pub fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -335,6 +374,24 @@ mod tests {
         .unwrap();
         assert_eq!(usage.windows[1].resets_at, Some(1_791_636_247));
         assert_eq!(usage.summary(0), ("codex week 1%".into(), false));
+    }
+
+    #[test]
+    fn reset_text_counts_down_to_the_reset() {
+        let window = Window {
+            label: "week",
+            percent: 4.0,
+            resets_at: Some(10_000 + 3 * 86_400 + 2 * 3600),
+        };
+        assert!(window
+            .reset_text(10_000)
+            .unwrap()
+            .starts_with("resets in 3d 2h"));
+        let unknown = Window {
+            resets_at: None,
+            ..window
+        };
+        assert_eq!(unknown.reset_text(0), None);
     }
 
     #[test]

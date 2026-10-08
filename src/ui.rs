@@ -80,6 +80,8 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
         render_directory_picker(frame, app, area);
     } else if matches!(app.overlay, Overlay::MigrationTargetPicker { .. }) {
         render_migration_target_picker(frame, app, area);
+    } else if app.overlay == Overlay::Usage {
+        render_usage_popup(frame, app, area);
     }
 }
 
@@ -918,6 +920,7 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
 fn render_usage(frame: &mut Frame<'_>, app: &App, area: Rect) {
     const TITLE_ROOM: usize = 30;
     const SEPARATOR: &str = "  │  ";
+    const HINT: &str = "  /usage";
     let now = crate::usage::now();
     let mut entries = app
         .usage
@@ -938,7 +941,9 @@ fn render_usage(frame: &mut Frame<'_>, app: &App, area: Rect) {
     if area.height == 0 || entries.is_empty() {
         return;
     }
-    let width = line_width(&entries);
+    let hint = TITLE_ROOM + line_width(&entries) + display_width(HINT) <= usize::from(area.width);
+    let hint = if hint { HINT } else { "" };
+    let width = line_width(&entries) + display_width(hint);
     let spans = entries
         .into_iter()
         .enumerate()
@@ -952,6 +957,7 @@ fn render_usage(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 (index > 0).then(|| Span::styled(SEPARATOR, Style::default().fg(palette().dim)));
             separator.into_iter().chain([Span::styled(text, style)])
         })
+        .chain([Span::styled(hint, Style::default().fg(palette().accent))])
         .collect::<Vec<_>>();
     frame.render_widget(
         Paragraph::new(Line::from(spans)).style(Style::default().bg(palette().bg)),
@@ -961,6 +967,64 @@ fn render_usage(frame: &mut Frame<'_>, app: &App, area: Rect) {
             height: 1,
             ..area
         },
+    );
+}
+
+fn render_usage_popup(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let now = crate::usage::now();
+    let label_style = Style::default()
+        .fg(palette().fg)
+        .add_modifier(Modifier::BOLD);
+    let mut lines = Vec::new();
+    for usage in &app.usage {
+        for (index, window) in usage.windows.iter().enumerate() {
+            let percent_style = Style::default().fg(if window.percent >= 90.0 {
+                palette().attention
+            } else {
+                palette().fg
+            });
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!(" {:<8}", if index == 0 { usage.provider } else { "" }),
+                    label_style,
+                ),
+                Span::styled(
+                    format!("{:<6}", window.label),
+                    Style::default().fg(palette().dim),
+                ),
+                Span::styled(format!("{:>4.0}%  ", window.percent), percent_style),
+                Span::styled(
+                    window.reset_text(now).unwrap_or_default(),
+                    Style::default().fg(palette().dim),
+                ),
+            ]));
+        }
+    }
+    lines.push(Line::default());
+    lines.push(
+        Line::from(" header shows the fuller window · any key closes")
+            .style(Style::default().fg(palette().dim)),
+    );
+    let content_width = lines.iter().map(Line::width).max().unwrap_or(0) as u16 + 3;
+    let popup_width = content_width.min(area.width.saturating_sub(2)).max(28);
+    let popup_height = (lines.len() as u16 + 2).min(area.height.saturating_sub(2));
+    let popup = Rect::new(
+        area.x + area.width.saturating_sub(popup_width) / 2,
+        area.y + area.height.saturating_sub(popup_height) / 2,
+        popup_width,
+        popup_height,
+    );
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(
+                Block::default()
+                    .title(" subscription usage ")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(palette().accent)),
+            )
+            .style(Style::default().bg(palette().bg).fg(palette().fg)),
+        popup,
     );
 }
 
@@ -1062,6 +1126,7 @@ fn contextual_footer(app: &App, width: u16) -> String {
         Overlay::Peek if app.input.is_empty() => "enter to open".into(),
         Overlay::Peek => "enter to send · esc to close".into(),
         Overlay::Help => "? to close help · esc also closes".into(),
+        Overlay::Usage => "any key to close".into(),
         Overlay::None if matches!(app.selection, Some(SelectionKey::ShowMore(_))) => {
             if width >= 55 {
                 "enter to show more · ↑/↓ to select · ? for shortcuts".into()
@@ -1281,6 +1346,7 @@ fn help_sections(app: &App) -> Vec<HelpSection> {
             ("/setup", "install or sign in"),
             ("/login", "open native setup"),
             ("/migrate", "copy selected to another harness"),
+            ("/usage", "subscription limits and resets"),
         ],
     });
     sections
@@ -3117,9 +3183,43 @@ mod tests {
         };
 
         let wide = first_row(100);
-        assert!(wide.ends_with("claude 5h 38%  │  codex 5h 4%"), "{wide}");
+        assert!(
+            wide.ends_with("claude 5h 38%  │  codex 5h 4%  /usage"),
+            "{wide}"
+        );
         let narrow = first_row(50);
         assert!(narrow.ends_with("claude 5h 38%"), "{narrow}");
+    }
+
+    #[test]
+    fn usage_popup_lists_every_window_with_its_reset() {
+        let now = crate::usage::now();
+        let window = |label, percent, resets_in| crate::usage::Window {
+            label,
+            percent,
+            resets_at: Some(now + resets_in),
+        };
+        let mut app = App::new(SessionSnapshot::default());
+        app.usage = vec![crate::usage::Usage {
+            provider: "claude",
+            windows: vec![
+                window("5h", 9.0, 2 * 3600 + 900),
+                window("week", 4.0, 4 * 86_400),
+            ],
+        }];
+        app.overlay = Overlay::Usage;
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(rendered.contains("subscription usage"));
+        assert!(
+            rendered.contains("5h       9%  resets in 2h 1"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("week     4%  resets in 4d 0h"),
+            "{rendered}"
+        );
     }
 
     #[test]

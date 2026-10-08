@@ -1641,6 +1641,10 @@ fn handle_key(app: &mut App, key: KeyEvent) -> AppAction {
     if key.kind == KeyEventKind::Release {
         return AppAction::None;
     }
+    if app.overlay == Overlay::Usage {
+        app.overlay = Overlay::None;
+        return AppAction::None;
+    }
     let removal_key =
         key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('x');
     if !removal_key {
@@ -3200,6 +3204,28 @@ mod tests {
         handle_key(&mut app, control_key('r'));
         assert_eq!(app.overlay, Overlay::Help);
         assert!(app.input.is_empty());
+    }
+
+    #[test]
+    fn usage_command_opens_a_popup_that_any_key_closes() {
+        let mut app = app();
+        app.usage = vec![crate::usage::Usage {
+            provider: "claude",
+            windows: vec![crate::usage::Window {
+                label: "week",
+                percent: 4.0,
+                resets_at: None,
+            }],
+        }];
+        for character in "/usage".chars() {
+            handle_key(&mut app, key(KeyCode::Char(character)));
+        }
+        handle_key(&mut app, key(KeyCode::Enter));
+        assert_eq!(app.overlay, Overlay::Usage);
+
+        assert_eq!(handle_key(&mut app, key(KeyCode::Esc)), AppAction::None);
+        assert_eq!(app.overlay, Overlay::None);
+        assert!(!app.should_quit);
     }
 
     #[test]
