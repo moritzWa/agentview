@@ -12,6 +12,7 @@ use crate::app::{
     MODEL_PICKER_PAGE_SIZE,
 };
 use crate::domain::{AgentSession, Capability, Provider, SessionState};
+use crate::usage::Pace;
 
 fn palette() -> crate::theme::Palette {
     crate::theme::active_palette()
@@ -975,7 +976,35 @@ fn render_usage_popup(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let label_style = Style::default()
         .fg(palette().fg)
         .add_modifier(Modifier::BOLD);
-    let mut lines = Vec::new();
+    let dim = Style::default().fg(palette().dim);
+    let paces = app
+        .usage
+        .iter()
+        .flat_map(|usage| usage.windows.iter())
+        .map(|window| match window.pace(now) {
+            Some(Pace::AtReset(projected)) => (format!("{projected:.0}% by reset"), false),
+            Some(Pace::HitsLimit(at)) => (
+                format!("hits 100% {}", crate::usage::Window::when(at, now)),
+                true,
+            ),
+            Some(Pace::TooEarly) => ("too early".to_owned(), false),
+            None => (String::new(), false),
+        })
+        .collect::<Vec<_>>();
+    let pace_width = paces
+        .iter()
+        .map(|(text, _)| display_width(text))
+        .chain([display_width("at this pace")])
+        .max()
+        .unwrap_or(0);
+    let mut lines = vec![Line::from(Span::styled(
+        format!(
+            " {:<14}{:>5}  {:<pace_width$}  resets",
+            "", "used", "at this pace"
+        ),
+        dim,
+    ))];
+    let mut paces = paces.into_iter();
     for usage in &app.usage {
         for (index, window) in usage.windows.iter().enumerate() {
             let percent_style = Style::default().fg(if window.percent >= 90.0 {
@@ -983,27 +1012,31 @@ fn render_usage_popup(frame: &mut Frame<'_>, app: &App, area: Rect) {
             } else {
                 palette().fg
             });
+            let (pace, over) = paces.next().unwrap_or_default();
+            let pace_style = if over {
+                Style::default().fg(palette().attention)
+            } else {
+                dim
+            };
+            let reset = window.reset_text(now).unwrap_or_default();
             lines.push(Line::from(vec![
                 Span::styled(
                     format!(" {:<8}", if index == 0 { usage.provider } else { "" }),
                     label_style,
                 ),
-                Span::styled(
-                    format!("{:<6}", window.label),
-                    Style::default().fg(palette().dim),
-                ),
+                Span::styled(format!("{:<6}", window.label), dim),
                 Span::styled(format!("{:>4.0}%  ", window.percent), percent_style),
+                Span::styled(format!("{pace:<pace_width$}  "), pace_style),
                 Span::styled(
-                    window.reset_text(now).unwrap_or_default(),
-                    Style::default().fg(palette().dim),
+                    reset.strip_prefix("resets ").unwrap_or(&reset).to_owned(),
+                    dim,
                 ),
             ]));
         }
     }
     lines.push(Line::default());
     lines.push(
-        Line::from(" header shows the fuller window · any key closes")
-            .style(Style::default().fg(palette().dim)),
+        Line::from(" pace carries the average so far to the reset · any key closes").style(dim),
     );
     let content_width = lines.iter().map(Line::width).max().unwrap_or(0) as u16 + 3;
     let popup_width = content_width.min(area.width.saturating_sub(2)).max(28);
@@ -3203,8 +3236,8 @@ mod tests {
         app.usage = vec![crate::usage::Usage {
             provider: "claude",
             windows: vec![
-                window("5h", 9.0, 2 * 3600 + 900),
-                window("week", 4.0, 4 * 86_400),
+                window("5h", 60.0, 2 * 3600 + 900),
+                window("week", 4.0, 4 * 86_400 + 1800),
             ],
         }];
         app.overlay = Overlay::Usage;
@@ -3212,14 +3245,10 @@ mod tests {
         terminal.draw(|frame| render(frame, &app)).unwrap();
         let rendered = buffer_text(terminal.backend().buffer());
         assert!(rendered.contains("subscription usage"));
-        assert!(
-            rendered.contains("5h       9%  resets in 2h 1"),
-            "{rendered}"
-        );
-        assert!(
-            rendered.contains("week     4%  resets in 4d 0h"),
-            "{rendered}"
-        );
+        assert!(rendered.contains("at this pace"), "{rendered}");
+        assert!(rendered.contains("5h      60%  hits 100% "), "{rendered}");
+        assert!(rendered.contains("week     4%  9% by reset"), "{rendered}");
+        assert!(rendered.contains("in 4d 0h"), "{rendered}");
     }
 
     #[test]

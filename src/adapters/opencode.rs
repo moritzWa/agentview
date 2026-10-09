@@ -570,7 +570,8 @@ impl ExpectedTitle {
     }
 
     fn shown_by(&self, terminal_title: &str) -> bool {
-        let shows = |title: &str| crate::opencode_supervisor::tui_shows_title(title, terminal_title);
+        let shows =
+            |title: &str| crate::opencode_supervisor::tui_shows_title(title, terminal_title);
         self.listed.as_deref().is_some_and(shows)
             || self
                 .fetched

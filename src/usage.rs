@@ -105,7 +105,50 @@ impl Usage {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum Pace {
+    /// Too little of the window has passed for the average to mean anything.
+    TooEarly,
+    /// Projected use when the window resets.
+    AtReset(f64),
+    /// Unix seconds when the current average rate reaches 100%.
+    HitsLimit(u64),
+}
+
 impl Window {
+    fn length(&self) -> Option<u64> {
+        match self.label {
+            "5h" => Some(5 * 3600),
+            "week" => Some(7 * 86_400),
+            _ => None,
+        }
+    }
+
+    /// Linear projection from the average rate since the window started.
+    pub fn pace(&self, now: u64) -> Option<Pace> {
+        if self.percent >= 100.0 {
+            return None;
+        }
+        let length = self.length()?;
+        let elapsed = length - self.resets_at?.saturating_sub(now).min(length);
+        if elapsed * 10 < length {
+            return Some(Pace::TooEarly);
+        }
+        let projected = self.percent * length as f64 / elapsed as f64;
+        if projected < 100.0 {
+            return Some(Pace::AtReset(projected));
+        }
+        let per_second = self.percent / elapsed as f64;
+        Some(Pace::HitsLimit(
+            now + ((100.0 - self.percent) / per_second) as u64,
+        ))
+    }
+
+    /// `Sat 3:12 PM`, or a countdown where local time is unavailable.
+    pub fn when(at: u64, now: u64) -> String {
+        local_clock(at, now).unwrap_or_else(|| format!("in {}", countdown(at.saturating_sub(now))))
+    }
+
     /// `resets in 2h 14m · 6:51 PM`, or `Mon 4:59 AM` past today.
     pub fn reset_text(&self, now: u64) -> Option<String> {
         let at = self.resets_at?;
@@ -392,6 +435,31 @@ mod tests {
             ..window
         };
         assert_eq!(unknown.reset_text(0), None);
+    }
+
+    #[test]
+    fn pace_projects_the_average_rate_to_the_reset() {
+        let week = |percent, left| Window {
+            label: "week",
+            percent,
+            resets_at: Some(1_000_000 + left),
+        };
+        let day = 86_400;
+        // 2 of 7 days gone at 20%: 70% by the reset.
+        let Some(Pace::AtReset(projected)) = week(20.0, 5 * day).pace(1_000_000) else {
+            panic!("expected a projection");
+        };
+        assert!((projected - 70.0).abs() < 0.01, "{projected}");
+        // 1 of 7 days gone at 25%: 100% three days in, i.e. 3 more days.
+        assert_eq!(
+            week(25.0, 6 * day).pace(1_000_000),
+            Some(Pace::HitsLimit(1_000_000 + 3 * day))
+        );
+        assert_eq!(
+            week(5.0, 7 * day - 3600).pace(1_000_000),
+            Some(Pace::TooEarly)
+        );
+        assert_eq!(week(100.0, day).pace(1_000_000), None);
     }
 
     #[test]
