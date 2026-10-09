@@ -997,15 +997,39 @@ fn render_usage_popup(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .chain([display_width("at this pace")])
         .max()
         .unwrap_or(0);
-    let mut lines = vec![Line::from(Span::styled(
-        format!(
-            " {:<14}{:>5}  {:<pace_width$}  resets",
-            "", "used", "at this pace"
-        ),
-        dim,
-    ))];
+    let resets = app
+        .usage
+        .iter()
+        .flat_map(|usage| usage.windows.iter())
+        .map(|window| window.reset_parts(now).unwrap_or_default())
+        .collect::<Vec<_>>();
+    let countdown_width = resets
+        .iter()
+        .map(|(countdown, _)| display_width(countdown))
+        .chain([display_width("resets in")])
+        .max()
+        .unwrap_or(0);
+    let clock_width = resets
+        .iter()
+        .filter_map(|(_, clock)| clock.as_deref().map(display_width))
+        .max()
+        .unwrap_or(0);
+    let mut lines = vec![
+        Line::from(Span::styled(
+            format!(
+                "{:<14}{:>5}   {:<pace_width$}   {:>countdown_width$}",
+                "", "used", "at this pace", "resets in"
+            ),
+            dim,
+        )),
+        Line::default(),
+    ];
     let mut paces = paces.into_iter();
-    for usage in &app.usage {
+    let mut resets = resets.into_iter();
+    for (position, usage) in app.usage.iter().enumerate() {
+        if position > 0 {
+            lines.push(Line::default());
+        }
         for (index, window) in usage.windows.iter().enumerate() {
             let percent_style = Style::default().fg(if window.percent >= 90.0 {
                 palette().attention
@@ -1018,29 +1042,30 @@ fn render_usage_popup(frame: &mut Frame<'_>, app: &App, area: Rect) {
             } else {
                 dim
             };
-            let reset = window.reset_text(now).unwrap_or_default();
+            let (countdown, clock) = resets.next().unwrap_or_default();
+            let clock = clock
+                .map(|clock| format!(" · {clock:>clock_width$}"))
+                .unwrap_or_default();
             lines.push(Line::from(vec![
                 Span::styled(
-                    format!(" {:<8}", if index == 0 { usage.provider } else { "" }),
+                    format!("{:<8}", if index == 0 { usage.provider } else { "" }),
                     label_style,
                 ),
                 Span::styled(format!("{:<6}", window.label), dim),
-                Span::styled(format!("{:>4.0}%  ", window.percent), percent_style),
-                Span::styled(format!("{pace:<pace_width$}  "), pace_style),
-                Span::styled(
-                    reset.strip_prefix("resets ").unwrap_or(&reset).to_owned(),
-                    dim,
-                ),
+                Span::styled(format!("{:>4.0}%   ", window.percent), percent_style),
+                Span::styled(format!("{pace:<pace_width$}   "), pace_style),
+                Span::styled(format!("{countdown:>countdown_width$}{clock}"), dim),
             ]));
         }
     }
     lines.push(Line::default());
     lines.push(
-        Line::from(" pace carries the average so far to the reset · any key closes").style(dim),
+        Line::from("pace carries the average so far to the reset · any key closes").style(dim),
     );
-    let content_width = lines.iter().map(Line::width).max().unwrap_or(0) as u16 + 3;
+    let padding = Padding::new(3, 3, 1, 1);
+    let content_width = lines.iter().map(Line::width).max().unwrap_or(0) as u16 + 2 + 6;
     let popup_width = content_width.min(area.width.saturating_sub(2)).max(28);
-    let popup_height = (lines.len() as u16 + 2).min(area.height.saturating_sub(2));
+    let popup_height = (lines.len() as u16 + 2 + 2).min(area.height.saturating_sub(2));
     let popup = Rect::new(
         area.x + area.width.saturating_sub(popup_width) / 2,
         area.y + area.height.saturating_sub(popup_height) / 2,
@@ -1054,7 +1079,8 @@ fn render_usage_popup(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 Block::default()
                     .title(" subscription usage ")
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(palette().accent)),
+                    .border_style(Style::default().fg(palette().accent))
+                    .padding(padding),
             )
             .style(Style::default().bg(palette().bg).fg(palette().fg)),
         popup,
@@ -3246,9 +3272,9 @@ mod tests {
         let rendered = buffer_text(terminal.backend().buffer());
         assert!(rendered.contains("subscription usage"));
         assert!(rendered.contains("at this pace"), "{rendered}");
-        assert!(rendered.contains("5h      60%  hits 100% "), "{rendered}");
-        assert!(rendered.contains("week     4%  9% by reset"), "{rendered}");
-        assert!(rendered.contains("in 4d 0h"), "{rendered}");
+        assert!(rendered.contains("5h      60%   hits 100% "), "{rendered}");
+        assert!(rendered.contains("week     4%   9% by reset"), "{rendered}");
+        assert!(rendered.contains("4d 0h · "), "{rendered}");
     }
 
     #[test]

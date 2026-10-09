@@ -149,14 +149,11 @@ impl Window {
         local_clock(at, now).unwrap_or_else(|| format!("in {}", countdown(at.saturating_sub(now))))
     }
 
-    /// `resets in 2h 14m · 6:51 PM`, or `Mon 4:59 AM` past today.
-    pub fn reset_text(&self, now: u64) -> Option<String> {
+    /// `2h 14m` and `6:51 PM` (`Mon 4:59 AM` past today); the clock is
+    /// missing where local time is unavailable.
+    pub fn reset_parts(&self, now: u64) -> Option<(String, Option<String>)> {
         let at = self.resets_at?;
-        let countdown = countdown(at.saturating_sub(now));
-        Some(match local_clock(at, now) {
-            Some(clock) => format!("resets in {countdown} · {clock}"),
-            None => format!("resets in {countdown}"),
-        })
+        Some((countdown(at.saturating_sub(now)), local_clock(at, now)))
     }
 }
 
@@ -420,21 +417,18 @@ mod tests {
     }
 
     #[test]
-    fn reset_text_counts_down_to_the_reset() {
+    fn reset_parts_count_down_to_the_reset() {
         let window = Window {
             label: "week",
             percent: 4.0,
             resets_at: Some(10_000 + 3 * 86_400 + 2 * 3600),
         };
-        assert!(window
-            .reset_text(10_000)
-            .unwrap()
-            .starts_with("resets in 3d 2h"));
+        assert_eq!(window.reset_parts(10_000).unwrap().0, "3d 2h");
         let unknown = Window {
             resets_at: None,
             ..window
         };
-        assert_eq!(unknown.reset_text(0), None);
+        assert_eq!(unknown.reset_parts(0), None);
     }
 
     #[test]
