@@ -576,10 +576,12 @@ impl App {
         self.notice = None;
     }
 
-    /// Jump to a folder header. Up goes to the header of the row's own folder,
-    /// or to the previous folder's header when a header is already selected;
-    /// down goes to the next folder's header. Both wrap like the arrows.
-    pub fn select_group_header(&mut self, delta: isize) {
+    /// Jump one folder up or down, keeping the row's position inside it: the
+    /// third session of a folder lands on the third session of the next one,
+    /// clamped to its last row when it is shorter. A folder with nothing under
+    /// its header, collapsed or empty, lands on the header. Wraps like the
+    /// arrows.
+    pub fn select_across_groups(&mut self, delta: isize) {
         let keys = self.selectable_keys();
         let headers: Vec<usize> = keys
             .iter()
@@ -594,22 +596,23 @@ impl App {
             .selection
             .as_ref()
             .and_then(|selected| keys.iter().position(|key| key == selected));
-        let target = match current {
-            None if delta < 0 => *headers.last().unwrap(),
-            None => headers[0],
-            Some(index) if delta < 0 => headers
-                .iter()
-                .rev()
-                .find(|header| **header < index)
-                .copied()
-                .unwrap_or(*headers.last().unwrap()),
-            Some(index) => headers
-                .iter()
-                .find(|header| **header > index)
-                .copied()
-                .unwrap_or(headers[0]),
+        // Without a selection, step onto the first or last folder's header.
+        let (group, offset) = match current {
+            Some(index) => {
+                let group = headers
+                    .iter()
+                    .rposition(|header| *header <= index)
+                    .unwrap_or(0);
+                (group as isize, index - headers[group])
+            }
+            None if delta < 0 => (headers.len() as isize, 0),
+            None => (-1, 0),
         };
-        self.selection = Some(keys[target].clone());
+        let target = (group + delta).rem_euclid(headers.len() as isize) as usize;
+        let start = headers[target];
+        let end = headers.get(target + 1).copied().unwrap_or(keys.len());
+        let row = start + offset.min(end - start - 1);
+        self.selection = Some(keys[row].clone());
         self.notice = None;
     }
 
@@ -3618,11 +3621,12 @@ mod tests {
     }
 
     #[test]
-    fn group_header_jumps_go_to_own_then_previous_header_and_wrap() {
+    fn group_jumps_keep_the_row_position_and_wrap() {
         let mut app = App::new(SessionSnapshot {
             sessions: vec![
                 session("a1", SessionState::Working),
                 session("a2", SessionState::Working),
+                session("a3", SessionState::Working),
                 session("b1", SessionState::Completed),
                 session("b2", SessionState::Completed),
             ],
@@ -3634,19 +3638,49 @@ mod tests {
             .filter(|key| matches!(key, SelectionKey::Group(_)))
             .collect();
         assert_eq!(headers.len(), 2);
-        let last_row = app.selectable_keys().last().cloned();
-        app.selection = last_row;
 
-        app.select_group_header(-1);
-        assert_eq!(app.selection.as_ref(), Some(&headers[1]));
-        app.select_group_header(-1);
+        // The third session of a folder lands on the shorter folder's last one.
+        app.selection = Some(SelectionKey::Session("a3".into()));
+        app.select_across_groups(1);
+        assert_eq!(app.selection, Some(SelectionKey::Session("b2".into())));
+        // And coming back keeps that second position.
+        app.select_across_groups(-1);
+        assert_eq!(app.selection, Some(SelectionKey::Session("a2".into())));
+        app.select_across_groups(1);
+        assert_eq!(app.selection, Some(SelectionKey::Session("b2".into())));
+
+        // Down from the last folder wraps to the first, same position.
+        app.selection = Some(SelectionKey::Session("b1".into()));
+        app.select_across_groups(1);
+        assert_eq!(app.selection, Some(SelectionKey::Session("a1".into())));
+        app.select_across_groups(-1);
+        assert_eq!(app.selection, Some(SelectionKey::Session("b1".into())));
+
+        // A header stays a header.
+        app.selection = Some(headers[1].clone());
+        app.select_across_groups(-1);
         assert_eq!(app.selection.as_ref(), Some(&headers[0]));
-        app.select_group_header(-1);
-        assert_eq!(app.selection.as_ref(), Some(&headers[1]));
-        app.select_group_header(1);
-        assert_eq!(app.selection.as_ref(), Some(&headers[0]));
-        app.select_group_header(1);
-        assert_eq!(app.selection.as_ref(), Some(&headers[1]));
+    }
+
+    #[test]
+    fn group_jumps_land_on_the_header_of_a_collapsed_folder() {
+        let mut app = App::new(SessionSnapshot {
+            sessions: vec![
+                session("a1", SessionState::Working),
+                session("a2", SessionState::Working),
+                session("b1", SessionState::Completed),
+                session("b2", SessionState::Completed),
+            ],
+            warnings: vec![],
+        });
+        app.collapsed.insert("state:Completed".into());
+
+        app.selection = Some(SelectionKey::Session("a2".into()));
+        app.select_across_groups(1);
+        assert_eq!(
+            app.selection,
+            Some(SelectionKey::Group("state:Completed".into()))
+        );
     }
 
     #[test]

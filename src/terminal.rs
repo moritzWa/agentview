@@ -1785,11 +1785,11 @@ fn handle_key(app: &mut App, key: KeyEvent) -> AppAction {
     if key.modifiers.contains(KeyModifiers::SUPER) && app.overlay == Overlay::None {
         match key.code {
             KeyCode::Up => {
-                app.select_group_header(-1);
+                app.select_across_groups(-1);
                 return AppAction::None;
             }
             KeyCode::Down => {
-                app.select_group_header(1);
+                app.select_across_groups(1);
                 return AppAction::None;
             }
             _ => {}
