@@ -1488,13 +1488,23 @@ impl std::fmt::Display for HttpStatusError {
 impl std::error::Error for HttpStatusError {}
 
 fn state_from_statuses(statuses: &Value, session_id: &str) -> SessionState {
-    let status = statuses
-        .get(session_id)
+    let entry = statuses.get(session_id);
+    let status = entry
         .and_then(|status| status.get("type").or(Some(status)))
         .and_then(Value::as_str);
     match status {
         Some("busy" | "active" | "running") => SessionState::Working,
-        Some("retry" | "error") => SessionState::NeedsInput,
+        // OpenCode reports "retry" while backing off a provider error on its own;
+        // only retries carrying an `action` (usage limits) need the user.
+        Some("retry")
+            if entry
+                .and_then(|e| e.get("action"))
+                .is_some_and(|a| !a.is_null()) =>
+        {
+            SessionState::NeedsInput
+        }
+        Some("retry") => SessionState::Working,
+        Some("error") => SessionState::NeedsInput,
         Some("idle") | None => SessionState::Completed,
         Some(_) => SessionState::Unknown,
     }
@@ -2597,6 +2607,20 @@ mod tests {
     fn encodes_basic_auth_and_url_components() {
         assert_eq!(base64_encode(b"opencode:secret"), "b3BlbmNvZGU6c2VjcmV0");
         assert_eq!(url_path_segment("ses_/ ?"), "ses_%2F%20%3F");
+    }
+
+    #[test]
+    fn provider_backoff_retry_is_working_but_usage_limit_needs_input() {
+        let statuses = serde_json::json!({
+            "backoff": {"type": "retry", "attempt": 2, "message": "overloaded", "next": 1},
+            "limit": {"type": "retry", "attempt": 1, "message": "limit",
+                      "action": {"reason": "account_rate_limit", "provider": "opencode", "title": "Go limit reached"}},
+            "failed": {"type": "error"},
+        });
+        assert_eq!(state_from_statuses(&statuses, "backoff"), SessionState::Working);
+        assert_eq!(state_from_statuses(&statuses, "limit"), SessionState::NeedsInput);
+        assert_eq!(state_from_statuses(&statuses, "failed"), SessionState::NeedsInput);
+        assert_eq!(state_from_statuses(&statuses, "missing"), SessionState::Completed);
     }
 
     #[test]
