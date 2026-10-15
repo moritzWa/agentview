@@ -287,6 +287,10 @@ pub struct App {
     pub models_provider: Option<Provider>,
     pub models_error: Option<String>,
     pub models_auth_available: bool,
+    /// Last model list per harness, shown at once while a fresh one loads.
+    pub model_cache: BTreeMap<Provider, Vec<String>>,
+    /// OpenCode's favorite and recent models, pinned above the catalog.
+    pub opencode_pins: crate::model_catalog::OpenCodePins,
     pub collapsed: BTreeSet<String>,
     visible_limits: BTreeMap<String, usize>,
     session_page_size: usize,
@@ -386,6 +390,8 @@ impl App {
             models_provider: None,
             models_error: None,
             models_auth_available: false,
+            model_cache: BTreeMap::new(),
+            opencode_pins: Default::default(),
             collapsed: BTreeSet::from([PAUSED_GROUP_KEY.to_owned()]),
             visible_limits: BTreeMap::new(),
             session_page_size: SESSION_PAGE_SIZE,
@@ -948,8 +954,14 @@ impl App {
             ));
             return AppAction::None;
         }
-        if self.models_provider.as_ref() != Some(&self.launch_provider) {
-            self.available_models.clear();
+        if self.models_provider.as_ref() != Some(&self.launch_provider)
+            || self.available_models.is_empty()
+        {
+            self.available_models = self
+                .model_cache
+                .get(&self.launch_provider)
+                .cloned()
+                .unwrap_or_default();
         }
         self.model_filter.clear();
         self.model_selection = self
@@ -1069,6 +1081,19 @@ impl App {
         provider: Provider,
         result: Result<Vec<String>, String>,
     ) {
+        let result = result.map(|models| {
+            let mut seen = BTreeSet::new();
+            models
+                .into_iter()
+                .filter(|model| valid_model_name(model))
+                .filter(|model| seen.insert(model.clone()))
+                .collect::<Vec<_>>()
+        });
+        if let Ok(models) = &result {
+            if !models.is_empty() {
+                self.model_cache.insert(provider.clone(), models.clone());
+            }
+        }
         if self.models_provider.as_ref() != Some(&provider) {
             return;
         }
@@ -1092,20 +1117,29 @@ impl App {
     fn apply_model_result(&mut self, result: Result<Vec<String>, String>) {
         match result {
             Ok(models) => {
-                let mut seen = BTreeSet::new();
-                self.available_models = models
-                    .into_iter()
-                    .filter(|model| valid_model_name(model))
-                    .filter(|model| seen.insert(model.clone()))
-                    .collect();
+                // A refresh replacing the cached list keeps the row the user
+                // already moved to.
+                let selected = if self.available_models.is_empty() {
+                    self.launch_model.clone()
+                } else {
+                    self.model_choices()
+                        .get(self.model_selection)
+                        .copied()
+                        .flatten()
+                        .map(ToOwned::to_owned)
+                };
+                self.available_models = models;
                 self.model_selection = self
                     .model_choices()
                     .iter()
-                    .position(|choice| *choice == self.launch_model.as_deref())
+                    .position(|choice| *choice == selected.as_deref())
                     .unwrap_or(0);
                 self.reconcile_model_selection();
                 self.models_error = None;
                 self.notice = None;
+            }
+            Err(error) if !self.models_auth_available && !self.available_models.is_empty() => {
+                self.set_notice(format!("showing saved models; refresh failed: {error}"));
             }
             Err(error) => {
                 self.available_models.clear();
@@ -1117,6 +1151,28 @@ impl App {
                 self.notice = None;
             }
         }
+    }
+
+    /// Replace OpenCode's pinned models, keeping the selected row on the same
+    /// model.
+    pub fn set_opencode_pins(&mut self, pins: crate::model_catalog::OpenCodePins) {
+        if self.opencode_pins == pins {
+            return;
+        }
+        let selected = self
+            .model_choices()
+            .get(self.model_selection)
+            .copied()
+            .map(|choice| choice.map(ToOwned::to_owned));
+        self.opencode_pins = pins;
+        if let Some(selected) = selected {
+            self.model_selection = self
+                .model_choices()
+                .iter()
+                .position(|choice| *choice == selected.as_deref())
+                .unwrap_or(0);
+        }
+        self.reconcile_model_selection();
     }
 
     pub fn set_models_auth_available(&mut self, provider: &Provider, available: bool) {
@@ -1159,16 +1215,42 @@ impl App {
     }
 
     pub fn model_choices(&self) -> Vec<Option<&str>> {
+        self.grouped_model_choices()
+            .into_iter()
+            .map(|(_, choice)| choice)
+            .collect()
+    }
+
+    /// Each choice with the heading it sits under: "Favorite" or "Recent"
+    /// for OpenCode's pinned models, otherwise the model's provider. The
+    /// default entry's heading is empty. Pins are left out while filtering
+    /// so a search lists each match once.
+    pub fn grouped_model_choices(&self) -> Vec<(&str, Option<&str>)> {
         let needle = self.model_filter.to_ascii_lowercase();
         let mut choices = Vec::new();
         if self.models_error.is_none() && (needle.is_empty() || "default".contains(&needle)) {
-            choices.push(None);
+            choices.push(("", None));
+        }
+        if needle.is_empty() && self.launch_provider == Provider::OpenCode {
+            let available = |model: &&String| self.available_models.contains(model);
+            let favorites = self.opencode_pins.favorite.iter().filter(available);
+            choices.extend(favorites.map(|model| ("Favorite", Some(model.as_str()))));
+            let recents = self
+                .opencode_pins
+                .recent
+                .iter()
+                .filter(available)
+                .filter(|model| !self.opencode_pins.favorite.contains(model));
+            choices.extend(recents.map(|model| ("Recent", Some(model.as_str()))));
         }
         choices.extend(
             self.available_models
                 .iter()
                 .filter(|model| model.to_ascii_lowercase().contains(&needle))
-                .map(|model| Some(model.as_str())),
+                .map(|model| {
+                    let provider = model.split('/').next().unwrap_or("");
+                    (provider, Some(model.as_str()))
+                }),
         );
         choices
     }
@@ -6120,6 +6202,117 @@ mod tests {
         assert_eq!(app.escape(), AppAction::None);
         assert_eq!(app.overlay, Overlay::Composer(ComposerMode::NewSession));
         assert_eq!(app.input, "keep this task draft");
+    }
+
+    fn opencode_app() -> App {
+        let mut app = App::with_launch_targets(
+            SessionSnapshot::default(),
+            true,
+            Provider::OpenCode,
+            vec![LaunchTarget {
+                provider: Provider::OpenCode,
+                supports_model: true,
+            }],
+        );
+        app.start_new_session(None);
+        app
+    }
+
+    #[test]
+    fn model_picker_shows_cached_models_at_once_and_keeps_the_selection_across_a_refresh() {
+        let mut app = opencode_app();
+        app.set_available_models(
+            Provider::OpenCode,
+            Ok(vec![
+                "anthropic/claude-opus-5-5".into(),
+                "openai/gpt-6".into(),
+            ]),
+        );
+        assert!(app.available_models.is_empty());
+
+        app.open_model_picker();
+        assert!(app.models_loading);
+        assert_eq!(
+            app.model_choices(),
+            vec![
+                None,
+                Some("anthropic/claude-opus-5-5"),
+                Some("openai/gpt-6")
+            ]
+        );
+        app.move_model_selection(2);
+
+        app.set_available_models(
+            Provider::OpenCode,
+            Ok(vec![
+                "anthropic/claude-opus-5-5".into(),
+                "groq/llama".into(),
+                "openai/gpt-6".into(),
+            ]),
+        );
+        assert!(!app.models_loading);
+        assert_eq!(
+            app.model_choices()[app.model_selection],
+            Some("openai/gpt-6")
+        );
+    }
+
+    #[test]
+    fn a_failed_refresh_keeps_the_cached_models() {
+        let mut app = opencode_app();
+        app.model_cache
+            .insert(Provider::OpenCode, vec!["openai/gpt-6".into()]);
+        app.open_model_picker();
+        app.set_available_models(Provider::OpenCode, Err("server timed out".into()));
+        assert_eq!(app.model_choices(), vec![None, Some("openai/gpt-6")]);
+        assert_eq!(app.models_error, None);
+        assert!(app
+            .notice
+            .as_deref()
+            .is_some_and(|notice| notice.contains("server timed out")));
+    }
+
+    #[test]
+    fn opencode_favorites_and_recents_are_pinned_until_the_user_filters() {
+        let mut app = opencode_app();
+        app.set_opencode_pins(crate::model_catalog::OpenCodePins {
+            recent: vec![
+                "openai/gpt-6".into(),
+                "gone/model".into(),
+                "cursor/auto".into(),
+            ],
+            favorite: vec!["cursor/auto".into()],
+        });
+        app.launch_model = Some("openai/gpt-6".into());
+        app.open_model_picker();
+        app.set_available_models(
+            Provider::OpenCode,
+            Ok(vec![
+                "anthropic/claude-opus-5-5".into(),
+                "cursor/auto".into(),
+                "openai/gpt-6".into(),
+            ]),
+        );
+        assert_eq!(
+            app.grouped_model_choices(),
+            vec![
+                ("", None),
+                ("Favorite", Some("cursor/auto")),
+                ("Recent", Some("openai/gpt-6")),
+                ("anthropic", Some("anthropic/claude-opus-5-5")),
+                ("cursor", Some("cursor/auto")),
+                ("openai", Some("openai/gpt-6")),
+            ]
+        );
+        assert_eq!(app.model_selection, 2);
+
+        app.push_input('g');
+        app.push_input('p');
+        app.push_input('t');
+        assert_eq!(
+            app.grouped_model_choices(),
+            vec![("openai", Some("openai/gpt-6"))]
+        );
     }
 
     #[test]

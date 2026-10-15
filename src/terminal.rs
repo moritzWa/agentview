@@ -292,6 +292,24 @@ pub fn run_dashboard(
     app.set_sort_keys(session_order.sort_keys());
     app.remembered_models = last_harness.models().into_iter().collect();
     app.launch_model = app.remembered_models.get(&app.launch_provider).cloned();
+    let model_cache = crate::model_catalog::ModelCache::load_default().ok();
+    let opencode_models = crate::model_catalog::OpenCodeModelState::load_default().ok();
+    if let Some(cache) = &model_cache {
+        app.model_cache = cache.all();
+    }
+    if let Some(state) = &opencode_models {
+        app.set_opencode_pins(state.pins());
+    }
+    if app
+        .launch_target()
+        .is_some_and(|target| target.supports_model)
+    {
+        schedule_model_load(
+            control.clone(),
+            app.launch_provider.clone(),
+            models_tx.clone(),
+        );
+    }
     if let Some(view_mode) = last_view.view_mode() {
         app.set_view_mode(view_mode);
     }
@@ -427,12 +445,15 @@ pub fn run_dashboard(
             match models_rx.try_recv() {
                 Ok((provider, auth_available, result)) => {
                     app.set_models_auth_available(&provider, auth_available);
-                    app.set_available_models(provider, result);
-                    if let Some((provider, model)) = app.take_model_change() {
-                        if let Err(error) = last_harness.save_model(&provider, model.as_deref()) {
-                            app.set_notice(format!("failed to remember model: {error:#}"));
+                    app.set_available_models(provider.clone(), result);
+                    if let (Some(cache), Some(models)) =
+                        (&model_cache, app.model_cache.get(&provider))
+                    {
+                        if let Err(error) = cache.save(&provider, models) {
+                            crate::perf!("models", "failed to cache models: {error:#}");
                         }
                     }
+                    remember_model_change(&mut app, &last_harness, opencode_models.as_ref());
                     needs_draw = true;
                 }
                 Err(TryRecvError::Empty) => break,
@@ -778,12 +799,7 @@ pub fn run_dashboard(
                                 app.set_notice(format!("failed to remember view: {error:#}"));
                             }
                         }
-                        if let Some((provider, model)) = app.take_model_change() {
-                            if let Err(error) = last_harness.save_model(&provider, model.as_deref())
-                            {
-                                app.set_notice(format!("failed to remember model: {error:#}"));
-                            }
-                        }
+                        remember_model_change(&mut app, &last_harness, opencode_models.as_ref());
                         if action == AppAction::Quit && migrating_target.is_some() {
                             app.should_quit = false;
                             app.set_notice(
@@ -1011,6 +1027,10 @@ pub fn run_dashboard(
                             }
                         }
                         if let Some(provider) = effect.load_models {
+                            if let (Provider::OpenCode, Some(state)) = (&provider, &opencode_models)
+                            {
+                                app.set_opencode_pins(state.pins());
+                            }
                             schedule_model_load(control.clone(), provider, models_tx.clone());
                         }
                         if let Some(intent) = effect.pending_launch {
@@ -1169,6 +1189,29 @@ fn schedule_refresh(
         Err(TrySendError::Disconnected(_)) => {
             Err(anyhow!("provider refresh worker stopped unexpectedly"))
         }
+    }
+}
+
+/// Persist a model the user just picked, and put OpenCode picks at the front
+/// of OpenCode's own recent list.
+fn remember_model_change(
+    app: &mut App,
+    last_harness: &crate::last_harness::LastHarness,
+    opencode_models: Option<&crate::model_catalog::OpenCodeModelState>,
+) {
+    let Some((provider, model)) = app.take_model_change() else {
+        return;
+    };
+    if let Err(error) = last_harness.save_model(&provider, model.as_deref()) {
+        app.set_notice(format!("failed to remember model: {error:#}"));
+    }
+    if let (Provider::OpenCode, Some(model), Some(state)) = (&provider, &model, opencode_models) {
+        if let Err(error) = state.record_recent(model) {
+            app.set_notice(format!(
+                "failed to update OpenCode recent models: {error:#}"
+            ));
+        }
+        app.set_opencode_pins(state.pins());
     }
 }
 

@@ -1057,6 +1057,14 @@ impl OpenCodeSource {
     }
 
     fn available_models(&self) -> Result<Vec<String>> {
+        if let Some(supervisor) = &self.supervisor {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+            if let Ok(Some(models)) = supervisor.available_models(&cwd) {
+                if !models.is_empty() {
+                    return Ok(models);
+                }
+            }
+        }
         let mut args = self.invocation.prefix_args.clone();
         args.push("models".into());
         let mut command = CommandRequest::new(self.invocation.program.clone(), args);

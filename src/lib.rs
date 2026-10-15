@@ -17,6 +17,7 @@ pub mod last_message;
 pub mod last_view;
 pub mod maintenance;
 pub mod migration;
+pub mod model_catalog;
 pub mod native_session;
 pub mod opencode_supervisor;
 pub mod order;

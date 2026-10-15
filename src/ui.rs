@@ -1982,22 +1982,14 @@ fn render_directory_picker(frame: &mut Frame<'_>, app: &App, area: Rect) {
     );
 }
 
-/// The provider of a `provider/model` choice; the default entry has none.
-fn model_provider(model: Option<&str>) -> &str {
-    model
-        .and_then(|value| value.split('/').next())
-        .unwrap_or("")
-}
-
-/// Extra rows the provider headings and separators add to one page of choices, or 0
-/// when the page holds fewer than two providers. The default entry has no provider
-/// and gets no heading, only a separator.
-fn model_group_rows(choices: &[Option<&str>], start: usize, rows: usize) -> usize {
+/// Extra rows the headings and separators add to one page of choices, or 0 when the
+/// page holds fewer than two groups. The default entry has no heading, only a
+/// separator.
+fn model_group_rows(choices: &[(&str, Option<&str>)], start: usize, rows: usize) -> usize {
     let mut groups: Vec<&str> = Vec::new();
-    for model in choices.iter().skip(start).take(rows) {
-        let provider = model_provider(*model);
-        if groups.last() != Some(&provider) {
-            groups.push(provider);
+    for (group, _) in choices.iter().skip(start).take(rows) {
+        if groups.last() != Some(group) {
+            groups.push(group);
         }
     }
     if groups
@@ -2017,7 +2009,7 @@ fn model_group_rows(choices: &[Option<&str>], start: usize, rows: usize) -> usiz
 
 fn render_model_picker(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let terminal_shells = app.launch_provider == Provider::Terminal;
-    let choices = app.model_choices();
+    let choices = app.grouped_model_choices();
     let popup_width = area.width.saturating_sub(2).min(76).max(28);
     let error_lines = if choices.is_empty() && !app.models_loading {
         app.models_error
@@ -2136,22 +2128,20 @@ fn render_model_picker(frame: &mut Frame<'_>, app: &App, area: Rect) {
             .enumerate()
             .skip(start)
             .take(visible_rows)
-            .flat_map(|(index, model)| {
+            .flat_map(|(index, (provider, model))| {
+                let provider = *provider;
                 let mut rows: Vec<Line<'static>> = Vec::new();
-                if grouped {
-                    let provider = model_provider(*model);
-                    if previous_provider != Some(provider) {
-                        if previous_provider.is_some() {
-                            rows.push(Line::from(""));
-                        }
-                        if !provider.is_empty() {
-                            rows.push(Line::from(Span::styled(
-                                format!(" {}", sanitize_inline(provider)),
-                                Style::default().fg(palette().dim),
-                            )));
-                        }
-                        previous_provider = Some(provider);
+                if grouped && previous_provider != Some(provider) {
+                    if previous_provider.is_some() {
+                        rows.push(Line::from(""));
                     }
+                    if !provider.is_empty() {
+                        rows.push(Line::from(Span::styled(
+                            format!(" {}", sanitize_inline(provider)),
+                            Style::default().fg(palette().dim),
+                        )));
+                    }
+                    previous_provider = Some(provider);
                 }
                 rows.push({
                     let selected = index == app.model_selection;
@@ -3722,6 +3712,50 @@ mod tests {
         assert!(!single
             .lines()
             .any(|row| row.trim_matches('│').trim() == "openai"));
+    }
+
+    #[test]
+    fn model_picker_heads_opencode_recent_models_above_the_catalog() {
+        let mut app = App::with_launch_targets(
+            SessionSnapshot::default(),
+            false,
+            Provider::OpenCode,
+            vec![LaunchTarget {
+                provider: Provider::OpenCode,
+                supports_model: true,
+            }],
+        );
+        app.start_new_session(None);
+        app.set_opencode_pins(crate::model_catalog::OpenCodePins {
+            recent: vec!["openai/gpt-6.1-sol".into()],
+            favorite: Vec::new(),
+        });
+        app.open_model_picker();
+        app.set_available_models(
+            Provider::OpenCode,
+            Ok(vec![
+                "anthropic/claude-opus-5-5".into(),
+                "openai/gpt-6.1-sol".into(),
+            ]),
+        );
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let text = buffer_text(terminal.backend().buffer());
+        let rows: Vec<&str> = text
+            .lines()
+            .filter_map(|row| {
+                let start = row.find('│')? + '│'.len_utf8();
+                let end = row.rfind('│')?;
+                (start <= end).then(|| row[start..end].trim())
+            })
+            .collect();
+        let recent = rows
+            .iter()
+            .position(|row| *row == "Recent")
+            .unwrap_or_else(|| panic!("no Recent heading in {text}"));
+        assert!(rows[recent + 1].contains("openai/gpt-6.1-sol"));
+        assert!(rows[recent + 3] == "anthropic");
     }
 
     #[test]

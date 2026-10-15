@@ -325,6 +325,23 @@ impl OpenCodeSupervisor {
             .context("OpenCode returned a session without a title")
     }
 
+    /// Every `provider/model` the live server can run, from the catalog it
+    /// already holds in memory. `None` when no server is up, so the caller can
+    /// fall back to `opencode models`, which boots a whole new process.
+    /// Never starts a server.
+    pub fn available_models(&self, cwd: &Path) -> Result<Option<Vec<String>>> {
+        let Some(record) = self.live_record()? else {
+            return Ok(None);
+        };
+        let catalog = self.request_json(
+            &record,
+            "GET",
+            &with_directory_query("/config/providers", cwd),
+            None,
+        )?;
+        parse_config_providers(&catalog).map(Some)
+    }
+
     pub fn reply(&self, session_id: &str, prompt: &str) -> Result<()> {
         let prompt = prompt.trim();
         if prompt.is_empty() {
@@ -1832,6 +1849,26 @@ fn limit_chars(value: String, limit: usize) -> String {
         .rev()
         .collect::<String>();
     format!("[earlier output omitted]\n{tail}")
+}
+
+fn parse_config_providers(catalog: &Value) -> Result<Vec<String>> {
+    let providers = catalog
+        .get("providers")
+        .and_then(Value::as_array)
+        .context("OpenCode /config/providers returned no provider list")?;
+    let mut models = BTreeSet::new();
+    for provider in providers {
+        let Some(id) = provider.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(entries) = provider.get("models").and_then(Value::as_object) else {
+            continue;
+        };
+        for model in entries.keys() {
+            models.insert(format!("{id}/{model}"));
+        }
+    }
+    Ok(models.into_iter().collect())
 }
 
 fn with_directory_query(path: &str, cwd: &Path) -> String {
