@@ -9,6 +9,7 @@ pub mod codex_supervisor;
 pub mod control;
 pub mod doctor;
 pub mod domain;
+pub mod file_history;
 pub(crate) mod fs_util;
 pub mod hidden;
 pub mod history_index;

@@ -289,7 +289,7 @@ pub struct App {
     pub restorable_loading: bool,
     /// Whether the picker still waits for the message text it searches.
     pub restorable_text_loading: bool,
-    history_index: Option<crate::history_index::HistoryIndex>,
+    history_indices: Vec<crate::history_index::HistoryIndex>,
     history_index_ready: bool,
     indexed_matches: RefCell<Option<(String, BTreeMap<String, String>)>>,
     pub models_loading: bool,
@@ -397,7 +397,7 @@ impl App {
             open_candidates: Vec::new(),
             restorable_loading: false,
             restorable_text_loading: false,
-            history_index: None,
+            history_indices: Vec::new(),
             history_index_ready: false,
             indexed_matches: RefCell::new(None),
             hidden_filter: String::new(),
@@ -2496,7 +2496,8 @@ impl App {
             self.open_candidates = open;
         }
         self.restorable_loading = loading;
-        self.restorable_text_loading = self.history_index.is_some() && !self.history_index_ready;
+        self.restorable_text_loading =
+            !self.history_indices.is_empty() && !self.history_index_ready;
         self.hidden_filter.clear();
         self.hidden_selection = 0;
         self.notice = None;
@@ -2507,11 +2508,20 @@ impl App {
 
     /// Merge saved provider sessions into the open picker, after the hidden
     /// ones and skipping rows the list already shows.
-    pub fn add_restorable_sessions(&mut self, sessions: Vec<RestorableSession>, errors: &[String]) {
+    pub fn add_restorable_sessions(
+        &mut self,
+        mut sessions: Vec<RestorableSession>,
+        errors: &[String],
+    ) {
         if self.overlay != Overlay::HiddenPicker || !self.restorable_loading {
             return;
         }
         self.restorable_loading = false;
+        for index in &self.history_indices {
+            if let Ok(found) = index.file_sessions() {
+                sessions.extend(found);
+            }
+        }
         let listed = self
             .snapshot
             .sessions
@@ -2520,6 +2530,9 @@ impl App {
             .collect::<BTreeSet<_>>();
         let mut added = Vec::new();
         for session in sessions {
+            if self.restorable.contains_key(&session.id) {
+                continue;
+            }
             let open = self.is_open_choice(&session.id);
             if !self.hidden_ids.contains(&session.id) && !open {
                 if listed.contains(session.id.as_str()) {
@@ -2561,10 +2574,21 @@ impl App {
             .hidden_choices()
             .get(self.hidden_selection)
             .map(|r| r.id.clone());
-        self.history_index_ready = index.as_ref().is_some_and(|index| index.is_ready());
-        self.history_index = index;
+        if let Some(index) = index {
+            if !self.history_indices.contains(&index) {
+                self.history_indices.push(index);
+            }
+        } else {
+            self.history_indices.clear();
+        }
+        self.history_index_ready = self.history_indices.iter().all(|index| index.is_ready());
         *self.indexed_matches.borrow_mut() = None;
-        self.restorable_text_loading = self.history_index.is_some() && !self.history_index_ready;
+        self.restorable_text_loading =
+            !self.history_indices.is_empty() && !self.history_index_ready;
+        if self.overlay == Overlay::HiddenPicker && !self.restorable_loading {
+            self.restorable_loading = true;
+            self.add_restorable_sessions(Vec::new(), &[]);
+        }
         // Keep the selected session when an asynchronous refresh adds matches
         // ahead of it, rather than letting Enter act on a different row.
         self.reconcile_hidden_selection();
@@ -2576,13 +2600,18 @@ impl App {
     }
 
     fn indexed_snippet(&self, id: &str, needle: &str) -> Option<String> {
-        let index = self.history_index.as_ref()?;
+        if self.history_indices.is_empty() {
+            return None;
+        }
         let mut cached = self.indexed_matches.borrow_mut();
         if cached.as_ref().map(|(query, _)| query.as_str()) != Some(needle) {
-            let matches = index.search(needle).unwrap_or_else(|error| {
-                crate::perf!("history-search", "failed: {error:#}");
-                BTreeMap::new()
-            });
+            let mut matches = BTreeMap::new();
+            for index in &self.history_indices {
+                match index.search(needle) {
+                    Ok(found) => matches.extend(found),
+                    Err(error) => crate::perf!("history-search", "failed: {error:#}"),
+                }
+            }
             *cached = Some((needle.to_owned(), matches));
         }
         cached.as_ref()?.1.get(id).cloned()

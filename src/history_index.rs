@@ -1,4 +1,4 @@
-//! Derived, text-only OpenCode history. OpenCode's database is always read-only.
+//! Derived, text-only provider history. Provider storage is always read-only.
 //! A transaction on this database elects one writer across dashboard instances;
 //! WAL readers keep searching the previous index while it catches up.
 
@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
@@ -31,31 +31,42 @@ impl Worker {
         let worker_cancelled = cancelled.clone();
         let thread = std::thread::spawn(move || {
             lower_worker_priority();
-            let index = match control.history_search_index() {
-                Ok(Some(index)) => index,
-                Ok(None) => return,
+            let indices = match control.history_search_indices() {
+                Ok(indices) if !indices.is_empty() => indices,
+                Ok(_) => return,
                 Err(error) => {
                     crate::perf!("history-index", "initialization failed: {error:#}");
                     return;
                 }
             };
-            let _ = sender.send(index.clone());
+            for index in &indices {
+                let _ = sender.send(index.clone());
+            }
             loop {
                 if worker_cancelled.load(Ordering::Relaxed) {
                     break;
                 }
-                let refreshed = index.refresh(worker_cancelled.clone());
-                if let Err(error) = &refreshed {
-                    crate::perf!("history-index", "refresh failed: {error:#}");
+                let mut next_refresh = None;
+                for index in &indices {
+                    if worker_cancelled.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let refreshed = index.refresh(worker_cancelled.clone());
+                    if let Err(error) = &refreshed {
+                        crate::perf!("history-index", "refresh failed: {error:#}");
+                    } else {
+                        let due = Instant::now() + index.next_refresh_in();
+                        next_refresh =
+                            Some(next_refresh.map_or(due, |known: Instant| known.min(due)));
+                    }
+                    if sender.send(index.clone()).is_err() {
+                        return;
+                    }
                 }
-                if sender.send(index.clone()).is_err() {
-                    break;
-                }
-                let delay = if refreshed.is_err() {
-                    REFRESH_INTERVAL
-                } else {
-                    index.next_refresh_in()
-                };
+                let delay = next_refresh
+                    .map(|due| due.saturating_duration_since(Instant::now()))
+                    .unwrap_or(REFRESH_INTERVAL)
+                    .max(Duration::from_secs(5));
                 if stopped.recv_timeout(delay) != Err(std::sync::mpsc::RecvTimeoutError::Timeout) {
                     break;
                 }
@@ -86,6 +97,7 @@ impl Drop for Worker {
 pub struct HistoryIndex {
     source: PathBuf,
     path: PathBuf,
+    provider: Option<crate::file_history::FileProvider>,
 }
 
 impl HistoryIndex {
@@ -128,7 +140,49 @@ impl HistoryIndex {
             });
         let state = crate::adapters::default_opencode_ownership_path()?;
         let path = state.with_file_name(format!("history-search-{hash:016x}.db"));
-        Ok(Self { source, path })
+        Ok(Self {
+            source,
+            path,
+            provider: None,
+        })
+    }
+
+    pub fn for_files(provider: crate::file_history::FileProvider, home: PathBuf) -> Result<Self> {
+        let mut index = Self::for_source(home)?;
+        let name = index
+            .path
+            .file_name()
+            .context("index has no file name")?
+            .to_string_lossy();
+        index.path = index
+            .path
+            .with_file_name(format!("{}-{name}", provider.key()));
+        index.provider = Some(provider);
+        Ok(index)
+    }
+
+    pub fn file_sessions(&self) -> Result<Vec<crate::control::RestorableSession>> {
+        let Some(provider) = self.provider else {
+            return Ok(Vec::new());
+        };
+        if !self.is_ready() {
+            return Ok(Vec::new());
+        }
+        let db = read_only(&self.path)?;
+        let mut q = db.prepare("SELECT id, name, cwd, max(updated_ms) FROM file_catalog GROUP BY id ORDER BY max(updated_ms) DESC")?;
+        let rows = q.query_map([], |r| {
+            let id: String = r.get(0)?;
+            Ok(crate::control::RestorableSession {
+                id: format!("{}:host:{id}", provider.key()),
+                provider_session_id: id,
+                provider: provider.provider(),
+                name: r.get(1)?,
+                cwd: PathBuf::from(r.get::<_, String>(2)?),
+                updated_at_ms: r.get(3)?,
+                transcript: String::new(),
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     /// Literal, case-insensitive substring matching, like the old picker.
@@ -147,7 +201,11 @@ impl HistoryIndex {
         )?;
         let rows = statement.query_map(params![needle, query], |row| {
             Ok((
-                format!("opencode:host:{}", row.get::<_, String>(0)?),
+                if self.provider.is_some() {
+                    row.get::<_, String>(0)?
+                } else {
+                    format!("opencode:host:{}", row.get::<_, String>(0)?)
+                },
                 row.get(1)?,
             ))
         })?;
@@ -162,6 +220,28 @@ impl HistoryIndex {
             return Ok(false);
         }
         std::fs::create_dir_all(self.path.parent().context("history index has no parent")?)?;
+        // All providers share this lease. Two dashboards must not start a
+        // Claude and a Codex backfill at the same time on the same computer.
+        let lease = self.path.with_file_name("history-refresh-lock.db");
+        let mut lease_options = std::fs::OpenOptions::new();
+        lease_options.create(true).write(true).truncate(false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            lease_options.mode(0o600);
+        }
+        lease_options.open(&lease)?;
+        let mut coordinator = Connection::open(lease)?;
+        coordinator.busy_timeout(Duration::ZERO)?;
+        let _writer = match coordinator
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        {
+            Ok(tx) => tx,
+            Err(error) if error.sqlite_error_code() == Some(rusqlite::ErrorCode::DatabaseBusy) => {
+                return Ok(false)
+            }
+            Err(error) => return Err(error.into()),
+        };
         let mut options = std::fs::OpenOptions::new();
         options.create(true).write(true).truncate(false);
         #[cfg(unix)]
@@ -203,12 +283,22 @@ impl HistoryIndex {
         if now >= last && now - last < REFRESH_INTERVAL.as_secs() as i64 {
             return Ok(false);
         }
+        let stop = cancelled.clone();
+        tx.progress_handler(1000, Some(move || stop.load(Ordering::Relaxed)));
+        if let Some(provider) = self.provider {
+            self.refresh_files(&tx, provider, &cancelled)?;
+            let finished = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64;
+            tx.execute(
+                "INSERT OR REPLACE INTO meta VALUES ('refreshed', ?1)",
+                [finished],
+            )?;
+            tx.commit()?;
+            return Ok(true);
+        }
         let source = read_only(&self.source)?;
         source.busy_timeout(Duration::from_millis(100))?;
         let stop = cancelled.clone();
         source.progress_handler(1000, Some(move || stop.load(Ordering::Relaxed)));
-        let stop = cancelled.clone();
-        tx.progress_handler(1000, Some(move || stop.load(Ordering::Relaxed)));
         let versions = {
             let mut q = tx.prepare("SELECT id, updated, root FROM sessions")?;
             let rows = q.query_map([], |r| {
@@ -305,6 +395,82 @@ impl HistoryIndex {
         crate::perf!("history-index", "updated_sessions={changed}");
         Ok(true)
     }
+
+    fn refresh_files(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        provider: crate::file_history::FileProvider,
+        cancelled: &AtomicBool,
+    ) -> Result<()> {
+        tx.execute_batch("CREATE TABLE IF NOT EXISTS file_catalog (source TEXT PRIMARY KEY, id TEXT NOT NULL, name TEXT NOT NULL, cwd TEXT NOT NULL, updated_ms INTEGER NOT NULL);")?;
+        let versions = {
+            let mut q = tx.prepare("SELECT id, updated FROM sessions")?;
+            let rows = q.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+            rows.collect::<rusqlite::Result<BTreeMap<_, _>>>()?
+        };
+        let files = provider.files(&self.source)?;
+        let live: BTreeSet<_> = files
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect();
+        for source in versions.keys().filter(|source| !live.contains(*source)) {
+            tx.execute("DELETE FROM documents WHERE source=?1", [source])?;
+            tx.execute("DELETE FROM sessions WHERE id=?1", [source])?;
+            tx.execute("DELETE FROM file_catalog WHERE source=?1", [source])?;
+        }
+        for path in files {
+            if cancelled.load(Ordering::Relaxed) {
+                bail!("history indexing cancelled");
+            }
+            let metadata = std::fs::metadata(&path)?;
+            let modified = metadata.modified()?.duration_since(UNIX_EPOCH)?;
+            let version = format!("{}:{}", metadata.len(), modified.as_nanos());
+            let source = path.to_string_lossy().into_owned();
+            if versions.get(&source) == Some(&version) {
+                continue;
+            }
+            tx.execute("DELETE FROM documents WHERE source=?1", [&source])?;
+            tx.execute("DELETE FROM file_catalog WHERE source=?1", [&source])?;
+            let session = crate::file_history::read_session(
+                &path,
+                metadata.len(),
+                provider,
+                cancelled,
+                |id, text| {
+                    tx.execute(
+                        "INSERT INTO documents(source, root, text) VALUES (?1, ?2, ?3)",
+                        params![source, id, text],
+                    )?;
+                    Ok(())
+                },
+            )?;
+            let root = match session {
+                Some(session) => {
+                    tx.execute(
+                        "INSERT INTO file_catalog VALUES (?1,?2,?3,?4,?5)",
+                        params![
+                            source,
+                            session.id,
+                            session.name,
+                            session.cwd.to_string_lossy(),
+                            modified.as_millis() as u64
+                        ],
+                    )?;
+                    format!("{}:host:{}", provider.key(), session.id)
+                }
+                None => {
+                    tx.execute("DELETE FROM documents WHERE source=?1", [&source])?;
+                    String::new()
+                }
+            };
+            tx.execute(
+                "INSERT OR REPLACE INTO sessions VALUES (?1,?2,?3)",
+                params![source, version, root],
+            )?;
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        Ok(())
+    }
 }
 
 fn read_only(path: &Path) -> Result<Connection> {
@@ -353,6 +519,7 @@ pub(crate) mod tests {
         let index = HistoryIndex {
             source,
             path: dir.path().join("index.db"),
+            provider: None,
         };
         (dir, index)
     }
@@ -442,6 +609,30 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn provider_backfills_share_one_cross_instance_writer_lease() {
+        let (_dir, index) = fixture();
+        refresh(&index);
+        make_due(&index);
+        let mut lease =
+            Connection::open(index.path.with_file_name("history-refresh-lock.db")).unwrap();
+        let _writer = lease
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .unwrap();
+        let other = HistoryIndex {
+            source: index.source.clone(),
+            path: index.path.with_file_name("claude-index.db"),
+            provider: Some(crate::file_history::FileProvider::Claude),
+        };
+        assert!(!refresh(&index));
+        assert!(!refresh(&other));
+        assert!(
+            !other.path.exists(),
+            "another provider must not start a parallel backfill"
+        );
+        assert_eq!(index.search("upload").unwrap().len(), 1);
+    }
+
+    #[test]
     fn older_opencode_without_event_sequences_tracks_part_edits() {
         let (_dir, index) = fixture();
         let source = Connection::open(&index.source).unwrap();
@@ -487,6 +678,71 @@ pub(crate) mod tests {
             [], |r| r.get(0),
         ).unwrap();
         assert_eq!(schema_count, 0);
+    }
+
+    #[test]
+    fn file_history_index_updates_appends_rewrites_deletes_and_resume_metadata() {
+        use crate::file_history::FileProvider;
+        use std::io::Write;
+        for provider in [FileProvider::Claude, FileProvider::Codex] {
+            let dir = tempfile::tempdir().unwrap();
+            let home = dir.path().join("provider");
+            let file = home.join(if provider == FileProvider::Claude {
+                "projects/project/session-a.jsonl"
+            } else {
+                "sessions/2026/10/15/rollout-a.jsonl"
+            });
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            let initial = if provider == FileProvider::Claude {
+                "{\"type\":\"user\",\"cwd\":\"/work/project\",\"message\":{\"content\":\"First lighthouse request\"}}\n"
+            } else {
+                "{\"type\":\"session_meta\",\"payload\":{\"id\":\"session-a\",\"cwd\":\"/work/project\"}}\n{\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"First lighthouse request\"}}\n"
+            };
+            let cwd = dir.path().join("project");
+            let json_cwd = serde_json::to_string(&cwd).unwrap();
+            let initial = initial.replace("/work/project", &json_cwd[1..json_cwd.len() - 1]);
+            std::fs::write(&file, &initial).unwrap();
+            let index = HistoryIndex {
+                source: home,
+                path: dir.path().join("index.db"),
+                provider: Some(provider),
+            };
+            refresh(&index);
+            let id = format!("{}:host:session-a", provider.key());
+            assert!(index.search("lighthouse").unwrap().contains_key(&id));
+            let saved = index.file_sessions().unwrap();
+            assert_eq!(saved.len(), 1);
+            assert_eq!(saved[0].provider, provider.provider());
+            assert_eq!(saved[0].provider_session_id, "session-a");
+            assert_eq!(saved[0].cwd, cwd);
+            let appended = if provider == FileProvider::Claude {
+                "{\"type\":\"assistant\",\"message\":{\"content\":\"meridian response\"}}\n"
+            } else {
+                "{\"type\":\"event_msg\",\"payload\":{\"type\":\"agent_message\",\"message\":\"meridian response\"}}\n"
+            };
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(&file)
+                .unwrap()
+                .write_all(appended.as_bytes())
+                .unwrap();
+            make_due(&index);
+            refresh(&index);
+            assert!(index.search("meridian").unwrap().contains_key(&id));
+            std::fs::write(&file, initial.replace("lighthouse", "northstar")).unwrap();
+            make_due(&index);
+            refresh(&index);
+            assert!(index.search("meridian").unwrap().is_empty());
+            assert!(index.search("lighthouse").unwrap().is_empty());
+            assert!(index.search("northstar").unwrap().contains_key(&id));
+            // A second reader can immediately use the persisted results.
+            assert_eq!(index.clone().file_sessions().unwrap().len(), 1);
+            std::fs::remove_file(&file).unwrap();
+            make_due(&index);
+            refresh(&index);
+            assert!(index.search("northstar").unwrap().is_empty());
+            assert!(index.file_sessions().unwrap().is_empty());
+        }
     }
 
     #[test]

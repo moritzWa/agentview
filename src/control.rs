@@ -65,6 +65,37 @@ pub struct RestorableSession {
     pub transcript: String,
 }
 
+impl RestorableSession {
+    /// A read-only history row can be resumed without claiming ownership of
+    /// its provider storage or waiting for the bounded discovery inventory.
+    pub fn history_row(&self) -> AgentSession {
+        AgentSession {
+            id: self.id.clone(),
+            provider_session_id: self.provider_session_id.clone(),
+            provider: self.provider.clone(),
+            runtime: Runtime::Host,
+            kind: crate::domain::SessionKind::Interactive,
+            name: self.name.clone(),
+            cwd: self.cwd.clone(),
+            state: SessionState::Completed,
+            summary: self.name.clone(),
+            raw_state: Some(
+                if self.provider == Provider::Claude {
+                    "history"
+                } else {
+                    "persisted"
+                }
+                .into(),
+            ),
+            pid: None,
+            started_at: None,
+            updated_at: Some(SystemTime::UNIX_EPOCH + Duration::from_millis(self.updated_at_ms)),
+            pull_requests: None,
+            capabilities: BTreeSet::new(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ControlOutcome {
     pub message: String,
@@ -205,7 +236,10 @@ pub trait ProviderController: Send + Sync {
 
     /// Persisted sessions the restore picker can offer, newest first.
     fn restorable_sessions(&self) -> Result<Vec<RestorableSession>> {
-        Ok(Vec::new())
+        match self.history_search_index()? {
+            Some(index) => index.file_sessions(),
+            None => Ok(Vec::new()),
+        }
     }
 
     /// Resolve a provider's derived search index, on the background worker.
@@ -695,16 +729,23 @@ impl ControlHub {
         (sessions, errors)
     }
 
-    pub fn history_search_index(&self) -> Result<Option<crate::history_index::HistoryIndex>> {
+    pub fn history_search_indices(&self) -> Result<Vec<crate::history_index::HistoryIndex>> {
         if self.ensure_provider_io().is_err() {
-            return Ok(None);
+            return Ok(Vec::new());
         }
+        let mut indices = Vec::new();
         for controller in self.controllers.values() {
-            if let Some(index) = controller.history_search_index()? {
-                return Ok(Some(index));
+            match controller.history_search_index() {
+                Ok(Some(index)) => indices.push(index),
+                Ok(None) => {}
+                Err(error) => crate::perf!(
+                    "history-index",
+                    "{}: {error:#}",
+                    controller.provider().label()
+                ),
             }
         }
-        Ok(None)
+        Ok(indices)
     }
 
     /// Show `session` in its provider's hidden native client in the
@@ -1110,6 +1151,17 @@ impl ClaudeController {
 }
 
 impl ProviderController for ClaudeController {
+    fn history_search_index(&self) -> Result<Option<crate::history_index::HistoryIndex>> {
+        if self.runtime != Runtime::Host {
+            return Ok(None);
+        }
+        let provider = crate::file_history::FileProvider::Claude;
+        provider
+            .home()
+            .map(|home| crate::history_index::HistoryIndex::for_files(provider, home))
+            .transpose()
+    }
+
     fn provider(&self) -> Provider {
         Provider::Claude
     }
@@ -1329,6 +1381,14 @@ impl CodexController {
 }
 
 impl ProviderController for CodexController {
+    fn history_search_index(&self) -> Result<Option<crate::history_index::HistoryIndex>> {
+        let provider = crate::file_history::FileProvider::Codex;
+        provider
+            .home()
+            .map(|home| crate::history_index::HistoryIndex::for_files(provider, home))
+            .transpose()
+    }
+
     fn provider(&self) -> Provider {
         Provider::Codex
     }

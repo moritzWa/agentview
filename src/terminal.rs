@@ -867,24 +867,50 @@ pub fn run_dashboard(
                                 } else {
                                     Ok(())
                                 };
-                                match unhidden.and_then(|()| control.adopt(&session)) {
-                                    Ok(()) => {
-                                        app.set_notice(format!(
-                                            "restoring {}; opening it once discovery lists it",
-                                            session.name
-                                        ));
-                                        pending_reveal = Some(PendingReveal {
-                                            session_id: session.id,
-                                            deadline: Instant::now() + REVEAL_DISCOVERY_TIMEOUT,
-                                        });
+                                if matches!(session.provider, Provider::Claude | Provider::Codex) {
+                                    match unhidden {
+                                        Ok(()) => {
+                                            let id = session.id.clone();
+                                            app.update_snapshot(|snapshot| {
+                                                snapshot.sessions.retain(|row| row.id != id);
+                                                snapshot.sessions.push(session.history_row());
+                                                true
+                                            });
+                                            app.select_and_reveal_session(&id);
+                                            dispatch_action(
+                                                &mut terminal,
+                                                &mut app,
+                                                AppAction::Open { session_id: id },
+                                                control,
+                                            )
+                                        }
+                                        Err(error) => {
+                                            app.set_notice(format!(
+                                                "failed to restore session: {error:#}"
+                                            ));
+                                            ActionEffect::default()
+                                        }
                                     }
-                                    Err(error) => app.set_notice(format!(
-                                        "failed to restore session: {error:#}"
-                                    )),
-                                }
-                                ActionEffect {
-                                    refresh: true,
-                                    ..ActionEffect::default()
+                                } else {
+                                    match unhidden.and_then(|()| control.adopt(&session)) {
+                                        Ok(()) => {
+                                            app.set_notice(format!(
+                                                "restoring {}; opening it once discovery lists it",
+                                                session.name
+                                            ));
+                                            pending_reveal = Some(PendingReveal {
+                                                session_id: session.id,
+                                                deadline: Instant::now() + REVEAL_DISCOVERY_TIMEOUT,
+                                            });
+                                        }
+                                        Err(error) => app.set_notice(format!(
+                                            "failed to restore session: {error:#}"
+                                        )),
+                                    }
+                                    ActionEffect {
+                                        refresh: true,
+                                        ..ActionEffect::default()
+                                    }
                                 }
                             }
                             AppAction::Unhide { session_id } => {
