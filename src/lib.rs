@@ -26,6 +26,7 @@ pub mod perf_log;
 pub mod pi_supervisor;
 pub mod proc_info;
 pub mod process;
+pub mod session_tree;
 pub mod terminal;
 pub mod theme;
 pub mod turn_classifier;

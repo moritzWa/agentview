@@ -229,8 +229,9 @@ fn render_session_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
             continue;
         }
         let visible = app.visible_session_count(group);
-        for index in group.sessions.iter().take(visible) {
+        for (position, index) in group.sessions.iter().enumerate().take(visible) {
             let session = &app.snapshot.sessions[*index];
+            let depth = group.depths.get(position).copied().unwrap_or(0);
             let is_selected = selection_visible
                 && app.selection == Some(SelectionKey::Session(session.id.clone()));
             if is_selected {
@@ -244,6 +245,7 @@ fn render_session_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 is_selected,
                 app.live_animation_visible(),
                 is_selected.then(|| app.pending_removal_verb()).flatten(),
+                depth,
             ));
         }
         let hidden = app.hidden_session_count(group);
@@ -347,6 +349,7 @@ fn empty_state_lines(includes_completed: bool) -> Vec<Line<'static>> {
     ]
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_session_row(
     session: &AgentSession,
     view_mode: ViewMode,
@@ -355,6 +358,7 @@ fn render_session_row(
     selected: bool,
     live_animation_visible: bool,
     pending_removal: Option<&str>,
+    depth: usize,
 ) -> Line<'static> {
     let symbol = state_symbol(session.state, live_animation_visible);
     let symbol_style = Style::default().fg(state_color(session.state));
@@ -427,7 +431,14 @@ fn render_session_row(
     let fixed =
         3 + name_gap.len() + name_width + display_width(&provider_column) + display_width(&right);
     let summary_width = (width as usize).saturating_sub(fixed).max(1);
-    let name = pad_to_width(truncate(&session.name, name_width), name_width);
+    // A spawned session hangs under the one that started it.
+    let indent = depth.min(crate::session_tree::MAX_VISIBLE_DEPTH);
+    let name_text = if indent > 0 {
+        format!("{}└ {}", "  ".repeat(indent - 1), session.name)
+    } else {
+        session.name.clone()
+    };
+    let name = pad_to_width(truncate(&name_text, name_width), name_width);
     let mut spans = vec![
         Span::styled(format!(" {symbol} "), symbol_style),
         Span::raw(name),
@@ -2699,7 +2710,7 @@ mod tests {
         for (provider, expected) in providers {
             let mut item = session("recognizable-session", SessionState::Working);
             item.provider = provider;
-            let row = render_session_row(&item, ViewMode::Status, 120, true, false, true, None);
+            let row = render_session_row(&item, ViewMode::Status, 120, true, false, true, None, 0);
             let text: String = row.spans.iter().map(|span| span.content.as_ref()).collect();
 
             assert!(
@@ -2717,7 +2728,7 @@ mod tests {
             SessionState::Working,
         );
         item.provider = Provider::Antigravity;
-        let row = render_session_row(&item, ViewMode::Status, 120, true, false, true, None);
+        let row = render_session_row(&item, ViewMode::Status, 120, true, false, true, None, 0);
         let text: String = row.spans.iter().map(|span| span.content.as_ref()).collect();
 
         assert!(
@@ -2733,9 +2744,9 @@ mod tests {
         item.provider = Provider::OpenCode;
 
         let with_provider =
-            render_session_row(&item, ViewMode::Status, 120, true, false, true, None);
+            render_session_row(&item, ViewMode::Status, 120, true, false, true, None, 0);
         let without_provider =
-            render_session_row(&item, ViewMode::Status, 120, false, false, true, None);
+            render_session_row(&item, ViewMode::Status, 120, false, false, true, None, 0);
         let with_text: String = with_provider
             .spans
             .iter()
@@ -2765,7 +2776,8 @@ mod tests {
         item.updated_at = Some(SystemTime::now() - Duration::from_secs(86_400));
 
         for width in [80, 120, 160] {
-            let row = render_session_row(&item, ViewMode::Status, width, true, false, true, None);
+            let row =
+                render_session_row(&item, ViewMode::Status, width, true, false, true, None, 0);
             let text: String = row.spans.iter().map(|span| span.content.as_ref()).collect();
 
             assert_eq!(display_width(&text), width as usize);
@@ -2783,14 +2795,24 @@ mod tests {
     #[test]
     fn working_marker_blinks_without_changing_other_session_states() {
         let working = session("worker", SessionState::Working);
-        let visible = render_session_row(&working, ViewMode::Status, 120, true, false, true, None);
-        let dimmed = render_session_row(&working, ViewMode::Status, 120, true, false, false, None);
+        let visible =
+            render_session_row(&working, ViewMode::Status, 120, true, false, true, None, 0);
+        let dimmed =
+            render_session_row(&working, ViewMode::Status, 120, true, false, false, None, 0);
         assert_eq!(visible.spans[0].content, " ✳ ");
         assert_eq!(dimmed.spans[0].content, " · ");
 
         let completed = session("done", SessionState::Completed);
-        let completed =
-            render_session_row(&completed, ViewMode::Status, 120, true, false, false, None);
+        let completed = render_session_row(
+            &completed,
+            ViewMode::Status,
+            120,
+            true,
+            false,
+            false,
+            None,
+            0,
+        );
         assert_eq!(completed.spans[0].content, " • ");
     }
 
@@ -2802,7 +2824,8 @@ mod tests {
             (SessionState::Working, "Working", palette().fg),
         ] {
             let item = session("worker", state);
-            let row = render_session_row(&item, ViewMode::Directory, 120, true, false, true, None);
+            let row =
+                render_session_row(&item, ViewMode::Directory, 120, true, false, true, None, 0);
             let provider = row
                 .spans
                 .iter()
@@ -2822,7 +2845,7 @@ mod tests {
         let row_text = |raw_state: &str, view_mode| {
             let mut item = session("worker", SessionState::Working);
             item.raw_state = Some(raw_state.into());
-            let row = render_session_row(&item, view_mode, 120, true, false, true, None);
+            let row = render_session_row(&item, view_mode, 120, true, false, true, None, 0);
             row.spans
                 .iter()
                 .map(|span| span.content.as_ref())

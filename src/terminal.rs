@@ -292,6 +292,9 @@ pub fn run_dashboard(
     app.set_sort_keys(session_order.sort_keys());
     app.remembered_models = last_harness.models().into_iter().collect();
     app.launch_model = app.remembered_models.get(&app.launch_provider).cloned();
+    if let Ok(links) = crate::session_tree::ParentLinks::load_default() {
+        app.session_parents_from(links);
+    }
     let model_cache = crate::model_catalog::ModelCache::load_default().ok();
     let opencode_models = crate::model_catalog::OpenCodeModelState::load_default().ok();
     if let Some(cache) = &model_cache {

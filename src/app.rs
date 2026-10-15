@@ -219,6 +219,9 @@ pub struct Group {
     pub key: String,
     pub label: String,
     pub sessions: Vec<usize>,
+    /// Tree depth of each row in `sessions` (a child sits under its parent).
+    /// Empty means every row is at the top level.
+    pub depths: Vec<usize>,
 }
 
 #[derive(Debug)]
@@ -295,6 +298,10 @@ pub struct App {
     visible_limits: BTreeMap<String, usize>,
     session_page_size: usize,
     group_cache: Vec<Group>,
+    /// Bare OpenCode child id -> bare parent id, from the spawned-session links.
+    session_parents: HashMap<String, String>,
+    /// Where the links come from; re-read when the file changes.
+    pub parent_links: crate::session_tree::ParentLinks,
     session_indices: HashMap<String, usize>,
     session_counts: BTreeMap<SessionState, usize>,
     provider_labels: Vec<String>,
@@ -396,6 +403,8 @@ impl App {
             visible_limits: BTreeMap::new(),
             session_page_size: SESSION_PAGE_SIZE,
             group_cache: Vec::new(),
+            session_parents: HashMap::new(),
+            parent_links: Default::default(),
             session_indices: HashMap::new(),
             session_counts: BTreeMap::new(),
             provider_labels: Vec::new(),
@@ -422,6 +431,9 @@ impl App {
 
     pub fn replace_snapshot(&mut self, snapshot: SessionSnapshot) {
         let previous_keys = self.ordered_keys();
+        if self.parent_links.reload_if_changed() {
+            self.session_parents = self.parent_links.links().clone();
+        }
         self.snapshot = snapshot;
         self.refreshed_at = SystemTime::now();
         self.snapshot_changed(&previous_keys);
@@ -2216,13 +2228,61 @@ impl App {
         }
         groups.extend(SessionState::DISPLAY_ORDER.iter().filter_map(|state| {
             let sessions = grouped.remove(state).unwrap_or_default();
-            (!sessions.is_empty()).then(|| Group {
-                key: format!("state:{state:?}"),
-                label: state.heading().into(),
-                sessions,
+            (!sessions.is_empty()).then(|| {
+                let (sessions, depths) = self.arrange_tree(sessions);
+                Group {
+                    key: format!("state:{state:?}"),
+                    label: state.heading().into(),
+                    sessions,
+                    depths,
+                }
             })
         }));
         groups
+    }
+
+    /// Replace the spawned-session links. Returns whether anything changed.
+    pub fn set_session_parents(&mut self, links: HashMap<String, String>) -> bool {
+        if self.session_parents == links {
+            return false;
+        }
+        self.session_parents = links;
+        self.rebuild_group_cache();
+        true
+    }
+
+    /// Start following a links file; its current contents apply at once.
+    pub fn session_parents_from(&mut self, links: crate::session_tree::ParentLinks) {
+        self.parent_links = links;
+        self.set_session_parents(self.parent_links.links().clone());
+    }
+
+    /// Order one group so a spawned session sits under the session that
+    /// started it. A child is only indented under a parent that is in the same
+    /// group and the same folder; otherwise it stays a normal row.
+    fn arrange_tree(&self, sessions: Vec<usize>) -> (Vec<usize>, Vec<usize>) {
+        if self.session_parents.is_empty() {
+            return (sessions, Vec::new());
+        }
+        let by_raw_id: HashMap<&str, usize> = sessions
+            .iter()
+            .filter_map(|index| {
+                let raw = crate::session_tree::raw_opencode_id(&self.snapshot.sessions[*index].id)?;
+                Some((raw, *index))
+            })
+            .collect();
+        let parent_of = |index: usize| {
+            let session = &self.snapshot.sessions[index];
+            let raw = crate::session_tree::raw_opencode_id(&session.id)?;
+            let parent = *by_raw_id.get(self.session_parents.get(raw)?.as_str())?;
+            (project_group_path(&self.snapshot.sessions[parent].cwd)
+                == project_group_path(&session.cwd))
+            .then_some(parent)
+        };
+        if !sessions.iter().any(|index| parent_of(*index).is_some()) {
+            return (sessions, Vec::new());
+        }
+        crate::session_tree::arrange(&sessions, parent_of)
     }
 
     fn paused_group(&self, mut sessions: Vec<usize>) -> Option<Group> {
@@ -2246,6 +2306,7 @@ impl App {
             key: PAUSED_GROUP_KEY.into(),
             label: "Paused".into(),
             sessions,
+            depths: Vec::new(),
         })
     }
 
@@ -2280,10 +2341,12 @@ impl App {
                     .cmp(&self.directory_sort_key(left))
                     .then_with(|| left.id.cmp(&right.id))
             });
+            let (sessions, depths) = self.arrange_tree(sessions);
             Group {
                 key: format!("cwd:{}", path.display()),
                 label: abbreviate_home(&path),
                 sessions,
+                depths,
             }
         }));
         ordered
@@ -4725,6 +4788,89 @@ mod tests {
         app.set_filter("summary working");
         assert_eq!(app.groups().len(), 1);
         assert_eq!(app.groups()[0].sessions, vec![1]);
+    }
+
+    fn spawned(id: &str, state: SessionState, cwd: &str) -> AgentSession {
+        let mut item = session(&format!("opencode:host:{id}"), state);
+        item.provider = Provider::OpenCode;
+        item.cwd = PathBuf::from(cwd);
+        item
+    }
+
+    #[test]
+    fn spawned_sessions_sit_under_their_parent_in_the_same_group() {
+        let mut app = app_with(vec![
+            spawned("ses_child", SessionState::Completed, "/work"),
+            spawned("ses_other", SessionState::Completed, "/work"),
+            spawned("ses_parent", SessionState::Completed, "/work"),
+            spawned("ses_grandchild", SessionState::Completed, "/work"),
+        ]);
+        app.set_session_parents(HashMap::from([
+            ("ses_child".to_owned(), "ses_parent".to_owned()),
+            ("ses_grandchild".to_owned(), "ses_child".to_owned()),
+        ]));
+
+        let group = &app.groups()[0];
+        let order: Vec<&str> = group
+            .sessions
+            .iter()
+            .map(|index| app.snapshot.sessions[*index].id.as_str())
+            .collect();
+        assert_eq!(
+            order,
+            vec![
+                "opencode:host:ses_other",
+                "opencode:host:ses_parent",
+                "opencode:host:ses_child",
+                "opencode:host:ses_grandchild",
+            ]
+        );
+        assert_eq!(group.depths, vec![0, 0, 1, 2]);
+    }
+
+    #[test]
+    fn a_parent_in_another_group_or_folder_leaves_the_child_a_normal_row() {
+        let mut app = app_with(vec![
+            spawned("ses_parent", SessionState::Working, "/work"),
+            spawned("ses_other_state", SessionState::Completed, "/work"),
+            spawned("ses_other_folder", SessionState::Working, "/elsewhere"),
+        ]);
+        app.set_session_parents(HashMap::from([
+            ("ses_other_state".to_owned(), "ses_parent".to_owned()),
+            ("ses_other_folder".to_owned(), "ses_parent".to_owned()),
+        ]));
+
+        assert!(app
+            .groups()
+            .iter()
+            .all(|group| group.depths.iter().all(|depth| *depth == 0)));
+    }
+
+    #[test]
+    fn spawned_sessions_follow_their_parent_in_the_folder_view_too() {
+        let mut app = app_with(vec![
+            spawned("ses_child", SessionState::Working, "/work"),
+            spawned("ses_parent", SessionState::Completed, "/work"),
+        ]);
+        app.toggle_view();
+        app.set_session_parents(HashMap::from([(
+            "ses_child".to_owned(),
+            "ses_parent".to_owned(),
+        )]));
+
+        let group = &app.groups()[0];
+        assert_eq!(group.depths, vec![0, 1]);
+        assert_eq!(
+            app.snapshot.sessions[group.sessions[1]].id,
+            "opencode:host:ses_child"
+        );
+        // Navigation walks the rows in tree order.
+        app.selection = Some(SelectionKey::Session("opencode:host:ses_parent".into()));
+        app.select_next();
+        assert_eq!(
+            app.selection,
+            Some(SelectionKey::Session("opencode:host:ses_child".into()))
+        );
     }
 
     #[test]
