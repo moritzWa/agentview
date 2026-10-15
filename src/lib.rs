@@ -11,6 +11,7 @@ pub mod doctor;
 pub mod domain;
 pub(crate) mod fs_util;
 pub mod hidden;
+pub mod history_index;
 pub mod holds;
 pub mod last_harness;
 pub mod last_message;

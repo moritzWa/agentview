@@ -45,9 +45,6 @@ const SHARED_CLIENT_RESELECT: Duration = Duration::from_millis(400);
 /// Quiet after the title changes, so the frame that set it has finished.
 const SHARED_CLIENT_SETTLE: Duration = Duration::from_millis(40);
 const MAX_RESTORABLE_SESSIONS: usize = 2_000;
-/// How far back the restore picker searches message text. Older sessions are
-/// still listed and found by name, folder, or ID.
-const RESTORE_TRANSCRIPT_WINDOW: Duration = Duration::from_secs(14 * 24 * 60 * 60);
 const OPENCODE_READY_MARKER: &str = "Ask anything";
 
 type HolderProbe = Arc<dyn Fn() -> Vec<Holder> + Send + Sync>;
@@ -308,17 +305,25 @@ impl ProviderController for OpenCodeController {
         self.source.restorable_sessions()
     }
 
-    fn restorable_transcripts(&self) -> Result<BTreeMap<String, String>> {
+    fn history_search_index(&self) -> Result<Option<crate::history_index::HistoryIndex>> {
         if self.ownership.is_none() {
-            return Ok(BTreeMap::new());
+            return Ok(None);
         }
-        let runtime_id = self.source.runtime_id();
-        Ok(self
-            .source
-            .restorable_transcripts()
-            .into_iter()
-            .map(|(id, text)| (format!("opencode:{runtime_id}:{id}"), text))
-            .collect())
+        let mut command =
+            CommandRequest::new(self.executable.clone(), vec!["db".into(), "path".into()]);
+        command.timeout = Duration::from_secs(8);
+        let output = self.source.runner.run(&command)?;
+        if output.status != 0 {
+            bail!(
+                "could not resolve OpenCode database: {}",
+                output.stderr_lossy()
+            );
+        }
+        let path = PathBuf::from(output.stdout_text()?.trim());
+        if !path.is_absolute() || !path.is_file() {
+            bail!("OpenCode returned an invalid database path");
+        }
+        Ok(Some(crate::history_index::HistoryIndex::for_source(path)?))
     }
 
     fn adopt(&self, session: &RestorableSession) -> Result<()> {
@@ -1461,23 +1466,10 @@ impl OpenCodeSource {
 
 impl OpenCodeSource {
     /// The newest root sessions in OpenCode's whole history, for the restore
-    /// picker, minus sessions run in a temp directory. Message text comes
-    /// from the last scan (see `restorable_transcripts`), because the scan is
-    /// too slow to wait for before showing the picker.
+    /// picker, minus sessions run in a temp directory. Message text is searched
+    /// through the persistent index instead of loading whole transcripts.
     fn restorable_sessions(&self) -> Result<Vec<RestorableSession>> {
-        let mut sessions = self.restorable_sessions_at()?;
-        if let Some(cached) = restore_transcript_cache()
-            .lock()
-            .ok()
-            .and_then(|cache| cache.get(&self.runtime_id()).cloned())
-        {
-            for session in &mut sessions {
-                if let Some(text) = cached.get(&session.provider_session_id) {
-                    session.transcript = text.clone();
-                }
-            }
-        }
-        Ok(sessions)
+        self.restorable_sessions_at()
     }
 
     fn runtime_id(&self) -> String {
@@ -1526,35 +1518,6 @@ impl OpenCodeSource {
                 updated_at_ms: row.updated,
             })
             .collect())
-    }
-
-    /// Message text of the sessions updated in the last
-    /// `RESTORE_TRANSCRIPT_WINDOW`, by provider session ID. The query reads
-    /// every message part, so it takes seconds on a large database; the result
-    /// is kept for the next time the picker opens.
-    fn restorable_transcripts_at(&self, now_ms: u64) -> BTreeMap<String, String> {
-        let since_ms = now_ms.saturating_sub(RESTORE_TRANSCRIPT_WINDOW.as_millis() as u64);
-        let command = self.db_command(
-            format!(
-                "SELECT json_object('id', root, 'text', group_concat(text, char(10))) AS record FROM (SELECT COALESCE(s.parent_id, s.id) AS root, json_extract(p.data, '$.text') AS text FROM part p JOIN session s ON s.id = p.session_id WHERE p.time_created >= {since_ms} AND json_extract(p.data, '$.type') = 'text' AND json_extract(p.data, '$.synthetic') IS NOT 1 ORDER BY p.time_created) GROUP BY root"
-            ),
-            Duration::from_secs(60),
-        );
-        transcripts_from(self.runner.run(&command))
-    }
-
-    fn restorable_transcripts(&self) -> BTreeMap<String, String> {
-        let now_ms = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map(|elapsed| elapsed.as_millis() as u64)
-            .unwrap_or_default();
-        let transcripts = self.restorable_transcripts_at(now_ms);
-        if !transcripts.is_empty() {
-            if let Ok(mut cache) = restore_transcript_cache().lock() {
-                cache.insert(self.runtime_id(), transcripts.clone());
-            }
-        }
-        transcripts
     }
 
     fn db_command(&self, query: String, timeout: Duration) -> CommandRequest {
@@ -2005,36 +1968,6 @@ fn normalize_record(record: OpenCodeRecord, runtime: Runtime) -> AgentSession {
         pull_requests: None,
         capabilities,
     }
-}
-
-/// Root session ID to its message text, from the restore transcript query.
-/// Message text from the last transcript scan per runtime, so reopening the
-/// picker can search at once while a fresh scan runs.
-fn restore_transcript_cache() -> &'static Mutex<BTreeMap<String, BTreeMap<String, String>>> {
-    static CACHE: OnceLock<Mutex<BTreeMap<String, BTreeMap<String, String>>>> = OnceLock::new();
-    CACHE.get_or_init(Default::default)
-}
-
-fn transcripts_from(output: Result<crate::process::CommandOutput>) -> BTreeMap<String, String> {
-    #[derive(Deserialize)]
-    struct Transcript {
-        id: String,
-        text: Option<String>,
-    }
-    let Ok(output) = output else {
-        return BTreeMap::new();
-    };
-    if output.status != 0 {
-        return BTreeMap::new();
-    }
-    output
-        .stdout_text()
-        .unwrap_or_default()
-        .lines()
-        .skip(1)
-        .filter_map(|line| serde_json::from_str::<Transcript>(line).ok())
-        .filter_map(|row| Some((row.id, row.text?)))
-        .collect()
 }
 
 /// Sessions started in a temp directory are scratch work (scripts, probes,
@@ -2773,39 +2706,6 @@ mod tests {
             .unwrap()
             .iter()
             .any(|query| query.contains("group_concat")));
-    }
-
-    #[test]
-    fn restorable_transcripts_cover_the_recent_window() {
-        let runner = Arc::new(QueryRunner {
-            answers: vec![(
-                "group_concat",
-                Ok("record\n{\"id\":\"ses_old\",\"text\":\"fix the\\nflaky test\"}\n"),
-            )],
-            seen: Mutex::new(Vec::new()),
-        });
-        let now_ms = 30 * 24 * 60 * 60 * 1000;
-
-        let transcripts = restorable_source(runner.clone()).restorable_transcripts_at(now_ms);
-
-        assert_eq!(
-            transcripts,
-            BTreeMap::from([("ses_old".to_owned(), "fix the\nflaky test".to_owned())])
-        );
-        let seen = runner.seen.lock().unwrap();
-        assert!(seen[0].contains(&format!("p.time_created >= {}", 16 * 24 * 60 * 60 * 1000)));
-    }
-
-    #[test]
-    fn restorable_transcripts_are_empty_when_the_text_query_fails() {
-        let runner = Arc::new(QueryRunner {
-            answers: vec![("group_concat", Err(()))],
-            seen: Mutex::new(Vec::new()),
-        });
-
-        assert!(restorable_source(runner)
-            .restorable_transcripts_at(0)
-            .is_empty());
     }
 
     #[cfg(unix)]

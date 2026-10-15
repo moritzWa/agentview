@@ -61,6 +61,10 @@ own interface.
   searches older and hidden sessions by name, harness, folder, or ID, even
   while you're typing a task, and `Enter` puts the session back in the list.
   No new terminal, `cd`, or `--resume` needed.
+- **Search OpenCode message text** with `Ctrl+G`, including partial words and
+  matching snippets. A local SQLite FTS5 index catches up at startup and every
+  ten minutes while the dashboard runs. Only changed sessions are reindexed,
+  at low priority. OpenCode's database stays read-only.
 - **Launches stay on the dashboard** for harnesses that can run in the
   background. `Enter` opens the new row.
 - **Pause sessions you're waiting on** with `Ctrl+T`. They move into a Paused

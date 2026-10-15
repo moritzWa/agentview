@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -288,6 +289,9 @@ pub struct App {
     pub restorable_loading: bool,
     /// Whether the picker still waits for the message text it searches.
     pub restorable_text_loading: bool,
+    history_index: Option<crate::history_index::HistoryIndex>,
+    history_index_ready: bool,
+    indexed_matches: RefCell<Option<(String, BTreeMap<String, String>)>>,
     pub models_loading: bool,
     pub models_provider: Option<Provider>,
     pub models_error: Option<String>,
@@ -393,6 +397,9 @@ impl App {
             open_candidates: Vec::new(),
             restorable_loading: false,
             restorable_text_loading: false,
+            history_index: None,
+            history_index_ready: false,
+            indexed_matches: RefCell::new(None),
             hidden_filter: String::new(),
             hidden_selection: 0,
             hidden_picker_rows: HIDDEN_PICKER_PAGE_SIZE,
@@ -2489,7 +2496,7 @@ impl App {
             self.open_candidates = open;
         }
         self.restorable_loading = loading;
-        self.restorable_text_loading = loading;
+        self.restorable_text_loading = self.history_index.is_some() && !self.history_index_ready;
         self.hidden_filter.clear();
         self.hidden_selection = 0;
         self.notice = None;
@@ -2549,23 +2556,36 @@ impl App {
         self.reconcile_hidden_selection();
     }
 
-    /// Merge message text into the open picker once its scan finishes, so the
-    /// filter can search it. Rows that are not in the picker are ignored.
-    pub fn add_restorable_transcripts(&mut self, transcripts: BTreeMap<String, String>) {
-        if self.overlay != Overlay::HiddenPicker {
-            return;
-        }
-        self.restorable_text_loading = false;
-        for (id, text) in transcripts {
-            if text.is_empty() {
-                continue;
-            }
-            if let Some(session) = self.restorable.get_mut(&id) {
-                self.transcripts_lower.insert(id, text.to_ascii_lowercase());
-                session.transcript = text;
-            }
-        }
+    pub fn set_history_index(&mut self, index: Option<crate::history_index::HistoryIndex>) {
+        let selected = self
+            .hidden_choices()
+            .get(self.hidden_selection)
+            .map(|r| r.id.clone());
+        self.history_index_ready = index.as_ref().is_some_and(|index| index.is_ready());
+        self.history_index = index;
+        *self.indexed_matches.borrow_mut() = None;
+        self.restorable_text_loading = self.history_index.is_some() && !self.history_index_ready;
+        // Keep the selected session when an asynchronous refresh adds matches
+        // ahead of it, rather than letting Enter act on a different row.
         self.reconcile_hidden_selection();
+        if let Some(id) = selected {
+            if let Some(position) = self.hidden_choices().iter().position(|r| r.id == id) {
+                self.hidden_selection = position;
+            }
+        }
+    }
+
+    fn indexed_snippet(&self, id: &str, needle: &str) -> Option<String> {
+        let index = self.history_index.as_ref()?;
+        let mut cached = self.indexed_matches.borrow_mut();
+        if cached.as_ref().map(|(query, _)| query.as_str()) != Some(needle) {
+            let matches = index.search(needle).unwrap_or_else(|error| {
+                crate::perf!("history-search", "failed: {error:#}");
+                BTreeMap::new()
+            });
+            *cached = Some((needle.to_owned(), matches));
+        }
+        cached.as_ref()?.1.get(id).cloned()
     }
 
     /// Whether a picker row is in the local hidden registry, as opposed to a
@@ -2596,7 +2616,9 @@ impl App {
             .filter_map(|record| {
                 if needle.is_empty() || self.label_matches(record, &needle) {
                     Some((record, true))
-                } else if self.transcript_match(&record.id, &needle).is_some() {
+                } else if self.indexed_snippet(&record.id, &needle).is_some()
+                    || self.transcript_match(&record.id, &needle).is_some()
+                {
                     Some((record, false))
                 } else {
                     None
@@ -2667,6 +2689,16 @@ impl App {
         width: usize,
     ) -> Option<(String, Option<std::ops::Range<usize>>)> {
         let needle = self.hidden_filter.to_ascii_lowercase();
+        if let Some(text) = self.indexed_snippet(id, &needle) {
+            let start = text.to_ascii_lowercase().find(&needle)?;
+            let snippet = snippet_around(&text, start, needle.len(), width);
+            let flat_needle = needle.split_whitespace().collect::<Vec<_>>().join(" ");
+            let range = snippet
+                .to_ascii_lowercase()
+                .find(&flat_needle)
+                .map(|at| at..at + flat_needle.len());
+            return Some((snippet, range));
+        }
         let start = self.transcript_match(id, &needle)?;
         let text = &self.restorable.get(id)?.transcript;
         let snippet = snippet_around(text, start, needle.len(), width);
@@ -4086,7 +4118,9 @@ mod tests {
 
     #[test]
     fn restore_picker_lists_sessions_before_their_message_text_arrives() {
+        let (_dir, index) = crate::history_index::tests::fixture();
         let mut app = app_with(Vec::new());
+        app.set_history_index(Some(index.clone()));
         app.open_restore_picker(Vec::new());
         app.add_restorable_sessions(
             vec![restorable("ses_chat", "Picker polish", "/work/a", 90)],
@@ -4098,13 +4132,12 @@ mod tests {
         }
         assert!(app.hidden_choices().is_empty());
 
-        app.add_restorable_transcripts(BTreeMap::from([
-            (
-                "opencode:host:ses_chat".to_owned(),
-                "retry the flaky Upload test".to_owned(),
-            ),
-            ("opencode:host:ses_gone".to_owned(), "upload".to_owned()),
-        ]));
+        index
+            .refresh(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+                false,
+            )))
+            .unwrap();
+        app.set_history_index(Some(index));
 
         assert!(!app.restorable_text_loading);
         assert_eq!(
@@ -4117,6 +4150,13 @@ mod tests {
         assert!(app
             .hidden_snippet_for("opencode:host:ses_chat", 60)
             .is_some());
+        match app.activate() {
+            AppAction::Restore { session, hidden } => {
+                assert_eq!(session.provider_session_id, "ses_chat");
+                assert!(!hidden);
+            }
+            action => panic!("indexed match should restore its exact session, got {action:?}"),
+        }
     }
 
     #[test]
