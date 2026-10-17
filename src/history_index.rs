@@ -299,6 +299,7 @@ impl HistoryIndex {
         source.busy_timeout(Duration::from_millis(100))?;
         let stop = cancelled.clone();
         source.progress_handler(1000, Some(move || stop.load(Ordering::Relaxed)));
+        let v2 = crate::adapters::opencode_db::install_compatibility_views(&source)?;
         let versions = {
             let mut q = tx.prepare("SELECT id, updated, root FROM sessions")?;
             let rows = q.query_map([], |r| {
@@ -311,7 +312,7 @@ impl HistoryIndex {
         };
         // Metadata is tiny. Parts use part_session_idx rather than scanning
         // every part in history each time a single session changes.
-        let sessions = {
+        let mut sessions = {
             // Session timestamps alone miss streaming edits. Current OpenCode
             // keeps one cheap event-sequence counter per session. Older builds
             // without it can compare part metadata without extracting JSON.
@@ -320,7 +321,7 @@ impl HistoryIndex {
                 [],
                 |r| r.get(0),
             )?;
-            let query = if has_sequences {
+            let legacy_query = if has_sequences {
                 "SELECT s.id, CAST(s.time_updated AS TEXT)||':'||COALESCE(CAST(e.seq AS TEXT),'0'),
                         COALESCE(s.parent_id,s.id)
                  FROM session s LEFT JOIN event_sequence e ON e.aggregate_id=s.id
@@ -331,7 +332,43 @@ impl HistoryIndex {
                         (SELECT count(*) FROM part WHERE session_id=s.id), COALESCE(s.parent_id,s.id)
                  FROM session s ORDER BY s.time_updated DESC"
             };
-            let mut q = source.prepare(query)?;
+            let query = if v2 {
+                // Streaming mutates an existing message without touching the
+                // session timestamp or allocating a new message seq. Read raw
+                // message metadata, not the JSON-expanded part view. Include
+                // the durable event counter when available, plus a generation
+                // tag so migration invalidates an already-indexed V1 session.
+                let event_counter = if has_sequences {
+                    "COALESCE((SELECT seq FROM event_sequence WHERE aggregate_id=s.id),0)"
+                } else {
+                    "0"
+                };
+                let mut query = format!(
+                    "SELECT s.id, 'v2:'||s.time_updated||':'||{event_counter}||':'||
+                            COALESCE((SELECT max(time_updated) FROM main.session_message WHERE session_id=s.id),0)||':'||
+                            (SELECT count(*) FROM main.session_message WHERE session_id=s.id)||':'||
+                            COALESCE((SELECT max(seq) FROM main.session_message WHERE session_id=s.id),0),
+                            COALESCE(s.parent_id,s.id)
+                     FROM main.session_v2 s"
+                );
+                let has_legacy: bool = source.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM main.sqlite_master WHERE type='table' AND name='session')",
+                    [], |r| r.get(0),
+                )?;
+                if has_legacy {
+                    let legacy_query = legacy_query
+                        .trim_end_matches("ORDER BY s.time_updated DESC")
+                        .replace("FROM session s", "FROM main.session s");
+                    query.push_str(&format!(
+                        " UNION ALL SELECT * FROM ({legacy_query}) legacy
+                          WHERE NOT EXISTS(SELECT 1 FROM main.session_v2 WHERE id=legacy.id)"
+                    ));
+                }
+                query
+            } else {
+                legacy_query.to_owned()
+            };
+            let mut q = source.prepare(&query)?;
             let rows = q.query_map([], |r| {
                 Ok((
                     r.get::<_, String>(0)?,
@@ -341,6 +378,25 @@ impl HistoryIndex {
             })?;
             rows.collect::<rusqlite::Result<Vec<_>>>()?
         };
+        // A nested subagent must restore the actual top-level conversation,
+        // not an intermediate child that has no row in the restore picker.
+        let ancestry: BTreeMap<_, _> = sessions
+            .iter()
+            .map(|(id, _, parent)| (id.clone(), parent.clone()))
+            .collect();
+        for (id, _, root) in &mut sessions {
+            let mut seen = BTreeSet::new();
+            while let Some(parent) = ancestry.get(root) {
+                if parent == root {
+                    break;
+                }
+                if !seen.insert(root.clone()) {
+                    *root = id.clone();
+                    break;
+                }
+                *root = parent.clone();
+            }
+        }
         let live: BTreeSet<_> = sessions.iter().map(|s| s.0.as_str()).collect();
         for id in versions.keys().filter(|id| !live.contains(id.as_str())) {
             tx.execute("DELETE FROM documents WHERE source=?1", [id])?;
@@ -533,6 +589,168 @@ pub(crate) mod tests {
             .unwrap()
             .execute("UPDATE meta SET value=0 WHERE key='refreshed'", [])
             .unwrap();
+    }
+
+    fn v2_fixture(mixed: bool, sequences: bool) -> (tempfile::TempDir, HistoryIndex) {
+        let (dir, index) = fixture();
+        let db = Connection::open(&index.source).unwrap();
+        if mixed {
+            // The minimal V1 test schema above omits columns used by discovery.
+            db.execute_batch(
+                "ALTER TABLE session ADD COLUMN title TEXT;
+                ALTER TABLE session ADD COLUMN project_id TEXT;
+                ALTER TABLE session ADD COLUMN directory TEXT;
+                ALTER TABLE session ADD COLUMN time_created INTEGER;
+                ALTER TABLE session ADD COLUMN time_archived INTEGER;
+                ALTER TABLE part ADD COLUMN message_id TEXT;",
+            )
+            .unwrap();
+        } else {
+            db.execute_batch("DROP TABLE session; DROP TABLE part;")
+                .unwrap();
+        }
+        if !sequences {
+            db.execute_batch("DROP TABLE event_sequence;").unwrap();
+        }
+        db.execute_batch(r#"
+            CREATE TABLE session_v2(id TEXT PRIMARY KEY, title TEXT, project_id TEXT,
+                directory TEXT, parent_id TEXT, fork_session_id TEXT,
+                time_created INTEGER, time_updated INTEGER, time_archived INTEGER);
+            CREATE TABLE session_message(id TEXT PRIMARY KEY, session_id TEXT, type TEXT,
+                seq INTEGER, time_created INTEGER, time_updated INTEGER, data TEXT);
+            CREATE UNIQUE INDEX session_message_session_seq_idx ON session_message(session_id, seq);
+            INSERT INTO session_v2 VALUES
+                ('ses_v2', 'V2 title', 'p', '/work', NULL, NULL, 10, 20, NULL),
+                ('child_v2', NULL, 'p', '/work', 'ses_v2', NULL, 11, 20, NULL),
+                ('grandchild_v2', NULL, 'p', '/work', 'child_v2', NULL, 12, 20, NULL),
+                ('fork_v2', NULL, 'p', '/work', NULL, 'ses_v2', 13, 20, NULL);
+            INSERT INTO session_message VALUES
+                ('u', 'ses_v2', 'user', 1, 10, 10, '{"text":"V2 lighthouse request: 100% literal"}'),
+                ('a', 'ses_v2', 'assistant', 2, 11, 11,
+                 '{"content":[{"type":"text","text":"streaming first draft"},{"type":"reasoning","text":"reasoningnoise"},{"type":"tool","name":"read","text":"toolnoise","state":{"status":"completed","content":[{"type":"text","text":"tooloutputnoise"}]}}]}'),
+                ('synthetic', 'ses_v2', 'synthetic', 3, 12, 12, '{"text":"syntheticnoise"}'),
+                ('system', 'ses_v2', 'system', 4, 13, 13, '{"text":"systemnoise"}'),
+                ('compaction', 'ses_v2', 'compaction', 5, 14, 14, '{"summary":"compactionnoise","status":"completed"}'),
+                ('nested', 'grandchild_v2', 'user', 1, 12, 12, '{"text":"nested child conversation"}'),
+                ('forked', 'fork_v2', 'user', 1, 13, 13, '{"text":"independent fork conversation"}');
+        "#).unwrap();
+        if sequences {
+            db.execute_batch(
+                "INSERT INTO event_sequence VALUES ('ses_v2',5),('grandchild_v2',1),('fork_v2',1);",
+            )
+            .unwrap();
+        }
+        (dir, index)
+    }
+
+    #[test]
+    fn v2_only_restore_search_indexes_conversation_text_and_nested_children() {
+        let (_dir, index) = v2_fixture(false, false);
+        assert!(refresh(&index));
+        for text in [
+            "lighthouse",
+            "100%",
+            "first draft",
+            "nested child conversation",
+        ] {
+            let found = index.search(text).unwrap();
+            assert_eq!(found.len(), 1, "{text}");
+            assert!(found.contains_key("opencode:host:ses_v2"), "{text}");
+        }
+        let found = index.search("independent fork conversation").unwrap();
+        assert!(found.contains_key("opencode:host:fork_v2"));
+        for text in [
+            "toolnoise",
+            "tooloutputnoise",
+            "reasoningnoise",
+            "syntheticnoise",
+            "systemnoise",
+            "compactionnoise",
+        ] {
+            assert!(index.search(text).unwrap().is_empty(), "{text}");
+        }
+        let source = Connection::open(&index.source).unwrap();
+        let added: i64 = source.query_row("SELECT count(*) FROM sqlite_master WHERE name IN ('documents','messages_fts','meta','sessions','session','part') OR type IN ('trigger','view')", [], |r| r.get(0)).unwrap();
+        assert_eq!(added, 0, "compatibility objects must stay connection-local");
+    }
+
+    #[test]
+    fn mixed_v1_v2_streaming_refresh_is_incremental_even_with_a_static_event_counter() {
+        for sequences in [false, true] {
+            let (_dir, index) = v2_fixture(true, sequences);
+            assert!(refresh(&index));
+            assert!(index
+                .search("upload")
+                .unwrap()
+                .contains_key("opencode:host:ses_chat"));
+            let source = Connection::open(&index.source).unwrap();
+            // Same message ID, seq and session timestamp: streaming only bumps
+            // the raw message's update timestamp. Durable seq may stay put.
+            source
+                .execute(
+                    "UPDATE session_message SET data=?1, time_updated=21 WHERE id='a'",
+                    [r#"{"content":[{"type":"text","text":"streamed replacement"}]}"#],
+                )
+                .unwrap();
+            // An unchanged session must not have its JSON parsed again.
+            source
+                .execute(
+                    "UPDATE session_message SET data='not json' WHERE id='forked'",
+                    [],
+                )
+                .unwrap();
+            make_due(&index);
+            assert!(refresh(&index));
+            assert!(index.search("first draft").unwrap().is_empty());
+            assert!(index
+                .search("streamed replacement")
+                .unwrap()
+                .contains_key("opencode:host:ses_v2"));
+            assert!(index
+                .search("independent fork")
+                .unwrap()
+                .contains_key("opencode:host:fork_v2"));
+            assert!(index
+                .search("upload")
+                .unwrap()
+                .contains_key("opencode:host:ses_chat"));
+            // New messages and reverted/deleted messages also invalidate.
+            source.execute_batch("INSERT INTO session_message VALUES ('new','ses_v2','user',6,22,22,'{\"text\":\"appended request\"}');").unwrap();
+            make_due(&index);
+            assert!(refresh(&index));
+            assert_eq!(index.search("appended request").unwrap().len(), 1);
+            source
+                .execute("DELETE FROM session_message WHERE id='new'", [])
+                .unwrap();
+            source
+                .execute("DELETE FROM session_v2 WHERE id='grandchild_v2'", [])
+                .unwrap();
+            make_due(&index);
+            assert!(refresh(&index));
+            assert!(index.search("appended request").unwrap().is_empty());
+            assert!(index.search("nested child").unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn migrating_an_indexed_v1_id_to_v2_replaces_its_old_documents() {
+        let (_dir, index) = v2_fixture(true, true);
+        assert!(refresh(&index));
+        let source = Connection::open(&index.source).unwrap();
+        source.execute_batch("INSERT INTO session_v2 VALUES ('ses_chat','Migrated','p','/work',NULL,NULL,1,1,NULL);
+            INSERT INTO session_message VALUES ('migrated','ses_chat','user',1,1,1,'{\"text\":\"migrated replacement\"}');").unwrap();
+        make_due(&index);
+        assert!(refresh(&index));
+        assert!(index.search("upload").unwrap().is_empty());
+        assert!(index
+            .search("migrated replacement")
+            .unwrap()
+            .contains_key("opencode:host:ses_chat"));
+        // Legacy child history continues to belong to the migrated root.
+        assert!(index
+            .search("child conversation")
+            .unwrap()
+            .contains_key("opencode:host:ses_chat"));
     }
 
     #[test]

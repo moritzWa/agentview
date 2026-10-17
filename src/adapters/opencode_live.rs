@@ -281,6 +281,7 @@ fn classify(args: &[&str]) -> Option<Target> {
         "--password",
         "-u",
         "--username",
+        "--server",
     ];
     let mut session = None;
     let mut dir = None;
@@ -328,10 +329,14 @@ fn classify(args: &[&str]) -> Option<Target> {
             dir
         }
         Some("pr") => None,
+        // V2's terminal frontend uses the process cwd, not a directory named
+        // "mini". Its API/service utilities never hold a session.
+        Some("mini") => None,
         Some(
             "completion" | "acp" | "mcp" | "attach" | "debug" | "providers" | "auth" | "agent"
             | "upgrade" | "uninstall" | "serve" | "web" | "models" | "stats" | "export" | "import"
-            | "github" | "session" | "plugin" | "plug" | "db",
+            | "github" | "session" | "plugin" | "plug" | "db" | "api" | "service" | "reload"
+            | "pair" | "update",
         ) => return None,
         Some(path) => Some(PathBuf::from(path)),
     };
@@ -681,6 +686,36 @@ mod tests {
         assert_eq!(classify(&args("run --attach http://x -s ses_1")), None);
         for sub in ["serve", "db", "export ses_1", "attach http://x", "models"] {
             assert_eq!(classify(&args(sub)), None, "{sub}");
+        }
+    }
+
+    #[test]
+    fn v2_frontends_and_service_commands_are_classified() {
+        assert_eq!(
+            classify(&args("mini --standalone -s ses_v2")),
+            Some(Target::Session("ses_v2".into()))
+        );
+        assert_eq!(
+            classify(&args("mini --server http://localhost:4096")),
+            Some(Target::Directory(None))
+        );
+        assert_eq!(
+            classify(&args("--server http://localhost:4096 /work")),
+            Some(Target::Directory(Some("/work".into())))
+        );
+        assert_eq!(
+            classify(&args("mini --session ses_v2 --fork")),
+            Some(Target::Directory(None))
+        );
+        for command in [
+            "api GET /session",
+            "service status",
+            "reload",
+            "pair",
+            "debug paths db",
+            "session export ses_v2",
+        ] {
+            assert_eq!(classify(&args(command)), None, "{command}");
         }
     }
 

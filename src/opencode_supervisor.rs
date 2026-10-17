@@ -45,9 +45,19 @@ const RESTART_PENDING_FILE: &str = "restart-pending.json";
 const RESUME_PROMPT: &str = "continue";
 const RECENT_DIRECTORY_WINDOW: Duration = Duration::from_secs(3 * 24 * 60 * 60);
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum ApiVersion {
+    #[default]
+    V1,
+    V2,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ServerRecord {
+    #[serde(default)]
+    api: ApiVersion,
     version: u32,
     pid: u32,
     process_start_token: String,
@@ -115,19 +125,116 @@ pub enum SharedClientReach {
 }
 
 impl OpenCodeSupervisor {
+    /// Explicit protocol selection keeps isolated V2 trials away from a live
+    /// V1 server. Persisted endpoint records remain authoritative on reconnect.
+    pub fn is_v2(&self) -> Result<bool> {
+        if let Some(record) = load_record(&self.record_path, &self.state_dir)? {
+            return Ok(record.api == ApiVersion::V2);
+        }
+        Ok(std::env::var("AGENTVIEW_OPENCODE_API").as_deref() == Ok("v2"))
+    }
     pub fn host(executable: impl Into<String>) -> Result<Self> {
         Self::with_state_dir(executable, default_state_dir()?)
     }
 
     pub fn with_state_dir(executable: impl Into<String>, state_dir: PathBuf) -> Result<Self> {
         ensure_private_directory(&state_dir)?;
-        Ok(Self {
+        let supervisor = Self {
             executable: executable.into(),
             record_path: state_dir.join("server.json"),
             lock_path: state_dir.join("server.lock"),
             state_dir,
             client_targeting: Mutex::new(None),
-        })
+        };
+        supervisor.discover_v2_service()?;
+        Ok(supervisor)
+    }
+
+    /// Opt-in registration discovery. A supplied registration is authoritative:
+    /// never silently create a second service when its credentials are wrong.
+    fn discover_v2_service(&self) -> Result<()> {
+        let Some(path) = std::env::var_os("AGENTVIEW_OPENCODE_SERVICE_FILE") else {
+            return Ok(());
+        };
+        let mut options = OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW);
+        }
+        let file = match options.open(PathBuf::from(path)) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                // A stopped service withdraws its lease. Keep the private
+                // authority record so a later launch can restart and resume it.
+                if load_record(&self.record_path, &self.state_dir)?
+                    .is_some_and(|r| r.api == ApiVersion::V2)
+                {
+                    return Ok(());
+                }
+                return Err(error).context("cannot open V2 service registration");
+            }
+            Err(error) => return Err(error).context("cannot open V2 service registration"),
+        };
+        let metadata = file.metadata()?;
+        verify_current_owner(&metadata, "V2 service registration")?;
+        verify_private_mode(&metadata, "V2 service registration")?;
+        if !metadata.is_file() || metadata.len() > MAX_HEADER_BYTES as u64 {
+            bail!("invalid V2 service registration file");
+        }
+        let info: Value = serde_json::from_reader(file)?;
+        let url = url::Url::parse(
+            info["url"]
+                .as_str()
+                .context("V2 registration omitted URL")?,
+        )?;
+        if url.scheme() != "http"
+            || !matches!(url.host_str(), Some("127.0.0.1" | "localhost"))
+            || url.path() != "/"
+            || url.query().is_some()
+            || !url.username().is_empty()
+            || url.password().is_some()
+        {
+            bail!("V2 service registration must name an authenticated loopback HTTP endpoint");
+        }
+        let pid = u32::try_from(
+            info["pid"]
+                .as_u64()
+                .context("V2 registration omitted PID")?,
+        )?;
+        if pid == 0 {
+            bail!("invalid V2 service PID");
+        }
+        let _lock = StateLock::acquire(&self.lock_path)?;
+        let previous = load_record(&self.record_path, &self.state_dir)?;
+        if let Some(previous) = &previous {
+            if verify_server(previous)? && previous.pid != pid {
+                bail!("isolated state already controls a different live OpenCode service");
+            }
+        }
+        let record = ServerRecord {
+            api: ApiVersion::V2,
+            version: RECORD_VERSION,
+            pid,
+            process_start_token: process_start_token(pid)?,
+            process_cmdline: process_cmdline(pid)?,
+            executable: self.executable.clone(),
+            port: url.port().context("V2 registration URL omitted port")?,
+            username: "opencode".into(),
+            password: info["password"]
+                .as_str()
+                .filter(|p| !p.is_empty())
+                .context("V2 service registration omitted password")?
+                .to_owned(),
+            created_at_ms: previous
+                .as_ref()
+                .map(|p| p.created_at_ms)
+                .unwrap_or_else(now_millis),
+            sessions: previous.map(|p| p.sessions).unwrap_or_default(),
+        };
+        self.verify_http_endpoint(&record)?;
+        save_record(&self.record_path, &record)
     }
 
     pub fn launch(&self, prompt: &str, cwd: &Path) -> Result<ManagedOpenCodeSession> {
@@ -267,16 +374,39 @@ impl OpenCodeSupervisor {
                 record = current;
             }
         }
+        let mut blocked = BTreeSet::new();
+        if record.api == ApiVersion::V2 && !record.sessions.is_empty() {
+            for route in ["/question", "/permission"] {
+                blocked.extend(request_session_ids(
+                    &self.request_json(&record, "GET", route, None)?,
+                ));
+            }
+        }
         Ok(record
             .sessions
             .values()
             .filter_map(|owned| {
                 let statuses = statuses_by_directory.get(&owned.cwd)?;
-                Some(self.snapshot_with_state(
-                    &record,
-                    owned,
-                    state_from_statuses(statuses, &owned.id),
-                ))
+                let mut state = state_from_statuses(statuses, &owned.id);
+                if record.api == ApiVersion::V2 {
+                    let session = sessions_by_directory
+                        .get(&owned.cwd)?
+                        .as_array()?
+                        .iter()
+                        .find(|s| s["id"] == owned.id)?;
+                    if session
+                        .pointer("/time/archived")
+                        .is_some_and(|v| !v.is_null())
+                    {
+                        return None;
+                    }
+                    if blocked.contains(&owned.id)
+                        || (state == SessionState::Completed && session["outcome"] == "failed")
+                    {
+                        state = SessionState::NeedsInput;
+                    }
+                }
+                Some(self.snapshot_with_state(&record, owned, state))
             })
             .collect())
     }
@@ -336,12 +466,31 @@ impl OpenCodeSupervisor {
         let Some(record) = self.live_record()? else {
             return Ok(None);
         };
-        let catalog = self.request_json(
+        let mut catalog = self.request_json(
             &record,
             "GET",
             &with_directory_query("/config/providers", cwd),
             None,
         )?;
+        if record.api == ApiVersion::V2 {
+            let providers = self.request_json(
+                &record,
+                "GET",
+                &with_directory_query("/provider", cwd),
+                None,
+            )?;
+            if let (Some(providers), Some(entries)) =
+                (providers.as_array(), catalog["providers"].as_array_mut())
+            {
+                for entry in entries {
+                    if let Some(provider) = providers.iter().find(|p| p["id"] == entry["id"]) {
+                        if let Some(name) = provider.get("name") {
+                            entry["name"] = name.clone();
+                        }
+                    }
+                }
+            }
+        }
         parse_config_providers(&catalog).map(Some)
     }
 
@@ -426,7 +575,11 @@ impl OpenCodeSupervisor {
         if let Some(session_id) = session_id {
             command.args(["--session", session_id]);
         }
-        command.args(["--client", client]);
+        if record.api == ApiVersion::V2 {
+            command.env("OPENCODE_TUI_CLIENT_ID", client);
+        } else {
+            command.args(["--client", client]);
+        }
         Ok(Some((command, record.pid)))
     }
 
@@ -440,6 +593,9 @@ impl OpenCodeSupervisor {
         cwd: &Path,
         client: &str,
     ) -> Result<u32> {
+        if client.trim().is_empty() {
+            bail!("an exact OpenCode TUI client identity is required");
+        }
         let record = self.required_live_record()?;
         let mut body = json!({ "sessionID": session_id, "client": client });
         match self.client_reach(&record) {
@@ -493,12 +649,39 @@ impl OpenCodeSupervisor {
         let Some(record) = self.live_record()? else {
             return Ok(());
         };
+        if record.api == ApiVersion::V2 {
+            bail!("V2 TUI commands require an exact client identity");
+        }
         let body = json!({ "type": "tui.command.execute", "properties": { "command": command } });
         self.request_empty(
             &record,
             "POST",
             &with_directory_query("/tui/publish", cwd),
             Some(&body),
+        )
+    }
+
+    pub fn run_targeted_tui_command(&self, client: &str, command: &str) -> Result<()> {
+        if client.trim().is_empty() {
+            bail!("an exact OpenCode TUI client identity is required");
+        }
+        let record = self.required_live_record()?;
+        if record.api != ApiVersion::V2 {
+            bail!("targeted command endpoint requires OpenCode V2");
+        }
+        let info = self.request_json(&record, "GET", "/global/health", None)?;
+        if info
+            .pointer("/capabilities/tuiExecuteCommand")
+            .and_then(Value::as_bool)
+            != Some(true)
+        {
+            bail!("OpenCode server does not advertise targeted TUI commands");
+        }
+        self.request_empty(
+            &record,
+            "POST",
+            "/tui/execute-command",
+            Some(&json!({"command":command,"client":client})),
         )
     }
 
@@ -512,6 +695,27 @@ impl OpenCodeSupervisor {
             return Ok(activity);
         };
         activity.server_pid = Some(record.pid);
+        if record.api == ApiVersion::V2 {
+            let statuses = self.request_json(&record, "GET", "/session/status", None)?;
+            activity.running.extend(running_session_ids(&statuses));
+            activity
+                .questions
+                .extend(request_session_ids(&self.request_json(
+                    &record,
+                    "GET",
+                    "/question",
+                    None,
+                )?));
+            activity
+                .permissions
+                .extend(request_session_ids(&self.request_json(
+                    &record,
+                    "GET",
+                    "/permission",
+                    None,
+                )?));
+            return Ok(activity);
+        }
         for directory in directories.iter().filter(|path| path.is_dir()) {
             let Ok(statuses) = self.request_json(
                 &record,
@@ -560,7 +764,22 @@ impl OpenCodeSupervisor {
                 }
             }
         }
-        let reach = self
+        let reach = if record.api == ApiVersion::V2 {
+            self.request_json(record, "GET", "/global/health", None)
+                .map(|info| {
+                    if info
+                        .pointer("/capabilities/tuiSessionSelect")
+                        .and_then(Value::as_bool)
+                        == Some(true)
+                    {
+                        SharedClientReach::AnyDirectory
+                    } else {
+                        SharedClientReach::None
+                    }
+                })
+                .unwrap_or(SharedClientReach::None)
+        } else {
+            self
             .request_json(record, "GET", "/doc", None)
             .map(|doc| {
                 let properties = doc.pointer(
@@ -573,7 +792,8 @@ impl OpenCodeSupervisor {
                     (false, _) => SharedClientReach::None,
                 }
             })
-            .unwrap_or(SharedClientReach::None);
+            .unwrap_or(SharedClientReach::None)
+        };
         if let Ok(mut cache) = self.client_targeting.lock() {
             *cache = Some((record.pid, reach));
         }
@@ -775,7 +995,18 @@ impl OpenCodeSupervisor {
                 let messages = self
                     .request_json(record, "GET", &format!("{path}&limit=20"), None)
                     .unwrap_or(Value::Null);
-                interrupted_turn(turn.id, turn.cwd, &messages)
+                let mut resumed = interrupted_turn(turn.id, turn.cwd, &messages);
+                if record.api == ApiVersion::V2 {
+                    if let Ok(session) = self.request_json(
+                        record,
+                        "GET",
+                        &format!("/session/{}", url_path_segment(&resumed.id)),
+                        None,
+                    ) {
+                        v2_turn_settings(&mut resumed, &session);
+                    }
+                }
+                resumed
             })
             .collect()
     }
@@ -792,6 +1023,11 @@ impl OpenCodeSupervisor {
             .map(|owned| owned.cwd.clone())
             .collect::<BTreeSet<_>>();
         directories.extend(recent_session_directories(&record.executable));
+        if record.api == ApiVersion::V2 {
+            // Active sessions and pending forms are global in V2, including
+            // sessions agentview did not create and old directories.
+            directories = [PathBuf::from("/")].into();
+        }
         let mut interrupted = Vec::new();
         let mut awaiting_input = Vec::new();
         for directory in directories.into_iter().filter(|path| path.is_dir()) {
@@ -843,7 +1079,21 @@ impl OpenCodeSupervisor {
                 let messages = self
                     .request_json(record, "GET", &format!("{path}&limit=20"), None)
                     .unwrap_or(Value::Null);
-                interrupted.push(interrupted_turn(id, directory.clone(), &messages));
+                let cwd = if record.api == ApiVersion::V2 {
+                    PathBuf::from(
+                        session
+                            .pointer("/location/directory")
+                            .and_then(Value::as_str)
+                            .context("V2 session omitted location")?,
+                    )
+                } else {
+                    directory.clone()
+                };
+                let mut turn = interrupted_turn(id, cwd, &messages);
+                if record.api == ApiVersion::V2 {
+                    v2_turn_settings(&mut turn, &session);
+                }
+                interrupted.push(turn);
             }
         }
         Ok((interrupted, awaiting_input))
@@ -901,6 +1151,19 @@ impl OpenCodeSupervisor {
         }
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
+            let saved = load_record(&self.record_path, &self.state_dir)?;
+            let api = endpoint
+                .or(saved.as_ref())
+                .map(|r| r.api)
+                .unwrap_or_else(|| {
+                    if std::env::var("AGENTVIEW_OPENCODE_API").as_deref() == Ok("v2") {
+                        ApiVersion::V2
+                    } else {
+                        ApiVersion::V1
+                    }
+                });
+            let service_mode = api == ApiVersion::V2
+                && std::env::var_os("AGENTVIEW_OPENCODE_SERVICE_FILE").is_some();
             let (port, username, password) = match endpoint {
                 Some(record) => (
                     record.port,
@@ -911,23 +1174,34 @@ impl OpenCodeSupervisor {
                     let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))?;
                     let port = listener.local_addr()?.port();
                     drop(listener);
-                    (port, "opencode".to_owned(), random_secret()?)
+                    let password = if service_mode {
+                        saved
+                            .as_ref()
+                            .map(|r| r.password.clone())
+                            .context("V2 service restart has no saved credential")?
+                    } else {
+                        random_secret()?
+                    };
+                    (port, "opencode".to_owned(), password)
                 }
             };
             use std::os::unix::process::CommandExt;
 
             let log = private_append_file(&self.state_dir.join("server.log"))?;
-            let mut child = Command::new(executable)
+            let mut command = Command::new(executable);
+            if service_mode {
+                // The CLI owns its registration and persisted service secret.
+                // Restart in service mode so other clients rediscover the new
+                // PID rather than keeping the stopped predecessor's lease.
+                command.arg("serve").arg("--service");
+            } else {
+                command.arg("serve");
+            }
+            let mut child = command
                 // The server outlives the dashboard, so it must not receive the
                 // interrupt or hangup the terminal sends to agentview's process group.
                 .process_group(0)
-                .args([
-                    "serve",
-                    "--hostname",
-                    "127.0.0.1",
-                    "--port",
-                    &port.to_string(),
-                ])
+                .args(["--hostname", "127.0.0.1", "--port", &port.to_string()])
                 .env("OPENCODE_SERVER_USERNAME", &username)
                 .env("OPENCODE_SERVER_PASSWORD", &password)
                 .stdin(Stdio::null())
@@ -937,6 +1211,7 @@ impl OpenCodeSupervisor {
                 .with_context(|| format!("failed to start OpenCode server via {executable}"))?;
             let pid = child.id();
             let mut record = ServerRecord {
+                api,
                 version: RECORD_VERSION,
                 pid,
                 process_start_token: String::new(),
@@ -1029,6 +1304,12 @@ impl OpenCodeSupervisor {
     fn verify_http_endpoint(&self, record: &ServerRecord) -> Result<()> {
         verify_listener_owner_cached(record)?;
         let health = self.request_json(record, "GET", "/global/health", None)?;
+        if record.api == ApiVersion::V2 {
+            if health.get("pid").and_then(Value::as_u64) != Some(record.pid as u64) {
+                bail!("OpenCode V2 server identity did not match the owned process");
+            }
+            return Ok(());
+        }
         if health.get("healthy").and_then(Value::as_bool) != Some(true) {
             bail!("OpenCode health endpoint did not report healthy");
         }
@@ -1075,7 +1356,42 @@ impl OpenCodeSupervisor {
         path: &str,
         body: Option<&Value>,
     ) -> Result<Value> {
-        let response = request_http(record, method, path, body)?;
+        let (path, body) = if record.api == ApiVersion::V2 {
+            v2_request(path, body)?
+        } else {
+            (path.to_owned(), body.cloned())
+        };
+        // V2 model/agent choices are durable session controls, rather than
+        // prompt fields. Apply them before admitting the input.
+        if record.api == ApiVersion::V2
+            && path
+                .split('?')
+                .next()
+                .is_some_and(|p| p.ends_with("/prompt"))
+        {
+            if let Some(original) = body.as_ref().and_then(|b| b.get("_settings")) {
+                let base = path.split('?').next().unwrap().trim_end_matches("/prompt");
+                for field in ["model", "agent"] {
+                    if let Some(setting) = original.get(field) {
+                        let setting = json!({field:setting});
+                        let response = request_http(
+                            record,
+                            "POST",
+                            &format!("{base}/{field}"),
+                            Some(&setting),
+                        )?;
+                        ensure_http_success(&response)?;
+                    }
+                }
+            }
+        }
+        let body = body.map(|mut b| {
+            if let Some(o) = b.as_object_mut() {
+                o.remove("_settings");
+            }
+            b
+        });
+        let response = request_http(record, method, &path, body.as_ref())?;
         if !(200..300).contains(&response.status) {
             return Err(HttpStatusError {
                 status: response.status,
@@ -1086,7 +1402,43 @@ impl OpenCodeSupervisor {
         if response.body.is_empty() {
             return Ok(Value::Null);
         }
-        serde_json::from_slice(&response.body).context("invalid OpenCode server JSON")
+        let mut value: Value =
+            serde_json::from_slice(&response.body).context("invalid OpenCode server JSON")?;
+        if record.api == ApiVersion::V2 {
+            // Session lists must include owned sessions older than the default
+            // fifty-row page. Message callers explicitly requesting a recent
+            // window retain that bound, while full transcripts follow cursors.
+            let route = path.split('?').next().unwrap_or(&path);
+            let paginated = route == "/api/session"
+                || (route.ends_with("/message") && !path.contains("limit="));
+            if method == "GET" && paginated {
+                let mut seen = BTreeSet::new();
+                while let Some(cursor) = value
+                    .pointer("/cursor/next")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                {
+                    if !seen.insert(cursor.clone()) || seen.len() > 1000 {
+                        bail!("OpenCode V2 pagination did not terminate");
+                    }
+                    let next = format!("{route}?cursor={}", url_path_segment(&cursor));
+                    let response = request_http(record, "GET", &next, None)?;
+                    ensure_http_success(&response)?;
+                    let mut page: Value = serde_json::from_slice(&response.body)?;
+                    let rows = page["data"]
+                        .as_array_mut()
+                        .context("OpenCode V2 page omitted data")?;
+                    value["data"]
+                        .as_array_mut()
+                        .context("OpenCode V2 page omitted data")?
+                        .append(rows);
+                    value["cursor"] = page["cursor"].take();
+                }
+            }
+            normalize_v2_response(&path, value)
+        } else {
+            Ok(value)
+        }
     }
 
     fn request_empty(
@@ -1321,6 +1673,22 @@ fn resume_prompt_body(turn: &InterruptedTurn) -> Value {
     body
 }
 
+fn v2_turn_settings(turn: &mut InterruptedTurn, session: &Value) {
+    turn.agent = session["agent"].as_str().map(str::to_owned);
+    turn.provider_id = session
+        .pointer("/model/providerID")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    turn.model_id = session
+        .pointer("/model/id")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    turn.variant = session
+        .pointer("/model/variant")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+}
+
 /// Directories of recently active top-level sessions. Server status is
 /// scoped per directory, so these are the places a running turn can be.
 fn recent_session_directories(executable: &str) -> Vec<PathBuf> {
@@ -1328,23 +1696,16 @@ fn recent_session_directories(executable: &str) -> Vec<PathBuf> {
     let query = format!(
         "select distinct directory from session where parent_id is null and time_updated > {since}"
     );
-    let Ok(output) = Command::new(executable)
-        .args(["db", &query, "--format", "tsv"])
-        .stdin(std::process::Stdio::null())
-        .output()
-    else {
+    let Ok((db, _)) = crate::adapters::opencode_db::open_read_only(executable) else {
         return Vec::new();
     };
-    if !output.status.success() {
+    let Ok(mut statement) = db.prepare(&query) else {
         return Vec::new();
-    }
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .skip(1)
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(PathBuf::from)
-        .collect()
+    };
+    let Ok(rows) = statement.query_map([], |row| row.get::<_, String>(0).map(PathBuf::from)) else {
+        return Vec::new();
+    };
+    rows.filter_map(Result::ok).collect()
 }
 
 /// Top-level sessions whose latest message is a reply started between `since`
@@ -1356,7 +1717,31 @@ fn unfinished_top_level_turns(
     since: u64,
     until: u64,
 ) -> Vec<(String, PathBuf, bool)> {
-    let query = format!(
+    let Ok((db, v2)) = crate::adapters::opencode_db::open_read_only(executable) else {
+        return Vec::new();
+    };
+    unfinished_turns_in_db(&db, v2, since, until)
+}
+
+fn unfinished_turns_in_db(
+    db: &rusqlite::Connection,
+    v2: bool,
+    since: u64,
+    until: u64,
+) -> Vec<(String, PathBuf, bool)> {
+    let query = if v2 {
+        format!(
+        "select s.id, s.directory, exists (select 1 from json_each(m.data, '$.content') p \
+         where json_extract(p.value, '$.type')='tool' and json_extract(p.value, '$.name')='question' \
+         and json_extract(p.value, '$.state.status') in ('pending','running')) \
+         from main.session_v2 s join main.session_message m on m.session_id=s.id and m.seq=(select max(seq) \
+         from main.session_message where session_id=s.id) \
+         where s.parent_id is null and s.time_archived is null and m.time_created >= {since} \
+         and m.time_created < {until} and m.type='assistant' \
+         and json_extract(m.data,'$.time.completed') is null"
+    )
+    } else {
+        format!(
         "select s.id, s.directory, exists (select 1 from part p where p.message_id = m.id \
          and json_extract(p.data, '$.type') = 'tool' and json_extract(p.data, '$.tool') = 'question' \
          and json_extract(p.data, '$.state.status') in ('pending', 'running')) as awaiting_input \
@@ -1365,29 +1750,21 @@ fn unfinished_top_level_turns(
          where s.parent_id is null and s.time_archived is null and m.time_created >= {since} \
          and m.time_created < {until} and json_extract(m.data, '$.role') = 'assistant' \
          and json_extract(m.data, '$.time.completed') is null"
-    );
-    let Ok(output) = Command::new(executable)
-        .args(["db", &query, "--format", "tsv"])
-        .stdin(std::process::Stdio::null())
-        .output()
-    else {
+    )
+    };
+    let Ok(mut statement) = db.prepare(&query) else {
         return Vec::new();
     };
-    if !output.status.success() {
+    let Ok(rows) = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            PathBuf::from(row.get::<_, String>(1)?),
+            row.get::<_, bool>(2)?,
+        ))
+    }) else {
         return Vec::new();
-    }
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .skip(1)
-        .filter_map(|line| {
-            let mut fields = line.split('\t');
-            let id = fields.next()?.trim();
-            let directory = fields.next()?.trim();
-            let awaiting_input = fields.next()?.trim() == "1";
-            (!id.is_empty() && !directory.is_empty())
-                .then(|| (id.to_owned(), PathBuf::from(directory), awaiting_input))
-        })
-        .collect()
+    };
+    rows.filter_map(Result::ok).collect()
 }
 
 #[cfg(target_os = "macos")]
@@ -1477,6 +1854,15 @@ fn build_native_attach_command(
 
 fn attach_command(executable: &str, record: &ServerRecord, cwd: &Path) -> Command {
     let mut command = Command::new(executable);
+    if record.api == ApiVersion::V2 {
+        command
+            .arg("--server")
+            .arg(format!("http://127.0.0.1:{}", record.port))
+            .arg(cwd)
+            .env("OPENCODE_PASSWORD", &record.password)
+            .current_dir(cwd);
+        return command;
+    }
     command
         .arg("attach")
         .arg(format!("http://127.0.0.1:{}", record.port))
@@ -1533,6 +1919,175 @@ fn state_from_statuses(statuses: &Value, session_id: &str) -> SessionState {
 struct HttpResponse {
     status: u16,
     body: Vec<u8>,
+}
+
+fn ensure_http_success(response: &HttpResponse) -> Result<()> {
+    if !(200..300).contains(&response.status) {
+        return Err(HttpStatusError {
+            status: response.status,
+            body: String::from_utf8_lossy(&response.body).into_owned(),
+        }
+        .into());
+    }
+    Ok(())
+}
+
+/// Translate the V1-shaped internal controller contract at one boundary. V2
+/// sessions carry their own location; only location resources use a query.
+fn v2_request(path: &str, body: Option<&Value>) -> Result<(String, Option<Value>)> {
+    let (route, query) = path.split_once('?').unwrap_or((path, ""));
+    let directory = query
+        .split('&')
+        .find_map(|item| item.strip_prefix("directory="));
+    let other = query
+        .split('&')
+        .filter(|item| !item.is_empty() && !item.starts_with("directory="))
+        .collect::<Vec<_>>();
+    let route = match route {
+        "/global/health" => "/api/info".to_owned(),
+        "/session/status" => "/api/session/active".to_owned(),
+        "/config/providers" => "/api/model".to_owned(),
+        "/question" => "/api/form".to_owned(),
+        "/permission" => "/api/permission/request".to_owned(),
+        p if p.ends_with("/prompt_async") => format!("/api{}", p.trim_end_matches("_async")),
+        p if p.ends_with("/abort") => format!("/api{}/interrupt", p.trim_end_matches("/abort")),
+        p => format!("/api{p}"),
+    };
+    let mut queries = other.into_iter().map(str::to_owned).collect::<Vec<_>>();
+    if route == "/api/model" || route == "/api/provider" {
+        if let Some(directory) = directory {
+            queries.push(format!("location%5Bdirectory%5D={directory}"));
+        }
+    }
+    let mut body = body.cloned();
+    if route == "/api/session" {
+        if let Some(body) = body.as_mut() {
+            if let Some(directory) = directory {
+                body["location"] = json!({"directory":decode_query_value(directory)?});
+            }
+        }
+    }
+    if route.ends_with("/prompt") {
+        if let Some(original) = body {
+            let text = original
+                .get("parts")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter(|p| p["type"] == "text")
+                .filter_map(|p| p["text"].as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let mut settings = json!({});
+            if let Some(model) = original.get("model") {
+                let mut model = model.clone();
+                if let Some(id) = model.get("modelID").cloned() {
+                    model.as_object_mut().unwrap().remove("modelID");
+                    model["id"] = id;
+                }
+                if let Some(variant) = original.get("variant") {
+                    model["variant"] = variant.clone();
+                }
+                settings["model"] = model;
+            }
+            if let Some(agent) = original.get("agent") {
+                settings["agent"] = agent.clone();
+            }
+            body = Some(json!({"text":text,"_settings":settings}));
+        }
+    }
+    let suffix = if queries.is_empty() {
+        String::new()
+    } else {
+        format!("?{}", queries.join("&"))
+    };
+    Ok((format!("{route}{suffix}"), body))
+}
+
+fn decode_query_value(value: &str) -> Result<String> {
+    let mut bytes = Vec::new();
+    let mut iter = value.bytes();
+    while let Some(byte) = iter.next() {
+        match byte {
+            b'%' => {
+                let a = iter.next().context("truncated query escape")?;
+                let b = iter.next().context("truncated query escape")?;
+                let digit = |c: u8| (c as char).to_digit(16).context("invalid query escape");
+                bytes.push((digit(a)? * 16 + digit(b)?) as u8);
+            }
+            b'+' => bytes.push(b' '),
+            b => bytes.push(b),
+        }
+    }
+    String::from_utf8(bytes).context("invalid query UTF-8")
+}
+
+fn normalize_v2_response(path: &str, mut value: Value) -> Result<Value> {
+    let route = path.split('?').next().unwrap_or(path);
+    if let Some(data) = value.get_mut("data") {
+        value = data.take();
+    }
+    if route.starts_with("/api/session") && !route.ends_with("/message") {
+        let default_title = |session: &mut Value| {
+            if session.get("id").is_some() && session.get("title").is_none() {
+                session["title"] = json!("");
+            }
+        };
+        if let Some(sessions) = value.as_array_mut() {
+            for session in sessions {
+                default_title(session);
+            }
+        } else {
+            default_title(&mut value);
+        }
+    }
+    if route == "/api/model" {
+        let mut providers = BTreeMap::<String, Value>::new();
+        for model in value
+            .as_array()
+            .context("OpenCode V2 model catalog is not an array")?
+        {
+            if model.get("enabled").and_then(Value::as_bool) == Some(false) {
+                continue;
+            }
+            let Some(provider) = model["providerID"].as_str() else {
+                continue;
+            };
+            let Some(id) = model["id"].as_str() else {
+                continue;
+            };
+            let entry = providers
+                .entry(provider.to_owned())
+                .or_insert_with(|| json!({"id":provider,"name":provider,"models":{}}));
+            entry["models"][id] = model.clone();
+        }
+        return Ok(json!({"providers":providers.into_values().collect::<Vec<_>>()}));
+    }
+    if route.ends_with("/message") {
+        let mut messages = value
+            .as_array()
+            .context("OpenCode V2 messages are not an array")?
+            .clone();
+        // V2 serves newest-first; reversing also restores sequence order when
+        // two projected messages share the same millisecond timestamp.
+        messages.reverse();
+        messages.sort_by_key(|m| {
+            m.pointer("/time/created")
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
+        });
+        return Ok(Value::Array(messages.into_iter().map(|m| {
+            let role = m["type"].as_str().unwrap_or("event");
+            let parts = if role == "assistant" { m["content"].clone() } else {
+                json!([{"type":"text","text":m.get("text").and_then(Value::as_str).unwrap_or("")}])
+            };
+            let mut info = m.clone();
+            info["role"] = json!(role);
+            if let Some(id) = info.pointer("/model/id").cloned() { info["model"]["modelID"] = id; }
+            json!({"info":info,"parts":parts})
+        }).collect()));
+    }
+    Ok(value)
 }
 
 fn request_http(
@@ -1769,6 +2324,12 @@ fn provider_session_metadata(value: &Value, session_id: &str) -> Result<Option<(
 /// session titled `session_title`: `OpenCode` for a placeholder title, else
 /// the title, cut short with `…` when long.
 pub fn tui_shows_title(session_title: &str, terminal_title: &str) -> bool {
+    if let Some(title) = terminal_title.strip_prefix("OC | ") {
+        return match title.strip_suffix('…') {
+            Some(prefix) if !prefix.is_empty() => session_title.starts_with(prefix),
+            _ => title == session_title,
+        };
+    }
     if is_default_title(session_title) {
         return terminal_title == "OpenCode";
     }
@@ -1781,6 +2342,9 @@ pub fn tui_shows_title(session_title: &str, terminal_title: &str) -> bool {
 /// OpenCode's placeholder title (`New session - <ISO timestamp>`), which it
 /// replaces with a generated one after the first turn.
 fn is_default_title(title: &str) -> bool {
+    if title.is_empty() {
+        return true;
+    }
     let Some(stamp) = title
         .strip_prefix("New session - ")
         .or_else(|| title.strip_prefix("Child session - "))
@@ -2119,8 +2683,12 @@ fn validate_record(record: &ServerRecord) -> Result<()> {
         || record.port == 0
         || record.executable.is_empty()
         || record.username != "opencode"
-        || record.password.len() != 64
-        || !record.password.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || (record.api == ApiVersion::V1
+            && (record.password.len() != 64
+                || !record.password.bytes().all(|byte| byte.is_ascii_hexdigit())))
+        || record.password.is_empty()
+        || record.password.len() > MAX_HEADER_BYTES
+        || record.password.chars().any(char::is_control)
         || record.process_cmdline.len() > MAX_HEADER_BYTES
     {
         bail!("invalid OpenCode server authority record");
@@ -2621,6 +3189,7 @@ pub(crate) fn start_test_server(
     let listener = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))?;
     let pid = std::process::id();
     let record = ServerRecord {
+        api: ApiVersion::V1,
         version: RECORD_VERSION,
         pid,
         process_start_token: process_start_token(pid)?,
@@ -2671,6 +3240,228 @@ pub(crate) fn start_test_server(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn v2_crash_recovery_uses_sequence_and_never_resumes_idle_or_child_turns() {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE session_v2(id TEXT, directory TEXT, parent_id TEXT, time_archived INTEGER); CREATE TABLE session_message(id TEXT, session_id TEXT, seq INTEGER, type TEXT, time_created INTEGER, data TEXT);
+            INSERT INTO session_v2 VALUES('active','/work',NULL,NULL),('done','/work',NULL,NULL),('child','/work','active',NULL),('question','/work',NULL,NULL);
+            INSERT INTO session_message VALUES('a','active',1,'assistant',100,'{}'),('b','done',1,'assistant',100,'{}'),('c','done',2,'idle',100,'{}'),('d','child',1,'assistant',100,'{}'),('q','question',1,'assistant',100,'{\"content\":[{\"type\":\"tool\",\"name\":\"question\",\"state\":{\"status\":\"running\"}}]}');").unwrap();
+        let mut turns = super::unfinished_turns_in_db(&db, true, 50, 200);
+        turns.sort();
+        assert_eq!(
+            turns,
+            vec![
+                ("active".into(), "/work".into(), false),
+                ("question".into(), "/work".into(), true)
+            ]
+        );
+    }
+    #[test]
+    fn v2_location_prompt_and_envelopes_match_stock_contracts() {
+        let (route, body) = super::v2_request(
+            "/session?directory=%2Fwork%2Fa%20b",
+            Some(&serde_json::json!({})),
+        )
+        .unwrap();
+        assert_eq!(route, "/api/session");
+        assert_eq!(
+            body.unwrap(),
+            serde_json::json!({"location":{"directory":"/work/a b"}})
+        );
+        let (route, body) = super::v2_request("/session/ses_a/prompt_async?directory=%2Fwork", Some(&serde_json::json!({"parts":[{"type":"text","text":"hello"}],"model":{"providerID":"p","modelID":"m"},"variant":"fast"}))).unwrap();
+        assert_eq!(route, "/api/session/ses_a/prompt");
+        assert_eq!(
+            body.unwrap(),
+            serde_json::json!({"text":"hello","_settings":{"model":{"providerID":"p","id":"m","variant":"fast"}}})
+        );
+        assert_eq!(
+            super::v2_request(
+                "/session/ses_a/abort?directory=%2Fwork",
+                Some(&serde_json::json!({}))
+            )
+            .unwrap()
+            .0,
+            "/api/session/ses_a/interrupt"
+        );
+        let normalized = super::normalize_v2_response(
+            "/api/session/ses_a/message",
+            serde_json::json!({"data":[
+            {"type":"assistant","content":[{"type":"text","text":"answer"}],"time":{"created":2}},
+            {"type":"user","text":"hello","time":{"created":1}}
+        ],"cursor":{}}),
+        )
+        .unwrap();
+        assert_eq!(
+            super::render_messages(&normalized).unwrap(),
+            "User: hello\n\nAssistant: answer"
+        );
+        let catalog = super::normalize_v2_response("/api/model", serde_json::json!({"location":{"directory":"/work"},"data":[{"id":"m","providerID":"p","name":"Model M","enabled":true,"status":"active"},{"id":"disabled","providerID":"p","enabled":false}]})).unwrap();
+        assert_eq!(
+            super::parse_config_providers(&catalog).unwrap().0,
+            vec!["p/m"]
+        );
+    }
+
+    #[test]
+    fn v2_restart_retains_session_controls_instead_of_user_message_fields() {
+        let mut turn =
+            super::interrupted_turn("ses_a".into(), "/work".into(), &serde_json::json!([]));
+        super::v2_turn_settings(
+            &mut turn,
+            &serde_json::json!({"agent":"build","model":{"id":"m","providerID":"p","variant":"high"}}),
+        );
+        let (_, body) = super::v2_request(
+            "/session/ses_a/prompt_async",
+            Some(&super::resume_prompt_body(&turn)),
+        )
+        .unwrap();
+        assert_eq!(
+            body.unwrap(),
+            serde_json::json!({"text":"continue","_settings":{"agent":"build","model":{"id":"m","providerID":"p","variant":"high"}}})
+        );
+    }
+
+    #[test]
+    fn v2_titles_follow_the_tuis_prefix_and_ellipsis() {
+        assert!(super::tui_shows_title("Short title", "OC | Short title"));
+        assert!(super::tui_shows_title(
+            "A long session title that continues far beyond forty characters",
+            "OC | A long session title that continues f…"
+        ));
+        assert!(!super::tui_shows_title(
+            "Selected session",
+            "OC | Other session"
+        ));
+        assert!(super::tui_shows_title("", "OpenCode"));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn v2_http_controls_model_before_prompt_and_paginates_transcripts() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let thread = std::thread::spawn(move || {
+            let expected = [
+                (
+                    "POST /api/session/ses_a/model ",
+                    serde_json::json!({"model":{"id":"m","providerID":"p"}}),
+                    serde_json::json!(null),
+                ),
+                (
+                    "POST /api/session/ses_a/prompt ",
+                    serde_json::json!({"text":"hello"}),
+                    serde_json::json!({"data":{"id":"input"}}),
+                ),
+                (
+                    "GET /api/session/ses_a/message ",
+                    serde_json::json!(null),
+                    serde_json::json!({"data":[{"type":"user","text":"old","time":{"created":1}}],"cursor":{"next":"opaque"}}),
+                ),
+                (
+                    "GET /api/session/ses_a/message?cursor=opaque ",
+                    serde_json::json!(null),
+                    serde_json::json!({"data":[{"type":"assistant","content":[{"type":"text","text":"new"}],"time":{"created":2}}],"cursor":{}}),
+                ),
+                (
+                    "GET /api/info ",
+                    serde_json::json!(null),
+                    serde_json::json!({"capabilities":{}}),
+                ),
+                (
+                    "GET /api/info ",
+                    serde_json::json!(null),
+                    serde_json::json!({"capabilities":{"tuiSessionSelect":true,"tuiExecuteCommand":true}}),
+                ),
+                (
+                    "POST /api/tui/select-session ",
+                    serde_json::json!({"sessionID":"ses_a","client":"av-one","targetDirectory":"/other"}),
+                    serde_json::json!(true),
+                ),
+            ];
+            for (expected_path, expected_body, response) in expected {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .unwrap();
+                let mut bytes = Vec::new();
+                let split = loop {
+                    let mut byte = [0];
+                    stream.read_exact(&mut byte).unwrap();
+                    bytes.push(byte[0]);
+                    if bytes.ends_with(b"\r\n\r\n") {
+                        break bytes.len();
+                    }
+                };
+                let header = String::from_utf8(bytes.clone()).unwrap();
+                assert!(header.starts_with(expected_path), "{header}");
+                assert!(header.contains("Authorization: Basic "));
+                let length = header
+                    .lines()
+                    .find_map(|l| l.strip_prefix("Content-Length: "))
+                    .unwrap()
+                    .parse::<usize>()
+                    .unwrap();
+                bytes.resize(split + length, 0);
+                stream.read_exact(&mut bytes[split..]).unwrap();
+                let body = if length == 0 {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::from_slice(&bytes[split..]).unwrap()
+                };
+                assert_eq!(body, expected_body);
+                let response = response.to_string();
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    response.len(),
+                    response
+                )
+                .unwrap();
+            }
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let supervisor =
+            super::OpenCodeSupervisor::with_state_dir("opencode", dir.path().join("state"))
+                .unwrap();
+        let record = super::ServerRecord {
+            api: super::ApiVersion::V2,
+            version: 1,
+            pid: std::process::id(),
+            process_start_token: String::new(),
+            process_cmdline: vec![],
+            executable: "opencode".into(),
+            port,
+            username: "opencode".into(),
+            password: "secret".into(),
+            created_at_ms: 0,
+            sessions: Default::default(),
+        };
+        supervisor.request_json(&record, "POST", "/session/ses_a/prompt_async?directory=%2Fwork", Some(&serde_json::json!({"parts":[{"type":"text","text":"hello"}],"model":{"modelID":"m","providerID":"p"}}))).unwrap();
+        let messages = supervisor
+            .request_json(
+                &record,
+                "GET",
+                "/session/ses_a/message?directory=%2Fwork",
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            super::render_messages(&messages).unwrap(),
+            "User: old\n\nAssistant: new"
+        );
+        assert_eq!(
+            supervisor.client_reach(&record),
+            super::SharedClientReach::None
+        );
+        *supervisor.client_targeting.lock().unwrap() = None;
+        assert_eq!(
+            supervisor.client_reach(&record),
+            super::SharedClientReach::AnyDirectory
+        );
+        supervisor.request_json(&record, "POST", "/tui/select-session?directory=%2Fother", Some(&serde_json::json!({"sessionID":"ses_a","client":"av-one","targetDirectory":"/other"}))).unwrap();
+        thread.join().unwrap();
+    }
     use super::*;
 
     #[test]
@@ -2855,6 +3646,7 @@ mod tests {
     #[test]
     fn rejects_unbounded_or_relative_owned_session_records() {
         let record = ServerRecord {
+            api: ApiVersion::V1,
             version: RECORD_VERSION,
             pid: 1,
             process_start_token: "start".into(),
@@ -2890,6 +3682,7 @@ mod tests {
             updated_at_ms: 1,
         };
         let record = ServerRecord {
+            api: ApiVersion::V1,
             version: RECORD_VERSION,
             pid: 1,
             process_start_token: "start".into(),
@@ -2973,6 +3766,7 @@ mod tests {
     fn a_bare_recorded_name_matches_the_same_canonical_running_executable() {
         let pid = std::process::id();
         let record = ServerRecord {
+            api: ApiVersion::V1,
             version: RECORD_VERSION,
             pid,
             process_start_token: process_start_token(pid).unwrap(),
@@ -2996,6 +3790,7 @@ mod tests {
     #[test]
     fn a_recorded_pid_reused_by_a_root_process_is_not_a_live_server() {
         let record = ServerRecord {
+            api: ApiVersion::V1,
             version: RECORD_VERSION,
             pid: 1,
             process_start_token: "1.000000".into(),

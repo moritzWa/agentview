@@ -176,8 +176,14 @@ impl ProviderController for OpenCodeController {
     }
 
     fn launch_mode(&self) -> LaunchMode {
-        if self.supervisor.is_some() || self.ownership.is_some() {
+        if self.supervisor.is_some() {
             LaunchMode::SelectableModel
+        } else if self.ownership.is_some() {
+            if unmanaged_v2() {
+                LaunchMode::DefaultModel
+            } else {
+                LaunchMode::SelectableModel
+            }
         } else {
             LaunchMode::Unavailable
         }
@@ -554,6 +560,12 @@ fn shared_client_for(reach: SharedClientReach, cwd: &Path) -> (String, String) {
     (shared_client_key(scope), shared_client_id(scope))
 }
 
+/// A successful HTTP request alone is not a successful switch: a server may
+/// have restarted between finding the parked TUI and delivering its event.
+fn selected_same_server(expected: Option<u32>, selected: Result<u32>) -> bool {
+    matches!((expected, selected), (Some(expected), Ok(selected)) if expected == selected)
+}
+
 /// The titles the shared TUI may show once it has drawn a session: the one the
 /// dashboard listed, and the server's once it answers. The server's covers a
 /// session renamed in agentview or retitled since the last refresh, but asking
@@ -644,7 +656,11 @@ impl OpenCodeController {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let gate_wait = started.elapsed();
-        if let Some((key, server_pid)) = previewed_shared_client(&session.id) {
+        if let Some((key, server_pid)) = previewed_shared_client(&session.id).filter(|(_, pid)| {
+            supervisor
+                .known_client_reach()
+                .is_some_and(|(live, reach)| live == *pid && reach != SharedClientReach::None)
+        }) {
             remember_shared_client(&key, server_pid, &session.id, false);
             drop(gate);
             crate::perf!(
@@ -686,11 +702,13 @@ impl OpenCodeController {
         // A TUI that could not be switched is replaced rather than shown on
         // the wrong session.
         let switched = reuse
-            && supervisor
-                .select_in_shared_client(&session.provider_session_id, &cwd, &client)
-                .is_ok();
+            && selected_same_server(
+                started_against,
+                supervisor.select_in_shared_client(&session.provider_session_id, &cwd, &client),
+            );
         if parked && !switched {
-            let _ = crate::native_session::terminate(&key);
+            crate::native_session::terminate(&key)
+                .context("could not replace the parked OpenCode frontend")?;
         }
         let start = if switched {
             remember_shared_client(
@@ -734,9 +752,18 @@ impl OpenCodeController {
         start: Option<Command>,
         session: &AgentSession,
     ) -> Result<ControlOutcome> {
-        let exit = match start {
-            None => crate::native_session::resume(key)?,
-            Some(command) => crate::native_session::run(command, key)?,
+        let result = match start {
+            None => crate::native_session::resume(key),
+            Some(command) => crate::native_session::run(command, key),
+        };
+        let exit = match result {
+            Ok(exit) => exit,
+            Err(error) => {
+                if let Ok(mut clients) = shared_clients().lock() {
+                    clients.remove(key);
+                }
+                return Err(error);
+            }
         };
         if matches!(exit, crate::native_session::NativeSessionExit::Backgrounded) {
             self.pause_speech(&session.cwd);
@@ -885,6 +912,13 @@ impl OpenCodeController {
     /// the dashboard. Pausing keeps its place for when the session is reopened.
     fn pause_speech(&self, cwd: &Path) {
         if let Some(supervisor) = self.supervisor.as_ref() {
+            if supervisor.is_v2().unwrap_or(true) {
+                if let Some((_, reach)) = supervisor.known_client_reach() {
+                    let (_, client) = shared_client_for(reach, cwd);
+                    let _ = supervisor.run_targeted_tui_command(&client, "speech.pause");
+                }
+                return;
+            }
             let _ = supervisor.run_tui_command(cwd, "speech.pause");
         }
     }
@@ -926,12 +960,12 @@ impl OpenCodeController {
         if !request.cwd.is_absolute() {
             bail!("the OpenCode workspace must be absolute");
         }
-        let mut command = Command::new(&self.executable);
-        command.current_dir(&request.cwd);
-        if let Some(model) = request.model.as_deref() {
-            validate_model(model)?;
-            command.arg(format!("--model={model}"));
-        }
+        let command = new_frontend_command(
+            &self.executable,
+            &request.cwd,
+            request.model.as_deref(),
+            unmanaged_v2(),
+        )?;
         // `--prompt` only prefills OpenCode's editor without submitting it, so
         // the task is pasted and entered once the empty editor is on screen.
         // Bracketed paste keeps multiline and slash-prefixed tasks as text.
@@ -980,6 +1014,30 @@ fn validate_model(model: &str) -> Result<()> {
         bail!("OpenCode models are provider/model identifiers without spaces");
     }
     Ok(())
+}
+
+fn new_frontend_command(
+    executable: &str,
+    cwd: &Path,
+    model: Option<&str>,
+    v2: bool,
+) -> Result<Command> {
+    let mut command = Command::new(executable);
+    command.current_dir(cwd);
+    if let Some(model) = model {
+        validate_model(model)?;
+        // Stock V2 accepts --model for `run` and `mini`, but not the full
+        // frontend. Managed launch sets the session model through the API.
+        if v2 {
+            bail!("OpenCode V2 requires managed launch to select a model in the full TUI");
+        }
+        command.arg(format!("--model={model}"));
+    }
+    Ok(command)
+}
+
+fn unmanaged_v2() -> bool {
+    std::env::var("AGENTVIEW_OPENCODE_API").is_ok_and(|api| api == "v2")
 }
 
 fn host_runner(executable: &str) -> Arc<dyn CommandRunner> {
@@ -1265,7 +1323,10 @@ impl OpenCodeSource {
                 let records = self.query(&scope)?;
                 let unfinished = unfinished_directories(&records);
                 let activity = server
-                    .filter(|_| server_live && !unfinished.is_empty())
+                    .filter(|supervisor| {
+                        server_live
+                            && (!unfinished.is_empty() || supervisor.is_v2().unwrap_or(false))
+                    })
                     .and_then(|supervisor| match supervisor.server_activity(&unfinished) {
                         Ok(activity) => Some(activity),
                         Err(error) => {
@@ -2019,6 +2080,68 @@ mod tests {
             assert_eq!(request, &self.expected);
             Ok(self.output.lock().unwrap().take().unwrap())
         }
+    }
+
+    #[test]
+    fn targeted_cross_directory_frontend_keeps_one_key_and_one_client_tag() {
+        let first = shared_client_for(SharedClientReach::AnyDirectory, Path::new("/first"));
+        let second = shared_client_for(SharedClientReach::AnyDirectory, Path::new("/second"));
+        assert_eq!(first, second);
+        assert!(first
+            .1
+            .starts_with(&format!("agentview-{}", std::process::id())));
+        // V1 servers that can target but cannot move directories still keep
+        // distinct clients, rather than accidentally steering the first TUI.
+        assert_ne!(
+            shared_client_id(Some(Path::new("/first"))),
+            shared_client_id(Some(Path::new("/second")))
+        );
+    }
+
+    #[test]
+    fn a_switch_on_a_replacement_server_cannot_resume_the_old_frontend() {
+        assert!(selected_same_server(Some(41), Ok(41)));
+        assert!(!selected_same_server(Some(41), Ok(42)));
+        assert!(!selected_same_server(None, Ok(41)));
+        assert!(!selected_same_server(
+            Some(41),
+            Err(anyhow::anyhow!("target not registered"))
+        ));
+    }
+
+    #[test]
+    fn foreground_launch_preserves_v1_model_and_never_passes_it_to_stock_v2() {
+        let v1 = new_frontend_command(
+            "opencode-v1",
+            Path::new("/project"),
+            Some("provider/model"),
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            v1.get_args().collect::<Vec<_>>(),
+            ["--model=provider/model"]
+        );
+        assert_eq!(v1.get_current_dir(), Some(Path::new("/project")));
+        let v2 = new_frontend_command("opencode-v2", Path::new("/project"), None, true).unwrap();
+        assert_eq!(v2.get_args().count(), 0);
+        assert_eq!(v2.get_current_dir(), Some(Path::new("/project")));
+        assert!(new_frontend_command(
+            "opencode-v2",
+            Path::new("/project"),
+            Some("provider/model"),
+            true
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("managed launch"));
+        assert!(new_frontend_command(
+            "opencode-v1",
+            Path::new("/project"),
+            Some("--invalid"),
+            false
+        )
+        .is_err());
     }
 
     #[test]
