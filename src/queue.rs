@@ -75,7 +75,7 @@ impl WaitingJob {
     /// What the job's status column says: Waiting, unless the machine is the holdup.
     pub fn status_text(&self) -> &'static str {
         match self.reason.as_str() {
-            "ram" => "Low RAM",
+            "ram" | "swap" => "Low RAM",
             "cpu" | "cores" | "load" => "CPU busy",
             _ => "Waiting",
         }
@@ -90,6 +90,7 @@ impl WaitingJob {
             "cpu" => "CPU saturated",
             "cores" => "all CPU cores spoken for",
             "load" => "machine overloaded",
+            "swap" => "machine is swapping to disk",
             "settle" => "another job is starting up",
             _ => "busy",
         }
