@@ -44,6 +44,7 @@ const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 /// this long is killed.
 const RESTART_GRACE: Duration = Duration::from_secs(15);
 const KILL_GRACE: Duration = Duration::from_secs(5);
+const IDLE_POLL: Duration = Duration::from_secs(2);
 const RESTART_PENDING_FILE: &str = "restart-pending.json";
 const RESUME_PROMPT: &str = "continue";
 const RECENT_DIRECTORY_WINDOW: Duration = Duration::from_secs(3 * 24 * 60 * 60);
@@ -1017,6 +1018,51 @@ impl OpenCodeSupervisor {
         Ok(())
     }
 
+    /// Wait until no top-level turn and no background shell other than
+    /// `except`'s is running, so a restart cuts off nothing. `except` is the
+    /// session that asked for the restart: its own turn cannot finish while it
+    /// waits. A shell dies with the server and nothing restarts it, so a
+    /// session whose turn ended on a shell it is waiting for counts as busy.
+    /// Returns the sessions still busy when `timeout` passes, empty when the
+    /// server went idle. A restart after a timeout is still safe for turns,
+    /// which resume; the shells do not come back.
+    pub fn wait_until_idle(
+        &self,
+        except: Option<&str>,
+        timeout: Duration,
+        mut on_wait: impl FnMut(&[String]),
+    ) -> Result<Vec<String>> {
+        let deadline = Instant::now() + timeout;
+        let mut last_reported = Vec::new();
+        loop {
+            let Some(record) = self.live_record()? else {
+                return Ok(Vec::new());
+            };
+            let (interrupted, _) = self.interrupted_turns(&record)?;
+            let shell_owners = if record.api == ApiVersion::V2 {
+                self.running_shell_commands(&record).into_keys().collect()
+            } else {
+                Vec::new()
+            };
+            let mut running = interrupted
+                .into_iter()
+                .map(|turn| turn.id)
+                .chain(shell_owners)
+                .filter(|id| Some(id.as_str()) != except)
+                .collect::<Vec<_>>();
+            running.sort();
+            running.dedup();
+            if running.is_empty() || Instant::now() >= deadline {
+                return Ok(running);
+            }
+            if running != last_reported {
+                on_wait(&running);
+                last_reported = running;
+            }
+            thread::sleep(IDLE_POLL.min(deadline.saturating_duration_since(Instant::now())));
+        }
+    }
+
     /// Restart the owned server on the same port and credentials, then send
     /// `continue` to every top-level session whose turn the restart cut off.
     /// Registered V2 services instead recover their durable execution claims
@@ -1239,42 +1285,7 @@ impl OpenCodeSupervisor {
         if record.api != ApiVersion::V2 || service_file_env().is_some() {
             return Ok(());
         }
-        let mut directories = record
-            .sessions
-            .values()
-            .map(|owned| owned.cwd.clone())
-            .collect::<BTreeSet<_>>();
-        directories.extend(recent_session_directories(&record.executable));
-        let mut shells = BTreeMap::<String, (PathBuf, Vec<String>)>::new();
-        for directory in directories.into_iter().filter(|path| path.is_dir()) {
-            // A directory whose project fails to load runs no shells, and must
-            // not block the restart.
-            let Ok(listed) = self.request_json(
-                record,
-                "GET",
-                &with_directory_query("/shell", &directory),
-                None,
-            ) else {
-                continue;
-            };
-            for shell in listed.as_array().into_iter().flatten() {
-                if shell["status"] != "running" {
-                    continue;
-                }
-                let (Some(session), Some(command)) = (
-                    shell.pointer("/metadata/sessionID").and_then(Value::as_str),
-                    shell["command"].as_str(),
-                ) else {
-                    continue;
-                };
-                shells
-                    .entry(session.to_owned())
-                    .or_insert_with(|| (directory.clone(), Vec::new()))
-                    .1
-                    .push(command.to_owned());
-            }
-        }
-        for (id, (cwd, commands)) in shells {
+        for (id, (cwd, commands)) in self.running_shell_commands(record) {
             // A question or permission prompt is reported to the user instead.
             if awaiting_input.contains(&id) {
                 continue;
@@ -1317,6 +1328,42 @@ impl OpenCodeSupervisor {
             pending.push(turn);
         }
         Ok(())
+    }
+
+    /// The V2 background shells `record`'s server is running, by the session
+    /// that started them, with the directory they were found in. Stopping the
+    /// server kills every one of them.
+    fn running_shell_commands(
+        &self,
+        record: &ServerRecord,
+    ) -> BTreeMap<String, (PathBuf, Vec<String>)> {
+        let mut shells = BTreeMap::<String, (PathBuf, Vec<String>)>::new();
+        let mut directories = record
+            .sessions
+            .values()
+            .map(|owned| owned.cwd.clone())
+            .collect::<BTreeSet<_>>();
+        directories.extend(recent_session_directories(&record.executable));
+        for directory in directories.into_iter().filter(|path| path.is_dir()) {
+            // A directory whose project fails to load runs no shells, and must
+            // not block the restart.
+            let Ok(listed) = self.request_json(
+                record,
+                "GET",
+                &with_directory_query("/shell", &directory),
+                None,
+            ) else {
+                continue;
+            };
+            for (session, command) in running_shell_entries(&listed) {
+                shells
+                    .entry(session)
+                    .or_insert_with(|| (directory.clone(), Vec::new()))
+                    .1
+                    .push(command);
+            }
+        }
+        shells
     }
 
     fn interrupted_turns(
@@ -1980,6 +2027,23 @@ fn running_session_ids(statuses: &Value) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// `(session, command)` for each shell in a `/shell` listing that is still
+/// running and names the session that started it.
+fn running_shell_entries(listed: &Value) -> Vec<(String, String)> {
+    listed
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|shell| shell["status"] == "running")
+        .filter_map(|shell| {
+            Some((
+                shell.pointer("/metadata/sessionID")?.as_str()?.to_owned(),
+                shell["command"].as_str()?.to_owned(),
+            ))
+        })
+        .collect()
 }
 
 fn request_session_ids(requests: &Value) -> Vec<String> {
@@ -3685,6 +3749,26 @@ mod tests {
             ]
         );
     }
+    #[test]
+    fn only_running_shells_that_name_a_session_count_as_busy() {
+        let listed = serde_json::json!([
+            {"status": "running", "command": "sleep 900", "metadata": {"sessionID": "ses_a"}},
+            {"status": "running", "command": "make", "metadata": {"sessionID": "ses_a"}},
+            {"status": "completed", "command": "ls", "metadata": {"sessionID": "ses_b"}},
+            {"status": "cancelled", "command": "land.sh", "metadata": {"sessionID": "ses_c"}},
+            {"status": "running", "command": "orphan", "metadata": {}},
+            {"status": "running", "metadata": {"sessionID": "ses_d"}},
+        ]);
+        assert_eq!(
+            super::running_shell_entries(&listed),
+            [
+                ("ses_a".to_string(), "sleep 900".to_string()),
+                ("ses_a".to_string(), "make".to_string())
+            ]
+        );
+        assert!(super::running_shell_entries(&serde_json::json!({})).is_empty());
+    }
+
     #[test]
     fn v2_location_prompt_and_envelopes_match_stock_contracts() {
         let (route, body) = super::v2_request(

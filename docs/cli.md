@@ -379,6 +379,22 @@ agentview opencode restart
 agentview --json opencode restart
 ```
 
+To avoid cutting off turns at all, wait for them to finish first:
+
+```console
+agentview opencode restart --when-idle
+agentview opencode restart --when-idle --wait-timeout 120
+```
+
+It polls until no top-level session has a running turn and no session has a
+running background shell, then restarts. A shell dies with the server and is
+not restarted, so a session whose turn ended on a shell it waits for counts as
+busy. The session named by `CLAUDE_CODE_SESSION_ID` is not waited for, since
+the agent that runs the command is itself mid-turn; its own shells are killed
+by the restart, so start the restart from a detached process (`setsid nohup`)
+if the command is itself a background shell. After `--wait-timeout` seconds
+(default 600) it restarts anyway: turns resume, shells are lost.
+
 Before stopping the server it records every top-level session with a running
 turn, in any directory used in the last three days. The new server listens on
 the same port with the same credentials, so open OpenCode windows reconnect by
