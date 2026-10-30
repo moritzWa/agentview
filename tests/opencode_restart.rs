@@ -148,7 +148,9 @@ fn waiting_for_idle_returns_as_soon_as_the_other_turns_finish() {
         let path = directory.path().to_path_buf();
         thread::spawn(move || {
             thread::sleep(Duration::from_millis(1500));
-            update_state(&path, |state| state["statuses"]["ses_other"] = json!("idle"));
+            update_state(&path, |state| {
+                state["statuses"]["ses_other"] = json!("idle")
+            });
         })
     };
     let started = Instant::now();
