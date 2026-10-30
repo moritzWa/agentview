@@ -828,6 +828,9 @@ impl OpenCodeSupervisor {
                     .or_insert_with(|| command.to_owned());
             }
         }
+        let ids = shells.keys().cloned().collect();
+        let roots = crate::adapters::opencode_db::subagent_root_by_id(&self.executable, &ids);
+        copy_shells_to_parents(&mut shells, &roots);
         Ok(shells)
     }
 
@@ -1927,6 +1930,24 @@ pub struct OpenCodeStopReport {
 fn include_subagent_parents(executable: &str, running: &mut BTreeSet<String>) {
     let parents = crate::adapters::opencode_db::subagent_parents(executable, running);
     running.extend(parents);
+}
+
+/// A background shell on a subagent is that subagent's session, which is not
+/// a dashboard row. The parent's own shell wins when it has one.
+fn copy_shells_to_parents(
+    shells: &mut BTreeMap<String, String>,
+    child_to_root: &BTreeMap<String, String>,
+) {
+    let inherited = child_to_root
+        .iter()
+        .filter_map(|(child, root)| {
+            let command = shells.get(child)?.clone();
+            Some((root.clone(), command))
+        })
+        .collect::<Vec<_>>();
+    for (root, command) in inherited {
+        shells.entry(root).or_insert(command);
+    }
 }
 
 /// The parent's own turn is finished, and a subagent it started is still
@@ -3958,6 +3979,24 @@ mod tests {
             state_while_subagent_runs(SessionState::Completed, "managed_server", false),
             (SessionState::Completed, "managed_server")
         );
+    }
+
+    #[test]
+    fn a_subagent_shell_keeps_its_parent_working_and_leaves_the_parents_own() {
+        let mut shells = BTreeMap::from([
+            ("child".into(), "wait-live".into()),
+            ("parent".into(), "parent-shell".into()),
+        ]);
+        let roots = BTreeMap::from([("child".into(), "parent".into())]);
+        copy_shells_to_parents(&mut shells, &roots);
+        assert_eq!(
+            shells.get("parent").map(String::as_str),
+            Some("parent-shell")
+        );
+
+        let mut shells = BTreeMap::from([("child".into(), "wait-live".into())]);
+        copy_shells_to_parents(&mut shells, &roots);
+        assert_eq!(shells.get("parent").map(String::as_str), Some("wait-live"));
     }
 
     #[test]

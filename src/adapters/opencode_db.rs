@@ -280,6 +280,21 @@ pub(crate) fn subagent_parents(executable: &str, ids: &BTreeSet<String>) -> BTre
     ancestor_roots(&db, ids)
 }
 
+/// `id -> root` for every id in `ids` that is a subagent. The root is the
+/// dashboard row. Empty under unit tests, same as [`subagent_parents`].
+pub(crate) fn subagent_root_by_id(
+    executable: &str,
+    ids: &BTreeSet<String>,
+) -> BTreeMap<String, String> {
+    if cfg!(test) || ids.is_empty() {
+        return BTreeMap::new();
+    }
+    let Some(db) = open_history(executable) else {
+        return BTreeMap::new();
+    };
+    root_by_id(&db, ids)
+}
+
 fn open_history(executable: &str) -> Option<Connection> {
     let path = cached_database_path(executable)?;
     let db = Connection::open_with_flags(
@@ -315,15 +330,19 @@ fn cached_database_path(executable: &str) -> Option<PathBuf> {
 /// Roots of `ids`: the session with no parent at the top of each chain.
 /// A running subagent, or a subagent of one, keeps that root working.
 fn ancestor_roots(db: &Connection, ids: &BTreeSet<String>) -> BTreeSet<String> {
+    root_by_id(db, ids).into_values().collect()
+}
+
+fn root_by_id(db: &Connection, ids: &BTreeSet<String>) -> BTreeMap<String, String> {
     let v2 = has_table(db, "session_v2").unwrap_or(false);
     let v1 = has_table(db, "session").unwrap_or(false);
     if !v2 && !v1 {
-        return BTreeSet::new();
+        return BTreeMap::new();
     }
-    let mut roots = BTreeSet::new();
+    let mut roots = BTreeMap::new();
     for id in ids.iter().take(64) {
         if let Some(root) = root_parent(db, id, v2, v1) {
-            roots.insert(root);
+            roots.insert(id.clone(), root);
         }
     }
     roots
@@ -1056,6 +1075,11 @@ mod tests {
         let roots: std::collections::BTreeSet<String> =
             ["root"].into_iter().map(str::to_owned).collect();
         assert_eq!(ancestor_roots(&db, &ids), roots);
+        let by_id = root_by_id(&db, &ids);
+        assert_eq!(by_id.get("child").map(String::as_str), Some("root"));
+        assert_eq!(by_id.get("grandchild").map(String::as_str), Some("root"));
+        assert!(!by_id.contains_key("other"));
+        assert!(!by_id.contains_key("missing"));
     }
 
     #[test]

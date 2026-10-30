@@ -13,6 +13,7 @@
 //! A hold counts only while `pid` is alive and before `expires_ms`, so a file
 //! left behind by a crashed plugin never pins a session as working.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -59,6 +60,23 @@ pub fn live_hold(root: &Path, harness: &str, session_id: &str) -> Option<String>
         let current = hold.expires_ms.map_or(true, |expires| now_ms < expires);
         (current && process_alive(hold.pid)).then_some(hold.reason)
     })
+}
+
+/// Every session under `harness` that has a live hold, with that hold's reason.
+pub fn live_holds(root: &Path, harness: &str) -> BTreeMap<String, String> {
+    let mut found = BTreeMap::new();
+    let Ok(entries) = std::fs::read_dir(root.join(harness)) else {
+        return found;
+    };
+    for entry in entries.filter_map(Result::ok) {
+        let Some(session) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if let Some(reason) = live_hold(root, harness, &session) {
+            found.insert(session, reason);
+        }
+    }
+    found
 }
 
 #[cfg(unix)]
@@ -111,6 +129,12 @@ mod tests {
         );
         assert_eq!(
             live_hold(root.path(), "opencode", "ses_1").as_deref(),
+            Some("deploy")
+        );
+        assert_eq!(
+            live_holds(root.path(), "opencode")
+                .get("ses_1")
+                .map(String::as_str),
             Some("deploy")
         );
         assert_eq!(live_hold(root.path(), "opencode", "ses_2"), None);

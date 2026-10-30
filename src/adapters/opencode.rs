@@ -285,6 +285,10 @@ impl ProviderController for OpenCodeController {
             snapshot.sessions.iter_mut().filter(|session| {
                 session.provider == Provider::OpenCode && session.runtime == Runtime::Host
             }),
+            &inherited_subagent_holds(
+                self.source.holds.as_deref(),
+                &self.source.invocation.program,
+            ),
         );
         let idle = |session: &AgentSession| {
             session.provider == Provider::OpenCode
@@ -309,11 +313,12 @@ impl ProviderController for OpenCodeController {
             }
         }
         if let Some(shells) = &self.source.background_shells {
+            let running = with_subagent_parents(&self.source.invocation.program, shells.last());
             apply_background_shells(
                 snapshot.sessions.iter_mut().filter(|session| {
                     session.provider == Provider::OpenCode && session.runtime == Runtime::Host
                 }),
-                &shells.last(),
+                &running,
             );
         }
     }
@@ -1361,6 +1366,7 @@ impl SessionSource for OpenCodeSource {
             (discovery, running.join().unwrap_or_default())
         });
         let mut discovery = discovery?;
+        let running = with_subagent_parents(&self.invocation.program, running);
         apply_background_shells(discovery.sessions.iter_mut(), &running);
         Ok(discovery)
     }
@@ -1502,7 +1508,11 @@ impl OpenCodeSource {
             }
         }
         if self.runtime == Runtime::Host {
-            apply_holds(self.holds.as_deref(), sessions.values_mut());
+            apply_holds(
+                self.holds.as_deref(),
+                sessions.values_mut(),
+                &inherited_subagent_holds(self.holds.as_deref(), &self.invocation.program),
+            );
         }
         let kept = sessions
             .values()
@@ -1844,7 +1854,11 @@ pub(super) fn background_screen_state(
     opencode_live::settle_from_screen(opencode_live::screen_state(&screen)?)
 }
 
-fn apply_holds<'a>(root: Option<&Path>, sessions: impl Iterator<Item = &'a mut AgentSession>) {
+fn apply_holds<'a>(
+    root: Option<&Path>,
+    sessions: impl Iterator<Item = &'a mut AgentSession>,
+    inherited: &BTreeMap<String, String>,
+) {
     let Some(root) = root else {
         return;
     };
@@ -1853,8 +1867,37 @@ fn apply_holds<'a>(root: Option<&Path>, sessions: impl Iterator<Item = &'a mut A
             crate::holds::live_hold(root, "opencode", &session.provider_session_id)
         {
             apply_hold(session, &reason);
+        } else if let Some(reason) = inherited.get(&session.provider_session_id) {
+            apply_hold(session, reason);
         }
     }
+}
+
+/// Holds and background shells recorded on a subagent belong to the dashboard
+/// row, which is the top-level session.
+fn inherited_subagent_holds(root: Option<&Path>, executable: &str) -> BTreeMap<String, String> {
+    let Some(root) = root else {
+        return BTreeMap::new();
+    };
+    let holds = crate::holds::live_holds(root, "opencode");
+    if holds.is_empty() {
+        return BTreeMap::new();
+    }
+    let ids = holds.keys().cloned().collect();
+    let mut inherited = BTreeMap::new();
+    for (child, parent) in super::opencode_db::subagent_root_by_id(executable, &ids) {
+        if let Some(reason) = holds.get(&child) {
+            inherited.entry(parent).or_insert_with(|| reason.clone());
+        }
+    }
+    inherited
+}
+
+fn with_subagent_parents(executable: &str, mut ids: BTreeSet<String>) -> BTreeSet<String> {
+    for parent in super::opencode_db::subagent_root_by_id(executable, &ids).into_values() {
+        ids.insert(parent);
+    }
+    ids
 }
 
 fn apply_background_shells<'a>(
