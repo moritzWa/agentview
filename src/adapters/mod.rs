@@ -167,9 +167,21 @@ where
     }
 }
 
+/// How long a source's last successful list stands in for it while its
+/// discovery fails. A slow or failing refresh then shows the previous rows
+/// with a warning instead of dropping every session of that provider.
+const LAST_GOOD_FOR: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
 #[derive(Clone, Default)]
 pub struct DiscoveryEngine {
     sources: Vec<Arc<dyn SessionSource>>,
+    last_good: Arc<std::sync::Mutex<BTreeMap<String, LastGood>>>,
+}
+
+struct LastGood {
+    request: DiscoveryRequest,
+    at: std::time::Instant,
+    discovery: SourceDiscovery,
 }
 
 impl DiscoveryEngine {
@@ -222,6 +234,45 @@ impl DiscoveryEngine {
                         .warnings
                         .push("provider discovery workers stopped unexpectedly".into());
                     break;
+                };
+                let result = match result {
+                    Ok(Ok(discovered)) => {
+                        if let Ok(mut last_good) = self.last_good.lock() {
+                            last_good.insert(
+                                label.clone(),
+                                LastGood {
+                                    request: request.clone(),
+                                    at: std::time::Instant::now(),
+                                    discovery: discovered.clone(),
+                                },
+                            );
+                        }
+                        Ok(Ok(discovered))
+                    }
+                    failed => {
+                        let error = match &failed {
+                            Ok(Err(error)) => format!("{error:#}"),
+                            _ => "provider discovery panicked".to_owned(),
+                        };
+                        let previous = self.last_good.lock().ok().and_then(|last_good| {
+                            last_good
+                                .get(&label)
+                                .filter(|last| {
+                                    last.request == *request && last.at.elapsed() < LAST_GOOD_FOR
+                                })
+                                .map(|last| (last.discovery.clone(), last.at.elapsed()))
+                        });
+                        match previous {
+                            Some((mut discovery, age)) => {
+                                discovery.warnings.push(format!(
+                                    "{label}: {error}; showing its list from {}s ago",
+                                    age.as_secs()
+                                ));
+                                Ok(Ok(discovery))
+                            }
+                            None => failed,
+                        }
+                    }
                 };
                 match result {
                     Ok(Ok(mut discovered)) => {
@@ -653,6 +704,51 @@ mod tests {
 
         assert!(snapshot.sessions.is_empty());
         assert_eq!(snapshot.warnings, vec!["broken: unavailable"]);
+    }
+
+    struct FlakySource {
+        fail: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl SessionSource for FlakySource {
+        fn label(&self) -> &str {
+            "flaky"
+        }
+
+        fn discover(&self, request: &DiscoveryRequest) -> Result<Vec<AgentSession>> {
+            if self.fail.load(std::sync::atomic::Ordering::SeqCst) {
+                anyhow::bail!("database query timed out");
+            }
+            CompletedHistorySource.discover(request)
+        }
+    }
+
+    #[test]
+    fn a_failing_refresh_keeps_the_sources_last_list() {
+        let fail = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut engine = DiscoveryEngine::new();
+        engine.add_source(FlakySource { fail: fail.clone() });
+        let request = DiscoveryRequest {
+            include_completed: true,
+            ..DiscoveryRequest::default()
+        };
+        let good = engine.discover(&request);
+        assert_eq!(good.sessions.len(), 5);
+
+        fail.store(true, std::sync::atomic::Ordering::SeqCst);
+        let kept = engine.discover(&request);
+        assert_eq!(kept.sessions, good.sessions);
+        assert_eq!(kept.warnings.len(), 1);
+        assert!(
+            kept.warnings[0].starts_with("flaky: database query timed out; showing its list from")
+        );
+
+        // A different request never borrows rows listed for another one.
+        let other = DiscoveryRequest {
+            history_limit: 2,
+            ..request.clone()
+        };
+        assert!(engine.discover(&other).sessions.is_empty());
     }
 
     #[test]

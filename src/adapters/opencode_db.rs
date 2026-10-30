@@ -73,7 +73,54 @@ impl DirectDbRunner {
         None
     }
 
+    /// Record listings (one `record` column, which every discovery query is)
+    /// read V2 and unmigrated V1 sessions in two passes and append the V1
+    /// rows. A V1 pass that fails or runs out of time costs only its own rows,
+    /// so stray V1 rows can never empty the list. Other queries, such as
+    /// aggregates, read both through the combined views.
     fn query(&self, sql: &str, timeout: Duration) -> Result<Query> {
+        let started = Instant::now();
+        let first = self.query_with(sql, timeout, Projection::V2Only)?;
+        let Answer {
+            query: Query::Rows(rows),
+            legacy: true,
+            ..
+        } = first
+        else {
+            return Ok(first.query);
+        };
+        if !first.record_listing {
+            return Ok(self.query_with(sql, timeout, Projection::Combined)?.query);
+        }
+        let remaining = timeout.saturating_sub(started.elapsed());
+        match self.query_with(sql, remaining, Projection::LegacyOnly) {
+            Ok(Answer {
+                query: Query::Rows(legacy),
+                ..
+            }) => {
+                if rows.is_empty() {
+                    return Ok(Query::Rows(legacy));
+                }
+                // Both passes print the same header; keep the first.
+                let mut out = rows;
+                if let Some((_, body)) = legacy.split_once('\n') {
+                    out.push_str(body);
+                }
+                Ok(Query::Rows(out))
+            }
+            Ok(_) => Ok(Query::Rows(rows)),
+            Err(error) => {
+                perf!(
+                    "opencode-db",
+                    "legacy-pass skipped after={} error={error:#}",
+                    crate::perf_log::ms(started.elapsed())
+                );
+                Ok(Query::Rows(rows))
+            }
+        }
+    }
+
+    fn query_with(&self, sql: &str, timeout: Duration, projection: Projection) -> Result<Answer> {
         let path = self
             .path()
             .ok_or_else(|| anyhow!("OpenCode database path is unknown"))?;
@@ -84,7 +131,8 @@ impl DirectDbRunner {
         .map_err(|error| anyhow!("open {}: {error}", path.display()))?;
         db.busy_timeout(Duration::from_secs(2))?;
         self.bound_query(&db, timeout);
-        let v2 = install_compatibility_views(&db)?;
+        let views = install_views(&db, projection)?;
+        let v2 = views.v2;
         // V2's chronological order is seq, not the message ID or wall clock.
         let sql = if v2 {
             sql.replace(
@@ -100,9 +148,21 @@ impl DirectDbRunner {
         };
         let mut statement = match db.prepare(&sql) {
             Ok(statement) => statement,
-            Err(error) => return Ok(Query::Unsupported(error.to_string())),
+            Err(error) => {
+                return Ok(Answer {
+                    query: Query::Unsupported(error.to_string()),
+                    legacy: views.legacy,
+                    record_listing: false,
+                })
+            }
         };
-        Ok(Query::Rows(render_tsv(&mut statement)?))
+        let record_listing = statement.column_count() == 1
+            && statement.column_name(0).is_ok_and(|name| name == "record");
+        Ok(Answer {
+            query: Query::Rows(render_tsv(&mut statement)?),
+            legacy: views.legacy,
+            record_listing,
+        })
     }
 
     fn bound_query(&self, db: &Connection, timeout: Duration) {
@@ -330,35 +390,99 @@ fn plausible_session_id(id: &str) -> bool {
             .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
 }
 
+/// Which rows the connection-local views expose.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Projection {
+    /// V2 sessions and unmigrated V1 ones, in one UNION ALL per view.
+    Combined,
+    /// Only V2 sessions. Plain views that SQLite flattens into the caller's
+    /// query, so correlated latest-message lookups use the indexes.
+    V2Only,
+    /// Only unmigrated V1 sessions, also as plain flattenable views.
+    LegacyOnly,
+}
+
+#[derive(Clone, Copy)]
+struct Views {
+    v2: bool,
+    /// Unmigrated V1 sessions exist alongside V2 history.
+    legacy: bool,
+}
+
 /// Connection-local read projections, never migrations of OpenCode's store.
 /// Migrated IDs prefer V2; untouched V1 sessions remain discoverable in the
 /// same database. Fork provenance is deliberately not a parent relationship.
 pub(crate) fn install_compatibility_views(db: &Connection) -> Result<bool> {
+    Ok(install_views(db, Projection::Combined)?.v2)
+}
+
+fn install_views(db: &Connection, projection: Projection) -> Result<Views> {
     if !has_table(db, "session_v2")? {
-        return Ok(false);
+        return Ok(Views {
+            v2: false,
+            legacy: false,
+        });
     }
-    // Keeping empty legacy UNION branches prevents indexed latest-message
-    // lookups on fully migrated stores and scans large historical payloads.
-    let legacy = has_table(db, "session")?
-        && db.query_row(
-            "SELECT EXISTS(SELECT 1 FROM main.session WHERE id NOT IN (SELECT id FROM main.session_v2))",
+    // Unmigrated sessions are listed once in a connection-local table, and
+    // legacy views select only their rows through the session_id indexes.
+    let legacy = has_table(db, "session")? && {
+        db.execute_batch(
+            "CREATE TEMP TABLE legacy_session(id TEXT PRIMARY KEY);
+             INSERT INTO temp.legacy_session
+             SELECT id FROM main.session WHERE id NOT IN (SELECT id FROM main.session_v2);",
+        )?;
+        db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM temp.legacy_session)",
             [],
             |row| row.get::<_, bool>(0),
-        )?;
-    let legacy_session = if legacy {
-        "UNION ALL SELECT id, title, project_id, directory, parent_id, time_created, time_updated, time_archived FROM main.session WHERE id NOT IN (SELECT id FROM main.session_v2)"
-    } else {
-        ""
+        )?
     };
-    let legacy_message = if legacy && has_table(db, "message")? {
-        "UNION ALL SELECT id, session_id, time_created, time_updated, data, time_created AS sort_seq FROM main.message WHERE session_id NOT IN (SELECT id FROM main.session_v2)"
+    let views = Views { v2: true, legacy };
+    let legacy_session_sql = "SELECT id, title, project_id, directory, parent_id, time_created, time_updated, time_archived FROM main.session WHERE id IN temp.legacy_session";
+    let legacy_message_sql = "SELECT id, session_id, time_created, time_updated, data, time_created AS sort_seq FROM main.message WHERE session_id IN temp.legacy_session";
+    let legacy_part_sql = "SELECT id, message_id, session_id, time_created, time_updated, data FROM main.part WHERE session_id IN temp.legacy_session";
+    if projection == Projection::LegacyOnly {
+        let empty = |columns: &str| format!("SELECT {columns} WHERE 0");
+        let message = if legacy && has_table(db, "message")? {
+            legacy_message_sql.to_owned()
+        } else {
+            empty("NULL AS id, NULL AS session_id, NULL AS time_created, NULL AS time_updated, NULL AS data, NULL AS sort_seq")
+        };
+        let part = if legacy && has_table(db, "part")? {
+            legacy_part_sql.to_owned()
+        } else {
+            empty("NULL AS id, NULL AS message_id, NULL AS session_id, NULL AS time_created, NULL AS time_updated, NULL AS data")
+        };
+        let session = if legacy {
+            legacy_session_sql.to_owned()
+        } else {
+            empty("NULL AS id, NULL AS title, NULL AS project_id, NULL AS directory, NULL AS parent_id, NULL AS time_created, NULL AS time_updated, NULL AS time_archived")
+        };
+        db.execute_batch(&format!(
+            "CREATE TEMP VIEW session AS {session};
+             CREATE TEMP VIEW message AS {message};
+             CREATE TEMP VIEW part AS {part};"
+        ))?;
+        return Ok(views);
+    }
+    // Any UNION ALL branch, even an empty one, stops SQLite from flattening
+    // the view, and every correlated lookup then scans all of V2's history
+    // (a 75 ms listing became a minute). Branches only for Combined.
+    let union = projection == Projection::Combined && legacy;
+    let legacy_session = if union {
+        format!("UNION ALL {legacy_session_sql}")
     } else {
-        ""
+        String::new()
     };
-    let legacy_part = if legacy && has_table(db, "part")? {
-        "UNION ALL SELECT id, message_id, session_id, time_created, time_updated, data FROM main.part WHERE session_id NOT IN (SELECT id FROM main.session_v2)"
+    let legacy_message = if union && has_table(db, "message")? {
+        format!("UNION ALL {legacy_message_sql}")
     } else {
-        ""
+        String::new()
+    };
+    let legacy_part = if union && has_table(db, "part")? {
+        format!("UNION ALL {legacy_part_sql}")
+    } else {
+        String::new()
     };
     db.execute_batch(&format!(
         r#"
@@ -394,7 +518,13 @@ pub(crate) fn install_compatibility_views(db: &Connection) -> Result<bool> {
         {legacy_part};
     "#
     ))?;
-    Ok(true)
+    Ok(views)
+}
+
+struct Answer {
+    query: Query,
+    legacy: bool,
+    record_listing: bool,
 }
 
 enum Query {
@@ -705,13 +835,15 @@ mod tests {
         for mixed in [false, true] {
             let (_dir, inner, runner) = v2_fixture(mixed);
             let out = runner.run(&db_request("SELECT json_object('id',id,'title',title,'parent',parent_id,'directory',directory) AS record FROM session ORDER BY id")).unwrap();
-            let records = out
+            let mut records = out
                 .stdout_text()
                 .unwrap()
                 .lines()
                 .skip(1)
                 .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
                 .collect::<Vec<_>>();
+            // Unmigrated V1 records are appended after the V2 ones.
+            records.sort_by_key(|record| record["id"].as_str().unwrap().to_owned());
             assert_eq!(records.len(), if mixed { 4 } else { 3 });
             assert_eq!(records[0]["parent"], "root");
             assert_eq!(records[0]["title"], "New session");
@@ -940,5 +1072,114 @@ mod tests {
         let roots: std::collections::BTreeSet<String> =
             ["root"].into_iter().map(str::to_owned).collect();
         assert_eq!(ancestor_roots(&db, &ids), roots);
+    }
+
+    /// A V2 history with a few stray V1 rows, the shape a V1 test run
+    /// sharing the store leaves behind.
+    fn large_mixed_store(broken_legacy: bool) -> (tempfile::TempDir, DirectDbRunner) {
+        let (dir, inner, _) = v2_fixture(true);
+        let db = Connection::open(&inner.db).unwrap();
+        db.execute_batch(
+            "CREATE INDEX sm_seq ON session_message(session_id, seq);
+             CREATE INDEX m_session ON message(session_id, time_created, id);
+             CREATE INDEX p_message ON part(message_id, id);
+             CREATE INDEX p_session ON part(session_id);
+             BEGIN;",
+        )
+        .unwrap();
+        for session in 0..50 {
+            db.execute(
+                "INSERT INTO session_v2 VALUES (?1, 'bulk', 'p', '/bulk', NULL, NULL, ?2, ?2, NULL)",
+                rusqlite::params![format!("bulk{session}"), 20_000 + session],
+            )
+            .unwrap();
+            for seq in 0..40 {
+                db.execute(
+                    "INSERT INTO session_message VALUES (?1, ?2, 'assistant', ?3, ?3, ?3, '{\"content\":[{\"type\":\"text\",\"text\":\"padding padding padding\"}]}')",
+                    rusqlite::params![format!("bulk{session}-{seq}"), format!("bulk{session}"), seq],
+                )
+                .unwrap();
+            }
+        }
+        db.execute_batch("COMMIT;").unwrap();
+        if broken_legacy {
+            // A V1 schema this build cannot project: the legacy pass fails.
+            db.execute_batch("DROP TABLE message; CREATE TABLE message(id TEXT, session_id TEXT);")
+                .unwrap();
+        }
+        let runner = DirectDbRunner::new(inner.clone(), "opencode".into());
+        (dir, runner)
+    }
+
+    fn listing(runner: &DirectDbRunner, timeout: Duration) -> Result<Vec<String>> {
+        let mut request = db_request(&format!(
+            "{} ORDER BY s.time_updated DESC LIMIT 2000",
+            super::super::opencode::GLOBAL_SESSION_ROWS
+        ));
+        request.timeout = timeout;
+        let out = runner.run(&request)?;
+        Ok(out
+            .stdout_text()?
+            .lines()
+            .skip(1)
+            .map(|line| {
+                serde_json::from_str::<serde_json::Value>(line).unwrap()["id"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect())
+    }
+
+    #[test]
+    fn stray_v1_rows_are_listed_once_after_v2() {
+        let (_dir, runner) = large_mixed_store(false);
+        let ids = listing(&runner, Duration::from_secs(3)).unwrap();
+        // 50 bulk + root + fork from V2, and the unmigrated V1 session.
+        assert_eq!(ids.len(), 53);
+        assert_eq!(ids.last().unwrap(), "legacy");
+        assert_eq!(ids.iter().filter(|id| *id == "root").count(), 1);
+    }
+
+    /// The listing's correlated latest-message lookups must stay index
+    /// searches. A V1 UNION ALL branch turns each into a scan of all of V2's
+    /// history, which took the real 27 GB store from 75 ms to over a minute.
+    #[test]
+    fn split_passes_use_flattened_indexed_views() {
+        let (dir, _runner) = large_mixed_store(false);
+        let sql = format!(
+            "EXPLAIN QUERY PLAN {} ORDER BY s.time_updated DESC LIMIT 100",
+            super::super::opencode::GLOBAL_SESSION_ROWS
+        );
+        let plan = |projection| {
+            let db = Connection::open_with_flags(
+                dir.path().join("channel-override.db"),
+                OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )
+            .unwrap();
+            assert!(install_views(&db, projection).unwrap().legacy);
+            let mut statement = db.prepare(&sql).unwrap();
+            let rows = statement
+                .query_map([], |row| row.get::<_, String>(3))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap();
+            rows.join("\n")
+        };
+        let combined = plan(Projection::Combined);
+        assert!(combined.contains("SCAN main.session_message"), "{combined}");
+        for projection in [Projection::V2Only, Projection::LegacyOnly] {
+            let plan = plan(projection);
+            assert!(!plan.contains("SCAN main.session_message"), "{plan}");
+            assert!(!plan.contains("SCAN main.message"), "{plan}");
+        }
+    }
+
+    #[test]
+    fn a_failing_v1_pass_still_lists_every_v2_session() {
+        let (_dir, runner) = large_mixed_store(true);
+        let ids = listing(&runner, Duration::from_secs(3)).unwrap();
+        assert_eq!(ids.len(), 52);
+        assert!(!ids.contains(&"legacy".to_owned()));
     }
 }
