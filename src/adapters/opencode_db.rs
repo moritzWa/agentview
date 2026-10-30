@@ -4,9 +4,10 @@
 //! mostly for process startup. Any command this cannot answer, or any query
 //! that fails to open or prepare, still runs the real CLI.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Result};
@@ -203,6 +204,130 @@ pub(crate) fn open_read_only(executable: &str) -> Result<(Connection, bool)> {
     runner.bound_query(&db, Duration::from_secs(4));
     let v2 = install_compatibility_views(&db)?;
     Ok((db, v2))
+}
+
+/// Top-level sessions that own one of `ids`. A subagent is its own session
+/// (`parent_id` set) and is not a dashboard row, so the row the user sees is
+/// the root. Empty under unit tests: resolving the database shells out to the
+/// developer's live OpenCode.
+pub(crate) fn subagent_parents(executable: &str, ids: &BTreeSet<String>) -> BTreeSet<String> {
+    if cfg!(test) || ids.is_empty() {
+        return BTreeSet::new();
+    }
+    let Some(db) = open_history(executable) else {
+        return BTreeSet::new();
+    };
+    ancestor_roots(&db, ids)
+}
+
+fn open_history(executable: &str) -> Option<Connection> {
+    let path = cached_database_path(executable)?;
+    let db = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .ok()?;
+    let _ = db.busy_timeout(Duration::from_millis(100));
+    Some(db)
+}
+
+/// The CLI path lookup costs about half a second. The running-turn poll calls
+/// this every second, so the resolved path is kept for the process.
+fn cached_database_path(executable: &str) -> Option<PathBuf> {
+    static CACHE: OnceLock<Mutex<BTreeMap<String, PathBuf>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(BTreeMap::new()));
+    if let Ok(guard) = cache.lock() {
+        if let Some(path) = guard.get(executable) {
+            return Some(path.clone());
+        }
+    }
+    let runner = DirectDbRunner::new(
+        Arc::new(crate::process::ProcessRunner),
+        executable.to_owned(),
+    );
+    let path = runner.path()?.clone();
+    if let Ok(mut guard) = cache.lock() {
+        guard.insert(executable.to_owned(), path.clone());
+    }
+    Some(path)
+}
+
+/// Roots of `ids`: the session with no parent at the top of each chain.
+/// A running subagent, or a subagent of one, keeps that root working.
+fn ancestor_roots(db: &Connection, ids: &BTreeSet<String>) -> BTreeSet<String> {
+    let v2 = has_table(db, "session_v2").unwrap_or(false);
+    let v1 = has_table(db, "session").unwrap_or(false);
+    if !v2 && !v1 {
+        return BTreeSet::new();
+    }
+    let mut roots = BTreeSet::new();
+    for id in ids.iter().take(64) {
+        if let Some(root) = root_parent(db, id, v2, v1) {
+            roots.insert(root);
+        }
+    }
+    roots
+}
+
+fn root_parent(db: &Connection, id: &str, v2: bool, v1: bool) -> Option<String> {
+    if !plausible_session_id(id) {
+        return None;
+    }
+    let mut current = id.to_owned();
+    let mut root = None;
+    let mut seen = BTreeSet::from([current.clone()]);
+    for _ in 0..8 {
+        let Some(parent) = parent_of(db, &current, v2, v1) else {
+            break;
+        };
+        if !seen.insert(parent.clone()) {
+            break;
+        }
+        root = Some(parent.clone());
+        current = parent;
+    }
+    root
+}
+
+fn parent_of(db: &Connection, id: &str, v2: bool, v1: bool) -> Option<String> {
+    if v2 {
+        match lookup_parent(db, "session_v2", id) {
+            ParentLookup::Child(parent) => return Some(parent),
+            ParentLookup::Top => return None,
+            ParentLookup::Missing => {}
+        }
+    }
+    if v1 {
+        if let ParentLookup::Child(parent) = lookup_parent(db, "session", id) {
+            return Some(parent);
+        }
+    }
+    None
+}
+
+enum ParentLookup {
+    Missing,
+    Top,
+    Child(String),
+}
+
+fn lookup_parent(db: &Connection, table: &str, id: &str) -> ParentLookup {
+    let sql = format!("SELECT parent_id FROM {table} WHERE id=?1");
+    match db.query_row(&sql, [id], |row| row.get::<_, Option<String>>(0)) {
+        Ok(Some(parent)) if plausible_session_id(&parent) && parent != id => {
+            ParentLookup::Child(parent)
+        }
+        Ok(_) => ParentLookup::Top,
+        Err(_) => ParentLookup::Missing,
+    }
+}
+
+fn plausible_session_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
 }
 
 /// Connection-local read projections, never migrations of OpenCode's store.
@@ -778,5 +903,42 @@ mod tests {
             .query("SELECT id FROM session", Duration::from_secs(1))
             .is_ok());
         assert_eq!(inner.calls.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_running_subagent_resolves_to_its_top_level_session() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE session_v2(id TEXT PRIMARY KEY, parent_id TEXT);
+             INSERT INTO session_v2 VALUES
+                ('root', NULL),
+                ('child', 'root'),
+                ('grandchild', 'child'),
+                ('other', NULL);",
+        )
+        .unwrap();
+        let ids = ["child", "other", "grandchild", "missing", "weird id"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        let roots: std::collections::BTreeSet<String> =
+            ["root"].into_iter().map(str::to_owned).collect();
+        assert_eq!(ancestor_roots(&db, &ids), roots);
+    }
+
+    #[test]
+    fn a_v1_subagent_resolves_through_the_session_table() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE session(id TEXT PRIMARY KEY, parent_id TEXT);
+             CREATE TABLE session_v2(id TEXT PRIMARY KEY, parent_id TEXT);
+             INSERT INTO session_v2 VALUES ('root', NULL);
+             INSERT INTO session VALUES ('root', NULL), ('child', 'root');",
+        )
+        .unwrap();
+        let ids = ["child"].into_iter().map(str::to_owned).collect();
+        let roots: std::collections::BTreeSet<String> =
+            ["root"].into_iter().map(str::to_owned).collect();
+        assert_eq!(ancestor_roots(&db, &ids), roots);
     }
 }

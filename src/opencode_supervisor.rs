@@ -427,6 +427,12 @@ impl OpenCodeSupervisor {
                 }
             }
         }
+        let running_now = statuses_by_directory
+            .values()
+            .flat_map(running_session_ids)
+            .collect::<BTreeSet<_>>();
+        let busy_parents =
+            crate::adapters::opencode_db::subagent_parents(&self.executable, &running_now);
         Ok(record
             .sessions
             .values()
@@ -450,10 +456,15 @@ impl OpenCodeSupervisor {
                         (state, raw_state) = (SessionState::NeedsInput, "permission requested");
                     } else if questions.contains(&owned.id) {
                         (state, raw_state) = (SessionState::NeedsInput, "question asked");
-                    } else if state == SessionState::Completed && session["outcome"] == "failed" {
+                    } else if state == SessionState::Completed
+                        && !busy_parents.contains(&owned.id)
+                        && session["outcome"] == "failed"
+                    {
                         (state, raw_state) = (SessionState::NeedsInput, "turn failed");
                     }
                 }
+                (state, raw_state) =
+                    state_while_subagent_runs(state, raw_state, busy_parents.contains(&owned.id));
                 let mut snapshot = self.snapshot_with_state(&record, owned, state);
                 snapshot.raw_state = raw_state;
                 Some(snapshot)
@@ -774,7 +785,9 @@ impl OpenCodeSupervisor {
             return Ok(None);
         }
         let statuses = self.request_json(&record, "GET", "/session/status", None)?;
-        Ok(Some(running_session_ids(&statuses).into_iter().collect()))
+        let mut running: BTreeSet<String> = running_session_ids(&statuses).into_iter().collect();
+        include_subagent_parents(&self.executable, &mut running);
+        Ok(Some(running))
     }
 
     /// Shell commands the live server is still running in `directories`, by
@@ -831,6 +844,7 @@ impl OpenCodeSupervisor {
         if record.api == ApiVersion::V2 {
             let statuses = self.request_json(&record, "GET", "/session/status", None)?;
             activity.running.extend(running_session_ids(&statuses));
+            include_subagent_parents(&self.executable, &mut activity.running);
             let mut locations = directories.clone();
             for id in &activity.running {
                 let session = self.request_json(
@@ -894,6 +908,7 @@ impl OpenCodeSupervisor {
             }
             activity.running.extend(running);
         }
+        include_subagent_parents(&self.executable, &mut activity.running);
         Ok(activity)
     }
 
@@ -985,9 +1000,7 @@ impl OpenCodeSupervisor {
         let Some(record) = load_record(&self.record_path, &self.state_dir)? else {
             return Ok(());
         };
-        if record.api != ApiVersion::V2
-            || service_file_env().is_none()
-        {
+        if record.api != ApiVersion::V2 || service_file_env().is_none() {
             return Ok(());
         }
         if !verify_server(&record)? {
@@ -1092,9 +1105,7 @@ impl OpenCodeSupervisor {
         let pending_path = self.state_dir.join(RESTART_PENDING_FILE);
         let mut unresumed = Vec::new();
         for turn in pending {
-            if record.api == ApiVersion::V2
-                && service_file_env().is_some()
-            {
+            if record.api == ApiVersion::V2 && service_file_env().is_some() {
                 // Managed V2 boot already resumes durable execution claims,
                 // including children and interrupted tools. Injecting another
                 // `continue` leaves a duplicate steer queued behind that turn.
@@ -1222,9 +1233,7 @@ impl OpenCodeSupervisor {
         pending: &mut Vec<InterruptedTurn>,
         awaiting_input: &[String],
     ) -> Result<()> {
-        if record.api != ApiVersion::V2
-            || service_file_env().is_some()
-        {
+        if record.api != ApiVersion::V2 || service_file_env().is_some() {
             return Ok(());
         }
         let mut directories = record
@@ -1470,8 +1479,7 @@ impl OpenCodeSupervisor {
                         ApiVersion::V1
                     }
                 });
-            let service_mode = api == ApiVersion::V2
-                && service_file_env().is_some();
+            let service_mode = api == ApiVersion::V2 && service_file_env().is_some();
             let (port, username, password) = match endpoint {
                 Some(record) => (
                     record.port,
@@ -1912,6 +1920,27 @@ pub struct OpenCodeStopReport {
     pub saved: Vec<String>,
     /// Sessions that were blocked on a question or permission prompt.
     pub awaiting_input: Vec<String>,
+}
+
+/// A subagent runs as its own session. The dashboard row is the top-level
+/// session, so that row stays in the running set while the subagent does.
+fn include_subagent_parents(executable: &str, running: &mut BTreeSet<String>) {
+    let parents = crate::adapters::opencode_db::subagent_parents(executable, running);
+    running.extend(parents);
+}
+
+/// The parent's own turn is finished, and a subagent it started is still
+/// running. A question or permission on the parent still needs the user first.
+fn state_while_subagent_runs(
+    state: SessionState,
+    raw_state: &'static str,
+    subagent_running: bool,
+) -> (SessionState, &'static str) {
+    if subagent_running && state == SessionState::Completed {
+        (SessionState::Working, "background task")
+    } else {
+        (state, raw_state)
+    }
 }
 
 fn running_session_ids(statuses: &Value) -> Vec<String> {
@@ -3908,6 +3937,26 @@ mod tests {
         assert_eq!(
             state_from_statuses(&statuses, "missing"),
             SessionState::Completed
+        );
+    }
+
+    #[test]
+    fn a_finished_parent_with_a_running_subagent_is_working() {
+        assert_eq!(
+            state_while_subagent_runs(SessionState::Completed, "managed_server", true),
+            (SessionState::Working, "background task")
+        );
+        assert_eq!(
+            state_while_subagent_runs(SessionState::NeedsInput, "question asked", true),
+            (SessionState::NeedsInput, "question asked")
+        );
+        assert_eq!(
+            state_while_subagent_runs(SessionState::Working, "managed_server", true),
+            (SessionState::Working, "managed_server")
+        );
+        assert_eq!(
+            state_while_subagent_runs(SessionState::Completed, "managed_server", false),
+            (SessionState::Completed, "managed_server")
         );
     }
 
