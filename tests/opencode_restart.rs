@@ -96,6 +96,72 @@ fn restart_keeps_the_endpoint_and_resumes_only_interrupted_top_level_turns() {
     supervisor.shutdown_server().unwrap();
 }
 
+fn two_running_turns(directory: &Path) -> OpenCodeSupervisor {
+    let fake = directory.join("fake-opencode");
+    write_fake_opencode(&fake);
+    let supervisor =
+        OpenCodeSupervisor::with_state_dir(fake.display().to_string(), directory.join("state"))
+            .unwrap();
+    supervisor.launch("owned task", directory).unwrap();
+    let cwd = directory.display().to_string();
+    update_state(directory, |state| {
+        state["sessions"]["ses_other"] = json!({"id": "ses_other", "directory": cwd, "title": "ses_other", "time": {"created": 1, "updated": 2}});
+        state["statuses"]["ses_other"] = json!("busy");
+        state["messages"]["ses_other"] = json!([]);
+    });
+    supervisor
+}
+
+#[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "the Python fake server misses the 10s readiness window on hosted macOS runners"
+)]
+fn waiting_for_idle_skips_the_caller_and_gives_up_at_the_timeout() {
+    let directory = tempdir().unwrap();
+    let supervisor = two_running_turns(directory.path());
+
+    let started = Instant::now();
+    let mut announced = Vec::new();
+    let running = supervisor
+        .wait_until_idle(Some("ses_owned"), Duration::from_secs(1), |ids| {
+            announced.push(ids.to_vec())
+        })
+        .unwrap();
+
+    assert_eq!(running, ["ses_other"], "the caller must not be waited for");
+    assert_eq!(announced, [vec!["ses_other".to_string()]]);
+    assert!(started.elapsed() >= Duration::from_secs(1));
+    supervisor.shutdown_server().unwrap();
+}
+
+#[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "the Python fake server misses the 10s readiness window on hosted macOS runners"
+)]
+fn waiting_for_idle_returns_as_soon_as_the_other_turns_finish() {
+    let directory = tempdir().unwrap();
+    let supervisor = two_running_turns(directory.path());
+
+    let finisher = {
+        let path = directory.path().to_path_buf();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(1500));
+            update_state(&path, |state| state["statuses"]["ses_other"] = json!("idle"));
+        })
+    };
+    let started = Instant::now();
+    let running = supervisor
+        .wait_until_idle(Some("ses_owned"), Duration::from_secs(60), |_| {})
+        .unwrap();
+    finisher.join().unwrap();
+
+    assert!(running.is_empty(), "{running:?}");
+    assert!(started.elapsed() < Duration::from_secs(30));
+    supervisor.shutdown_server().unwrap();
+}
+
 /// Launch one owned session, then kill the server the way a reboot or crash
 /// does, leaving `ses_cut` and `ses_asked` with replies that never completed.
 fn server_killed_mid_turn(directory: &Path) -> (OpenCodeSupervisor, u32) {

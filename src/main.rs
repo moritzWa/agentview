@@ -167,7 +167,16 @@ enum OpenCodeCommand {
     HandoffResume { handoff_id: String },
     /// Restart on the same port and resume interrupted work. Managed V2 uses
     /// native recovery rather than injecting another `continue`.
-    Restart,
+    Restart {
+        /// First wait for running turns and background shells to finish, so
+        /// attached windows are not cut off mid-turn and no shell is killed.
+        /// The session named by `CLAUDE_CODE_SESSION_ID` is not waited for.
+        #[arg(long)]
+        when_idle: bool,
+        /// With `--when-idle`, seconds to wait before restarting anyway.
+        #[arg(long, default_value_t = 600, requires = "when_idle")]
+        wait_timeout: u64,
+    },
     /// Stop the server and remember the turns it cut off; the next server
     /// start sends them `continue`. A reboot is detected without this.
     Stop,
@@ -1191,11 +1200,37 @@ fn run_opencode_command(command: &OpenCodeCommand, cli: &Cli) -> Result<()> {
             println!();
             Ok(())
         }
-        OpenCodeCommand::Restart => {
+        OpenCodeCommand::Restart {
+            when_idle,
+            wait_timeout,
+        } => {
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             {
-                let report =
-                    OpenCodeSupervisor::host(cli.opencode_bin.clone())?.restart_server()?;
+                let supervisor = OpenCodeSupervisor::host(cli.opencode_bin.clone())?;
+                if *when_idle {
+                    let caller = std::env::var("CLAUDE_CODE_SESSION_ID").ok();
+                    let still_running = supervisor.wait_until_idle(
+                        caller.as_deref(),
+                        Duration::from_secs(*wait_timeout),
+                        |running| {
+                            eprintln!(
+                                "Waiting for {} session(s) with a running turn or background shell before restarting: {}",
+                                running.len(),
+                                running
+                                    .iter()
+                                    .map(|id| sanitize_cli_text(id))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            )
+                        },
+                    )?;
+                    if !still_running.is_empty() {
+                        eprintln!(
+                            "Still busy after {wait_timeout}s; restarting anyway. Turns resume afterwards; background shells are killed and not restarted."
+                        );
+                    }
+                }
+                let report = supervisor.restart_server()?;
                 if cli.json {
                     serde_json::to_writer_pretty(io::stdout().lock(), &report)?;
                     println!();
