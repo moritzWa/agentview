@@ -49,9 +49,11 @@ const VOICE_LINE_HOLD: Duration = Duration::from_millis(3000);
 /// What Voice Mode gives a provider's own view: a key that starts or ends a
 /// call, and a way to hear that something about the call changed.
 pub struct VoiceHook {
-    /// Called on the key; returns what to show on the bottom row.
-    pub toggle: Box<dyn Fn() -> String + Send + Sync>,
-    /// Returns a message when the call changed (it ended, or failed).
+    /// Called on the key; returns something to show on the bottom row only
+    /// when there is something to act on (no key, a failure).
+    pub toggle: Box<dyn Fn() -> Option<String> + Send + Sync>,
+    /// Returns a message when something needs attention (a failure, a
+    /// microphone that is not allowed); ordinary starts and ends are silent.
     pub poll: Box<dyn Fn() -> Option<String> + Send + Sync>,
     /// What to show all the time while a call is on, such as `● voice 2:13`.
     pub badge: Box<dyn Fn() -> Option<String> + Send + Sync>,
@@ -1028,9 +1030,10 @@ fn bridge_session(
                             }
                             InputAction::Voice => {
                                 if let Some(hook) = VOICE_HOOK.get() {
-                                    let message = (hook.toggle)();
-                                    write_status_line(&mut stdout, &screen, &message)?;
-                                    voice_line_until = Some(Instant::now() + VOICE_LINE_HOLD);
+                                    if let Some(message) = (hook.toggle)() {
+                                        write_status_line(&mut stdout, &screen, &message)?;
+                                        voice_line_until = Some(Instant::now() + VOICE_LINE_HOLD);
+                                    }
                                 }
                             }
                             InputAction::Redraw => {
@@ -2362,7 +2365,7 @@ fn write_return_hint(
     let message = truncate_to_columns(&message, usize::from(cols));
     write!(
         output,
-        "\x1b7\x1b[{};1H\x1b[2K\x1b[30;46m{}\x1b[0m\x1b8",
+        "\x1b7\x1b[{};1H\x1b[2K\x1b[34m{}\x1b[0m\x1b8",
         rows.max(1),
         message
     )?;
@@ -2463,7 +2466,7 @@ fn draw_voice_badge(
     }
     write!(
         output,
-        "\x1b7\x1b[{};{}H\x1b[30;42m{}\x1b[0m\x1b8",
+        "\x1b7\x1b[{};{}H\x1b[34m{}\x1b[0m\x1b8",
         row + 1,
         column + 1,
         label
@@ -2493,7 +2496,7 @@ fn write_status_line(output: &mut impl Write, screen: &vt100::Parser, message: &
     let message = truncate_to_columns(&format!(" {message}"), usize::from(cols));
     write!(
         output,
-        "\x1b7\x1b[{};1H\x1b[2K\x1b[30;46m{}\x1b[0m\x1b8",
+        "\x1b7\x1b[{};1H\x1b[2K\x1b[34m{}\x1b[0m\x1b8",
         rows.max(1),
         message
     )?;

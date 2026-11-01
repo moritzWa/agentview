@@ -54,6 +54,8 @@ pub struct PanelStatus {
     pub lines: Vec<Line>,
     /// Why the last call ended, or something the person should do.
     pub notice: Option<String>,
+    /// The notice only says an ordinary end ("You ended the call"): nothing to act on.
+    pub quiet: bool,
 }
 
 impl PanelStatus {
@@ -63,6 +65,7 @@ impl PanelStatus {
             seconds: 0,
             lines: Vec::new(),
             notice: None,
+            quiet: false,
         }
     }
 }
@@ -125,6 +128,7 @@ struct State {
     pages: u64,
     active: Option<ActiveCall>,
     notice: Option<String>,
+    quiet: bool,
 }
 
 /// Gets a browser onto the voice page; a hidden one comes back to be stopped later.
@@ -202,7 +206,7 @@ impl VoiceService {
     /// Starts a call, or ends the one in progress.
     pub fn toggle(&self) -> Toggle {
         if self.inner.lock().active.is_some() {
-            self.inner.finish("You ended the call.", true);
+            self.inner.finish_quietly("You ended the call.", true);
             return Toggle::Ended;
         }
         if (self.inner.key)().is_none() {
@@ -219,6 +223,7 @@ impl VoiceService {
         match &state.active {
             None => PanelStatus {
                 notice: state.notice.clone(),
+                quiet: state.quiet,
                 ..PanelStatus::idle()
             },
             Some(active) => PanelStatus {
@@ -232,6 +237,7 @@ impl VoiceService {
                     .map_or(0, |since| since.elapsed().as_secs()),
                 lines: active.call.lines(),
                 notice: state.notice.clone(),
+                quiet: state.quiet,
             },
         }
     }
@@ -303,6 +309,7 @@ impl Inner {
         tools.prime();
         let now = Instant::now();
         state.notice = None;
+        state.quiet = false;
         state.active = Some(ActiveCall {
             stage: Stage::Waiting,
             since: now,
@@ -353,11 +360,18 @@ impl Inner {
     }
 
     /// Ends the call: tells OpenAI to close, then the page to hang up.
+    /// An ordinary end the person asked for: it is noted, not announced.
+    fn finish_quietly(&self, reason: &str, notify_page: bool) {
+        self.finish(reason, notify_page);
+        self.lock().quiet = true;
+    }
+
     fn finish(&self, reason: &str, notify_page: bool) {
         let mut state = self.lock();
         let Some(mut active) = state.active.take() else {
             return;
         };
+        state.quiet = false;
         state.notice = Some(reason.to_owned());
         log("end", json!({"reason": reason}));
         if let Some(child) = active.browser.take() {
@@ -447,7 +461,7 @@ impl Inner {
                     && Instant::now().duration_since(active.last_heard) >= Duration::from_secs(5)
                 {
                     drop(state);
-                    self.finish("Ended at your request.", true);
+                    self.finish_quietly("Ended at your request.", true);
                     return;
                 }
                 let tools = active.tools.clone();
@@ -586,7 +600,7 @@ impl Inner {
                     }
                     state.notice = None;
                 }
-                Action::Closed => self.finish("The call ended.", false),
+                Action::Closed => self.finish_quietly("The call ended.", false),
                 Action::Failed(message) => {
                     self.lock().notice = Some(message);
                 }
@@ -633,7 +647,7 @@ impl Inner {
                         if calls.iter().any(|call| call.name == "end_call") {
                             // Long enough for the goodbye to be said.
                             thread::sleep(Duration::from_secs(6));
-                            this.finish("Ended at your request.", true);
+                            this.finish_quietly("Ended at your request.", true);
                         }
                     });
                 }
