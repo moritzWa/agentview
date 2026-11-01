@@ -1156,6 +1156,7 @@ mod tests {
             .contains("Merged."));
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_hidden_browser_starts_with_the_call_and_stops_with_it() {
         let started = Arc::new(AtomicUsize::new(0));
@@ -1189,6 +1190,7 @@ mod tests {
         until(|| unsafe { libc::kill(pid as libc::pid_t, 0) } != 0);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_hidden_browser_that_dies_ends_the_call() {
         let host = FakeHost::with(Vec::new());
