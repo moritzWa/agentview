@@ -140,7 +140,13 @@ pub fn hint_seen() -> bool {
 
 pub fn mark_hint_seen() {
     if let Ok(dir) = state_dir() {
-        let _ = std::fs::create_dir_all(&dir);
+        if !dir.exists() && std::fs::create_dir_all(&dir).is_ok() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+            }
+        }
         let _ = std::fs::write(dir.join("hint-seen"), b"");
     }
 }
