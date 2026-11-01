@@ -591,23 +591,14 @@ impl Inner {
                     self.lock().notice = Some(message);
                 }
                 Action::Run { calls, stale } => {
-                    let (tools, outgoing, heard) = {
+                    let (tools, outgoing) = {
                         let state = self.lock();
                         let Some(active) = state.active.as_ref() else {
                             return;
                         };
-                        let heard = active
-                            .call
-                            .lines()
-                            .into_iter()
-                            .rev()
-                            .find(|line| line.who == call::Who::You)
-                            .map(|line| line.text)
-                            .unwrap_or_default();
                         (
                             active.tools.clone(),
                             state.page.as_ref().map(|page| page.outgoing.clone()),
-                            heard,
                         )
                     };
                     let Some(outgoing) = outgoing else { return };
@@ -617,7 +608,6 @@ impl Inner {
                             let _ =
                                 outgoing.send(json!({"type": "send", "event": event}).to_string());
                         };
-                        tools.hear(&heard);
                         for call_ in &calls {
                             let args: Value =
                                 serde_json::from_str(&call_.arguments).unwrap_or(Value::Null);

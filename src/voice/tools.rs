@@ -90,8 +90,6 @@ pub struct Tools {
     touched: Mutex<std::collections::HashMap<String, u64>>,
     /// Folders whose children a spoken name may refer to, such as `~/Code`.
     roots: Vec<PathBuf>,
-    /// What the developer last said, as transcribed.
-    heard: Mutex<String>,
 }
 
 /// Text cut to `max` characters, keeping the start.
@@ -114,26 +112,6 @@ fn clip_end(text: &str, max: usize) -> String {
     }
     let tail: String = text.chars().skip(count - max).collect();
     format!("…{tail}")
-}
-
-/// Whether what was said is just a short answer ("go", "sure", "continue")
-/// with no word that asks for something new.
-pub fn is_only_a_reply(heard: &str) -> bool {
-    let lowered = heard.to_lowercase().replace('\u{2019}', "'");
-    let words: Vec<&str> = lowered
-        .split(|c: char| !c.is_alphanumeric() && c != '\'')
-        .filter(|word| !word.is_empty())
-        .collect();
-    if words.is_empty() || words.len() > 5 {
-        return false;
-    }
-    const ASKS_FOR_NEW: [&str; 11] = [
-        "new", "start", "create", "open", "launch", "kick", "spin", "another", "separate", "fresh",
-        "session",
-    ];
-    !words
-        .iter()
-        .any(|word| ASKS_FOR_NEW.iter().any(|ask| word.starts_with(ask)))
 }
 
 pub fn now_ms() -> u64 {
@@ -178,13 +156,7 @@ impl Tools {
             reads: Mutex::default(),
             touched: Mutex::default(),
             roots: Vec::new(),
-            heard: Mutex::default(),
         }
-    }
-
-    /// What the developer said last, for checks that need their own words.
-    pub fn hear(&self, text: &str) {
-        *self.heard.lock().unwrap() = text.to_owned();
     }
 
     /// Runs one tool. Whatever happens, the answer is JSON the model can read.
@@ -427,10 +399,6 @@ impl Tools {
     }
 
     fn start(&self, args: &Value) -> Result<Value> {
-        let heard = self.heard.lock().unwrap().clone();
-        if is_only_a_reply(&heard) {
-            bail!("the developer only said \"{}\": that answers the session being discussed, it is not a request for a new one. Send those words to that session with send_message, and do not start anything", heard.trim());
-        }
         let folder = Self::text(args, "folder")?;
         let task = Self::text(args, "task")?;
         let cwd = self.resolve_folder(&folder)?;
@@ -981,31 +949,6 @@ mod tests {
             "close opencode:host:b"
         );
         assert!(!tools.watching());
-    }
-
-    #[test]
-    fn a_short_answer_never_starts_a_session() {
-        let (host, tools) = tools(two());
-        for said in ["go", "Continue.", "sure", "yes, go ahead", "ok do it"] {
-            tools.hear(said);
-            let refused = tools.run("start_session", &json!({"folder": "same", "task": "do it"}));
-            assert!(
-                refused["error"].as_str().unwrap().contains("send_message"),
-                "{said}: {refused}"
-            );
-        }
-        assert!(host.log.lock().unwrap().is_empty());
-        // Asking for one still works, short or long.
-        for said in [
-            "start a new session",
-            "open another one in arca",
-            "Please kick off a session in this folder that researches pricing",
-            "run the benchmark in a new session",
-        ] {
-            tools.hear(said);
-            let started = tools.run("start_session", &json!({"folder": "same", "task": "x"}));
-            assert_eq!(started["ok"], true, "{said}: {started}");
-        }
     }
 
     #[test]
