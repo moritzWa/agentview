@@ -6,8 +6,10 @@ again to end. Inside a session's own view, `Ctrl+K` (OpenCode), `Cmd+K` and
 `Ctrl+]` do the same, and the repaint that `Ctrl+K` used to do moves to
 `Ctrl+\`. Saying "that's all, bye" ends the call too.
 
-`Cmd+K` reaches agentview only where the terminal passes it on; in Ghostty add
-`keybind = super+k=unbind`.
+A terminal sends nothing for `Cmd+K` unless it is told to. In Ghostty add
+`keybind = super+k=text:\x0b`: it sends the `Ctrl+K` byte, which agentview reads in
+the dashboard and inside a session's view alike (and which also stops Ghostty
+from clearing the screen behind a TUI).
 
 ## What it knows about what you are looking at
 

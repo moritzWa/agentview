@@ -386,6 +386,9 @@ impl OpenCodeSupervisor {
         let mut statuses_by_directory = BTreeMap::new();
         let mut sessions_by_directory = BTreeMap::new();
         for owned in record.sessions.values() {
+            if !owned.cwd.is_dir() {
+                continue;
+            }
             if !statuses_by_directory.contains_key(&owned.cwd) {
                 // A folder that no longer exists makes the server answer 404;
                 // that must hide its own sessions, not every other row.
@@ -503,12 +506,14 @@ impl OpenCodeSupervisor {
                     ("/question", &mut questions),
                     ("/permission", &mut permissions),
                 ] {
-                    blocked.extend(request_session_ids(&self.request_json(
+                    if let Ok(found) = self.request_json(
                         &record,
                         "GET",
                         &with_directory_query(route, directory),
                         None,
-                    )?));
+                    ) {
+                        blocked.extend(request_session_ids(&found));
+                    }
                 }
             }
         }
@@ -1025,22 +1030,26 @@ impl OpenCodeSupervisor {
                 }
             }
             for directory in locations {
-                activity
-                    .questions
-                    .extend(request_session_ids(&self.request_json(
-                        &record,
-                        "GET",
-                        &with_directory_query("/question", &directory),
-                        None,
-                    )?));
-                activity
-                    .permissions
-                    .extend(request_session_ids(&self.request_json(
-                        &record,
-                        "GET",
-                        &with_directory_query("/permission", &directory),
-                        None,
-                    )?));
+                // A folder that is gone answers 404; it must not hide the rest.
+                if !directory.is_dir() {
+                    continue;
+                }
+                if let Ok(found) = self.request_json(
+                    &record,
+                    "GET",
+                    &with_directory_query("/question", &directory),
+                    None,
+                ) {
+                    activity.questions.extend(request_session_ids(&found));
+                }
+                if let Ok(found) = self.request_json(
+                    &record,
+                    "GET",
+                    &with_directory_query("/permission", &directory),
+                    None,
+                ) {
+                    activity.permissions.extend(request_session_ids(&found));
+                }
             }
             return Ok(activity);
         }
