@@ -42,7 +42,9 @@
 //                      {type:"send", event}          a client event for the data channel
 //                      {type:"mute", on}             mute or unmute the microphone track
 //                      {type:"end"}                  tear the call down
-//   page -> agentview  {type:"hello", ready}         page is up; ready = microphone already allowed
+//                      {type:"retire"}               a hidden browser runs the call now: close this tab
+//   page -> agentview  {type:"hello", ready, hidden} page is up; ready = microphone already allowed
+//                      {type:"stage", stage}         "microphone" while waiting for permission, then "offer"
 //                      {type:"offer", sdp}           SDP offer with ICE candidates gathered
 //                      {type:"event", event}         one JSON event received on the data channel
 //                      {type:"state", state}         peer connection state
@@ -52,7 +54,7 @@ const $ = (id) => document.getElementById(id);
 const stateEl = $("state"), log = $("log"), out = $("out");
 // agentview runs this page in a hidden browser with `?hidden`: the microphone is allowed and there is nothing to click.
 const hidden = new URLSearchParams(location.search).has("hidden");
-let ws, pc, dc, stream, ready = hidden, muted = false;
+let ws, pc, dc, stream, ready = hidden, muted = false, retired = false;
 let youLine = null, voiceLine = null;
 
 function setState(text, kind = "") { stateEl.textContent = text; stateEl.className = kind; }
@@ -71,7 +73,7 @@ async function allowMic() {
   const probe = await navigator.mediaDevices.getUserMedia({ audio: true });
   probe.getTracks().forEach((t) => t.stop());
   ready = true; $("enable").hidden = true;
-  post({ type: "hello", ready });
+  post({ type: "hello", ready, hidden });
   if (!pc) setState("ready", "live");
 }
 $("enable").onclick = () => allowMic().catch((e) => setState("microphone blocked: " + e.name, "bad"));
@@ -116,6 +118,7 @@ function applyMute() {
 
 async function begin() {
   if (pc) return;
+  post({ type: "stage", stage: "microphone" });
   try {
     stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
   } catch (e) {
@@ -148,6 +151,7 @@ async function begin() {
     setTimeout(resolve, 3000);
   });
   $("mute").disabled = false; $("end").disabled = false;
+  post({ type: "stage", stage: "offer" });
   post({ type: "offer", sdp: pc.localDescription.sdp });
 }
 
@@ -174,7 +178,7 @@ function connect() {
   ws = new WebSocket(`ws://${location.host}/ws`);
   ws.onopen = () => {
     setState(ready ? "ready" : "idle", ready ? "live" : "");
-    post({ type: "hello", ready });
+    post({ type: "hello", ready, hidden });
   };
   ws.onmessage = async (m) => {
     let msg; try { msg = JSON.parse(m.data); } catch { return; }
@@ -183,8 +187,14 @@ function connect() {
     else if (msg.type === "send" && dc?.readyState === "open") dc.send(JSON.stringify(msg.event));
     else if (msg.type === "mute") { muted = !!msg.on; applyMute(); }
     else if (msg.type === "end") end(msg.reason || "ended by agentview");
+    else if (msg.type === "retire") { retired = true; setState("not needed: agentview runs the voice in the background now. Close this tab.", "bad"); $("enable").hidden = true; }
   };
-  ws.onclose = () => { end("agentview went away"); setState("waiting for agentview", "bad"); setTimeout(connect, 2000); };
+  ws.onclose = () => {
+    end("agentview went away");
+    if (retired) return;
+    setState("waiting for agentview", "bad");
+    setTimeout(connect, 2000);
+  };
 }
 if (hidden) $("enable").hidden = true;
 navigator.permissions?.query({ name: "microphone" }).then((p) => {

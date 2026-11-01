@@ -18,7 +18,7 @@ pub fn port() -> u16 {
         .unwrap_or(DEFAULT_PORT)
 }
 
-fn state_dir() -> Result<PathBuf> {
+pub(super) fn state_dir() -> Result<PathBuf> {
     // Tests and demos keep the key and the hint flag out of the real state.
     if let Some(dir) = crate::fs_util::xdg_home("AGENTVIEW_VOICE_STATE_DIR") {
         return Ok(PathBuf::from(dir));

@@ -123,6 +123,15 @@ tried, so a bigger model buys quality, not speed.
 
 ## When something goes wrong
 
+Every call leaves `~/.local/state/agentview/voice/last-call.log`: the events,
+tool names and timings of the last call, with no words in it. If a call did not
+connect, it says how far it got.
+
+A voice tab left open from an earlier version is told to close (it shows "not
+needed") and cannot take over a call. While a call is on inside a session's own
+view, a badge (`● voice 2:13`) stays on screen: in the blank stretch of the
+bottom row when there is one, else in the top right corner.
+
 Set `AGENTVIEW_VOICE_LOG=/some/file` before starting agentview: every transcript
 line, tool call (with its time and result) and event goes into that file as
 JSON lines. `scripts/voice-spike/summarize.py FILE` prints it as a conversation.

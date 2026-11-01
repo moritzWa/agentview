@@ -25,6 +25,12 @@ and released versions are intended to follow Semantic Versioning.
   Ctrl+] start and end a call. The voice knows which session is selected or
   open, and ends the call when you say goodbye.
 
+- Voice Mode no longer lets a tab left open from an earlier version take over a
+  call (it made calls hang on a microphone prompt nobody could see). A call
+  that waits for the microphone says so and how to allow it, a call that does
+  not connect says which step failed, every call leaves a words-free
+  `last-call.log`, and a badge shows in a session's own view while a call is on.
+
 - An OpenCode session's age now follows its latest real message. A model or
   agent switch used to bump it, so several sessions could all read "6 hours".
 

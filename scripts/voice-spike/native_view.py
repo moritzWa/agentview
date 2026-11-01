@@ -43,10 +43,15 @@ screen = "\n".join(vt.display)
 check("the session's own view is showing", "agentview v0.2.0" not in screen.split("\n")[0], screen.split("\n")[0][:80])
 os.write(fd, b"\x0b"); pump(1.5)           # ctrl+k
 check("ctrl+k in the view starts a call", "voice" in row(), row())
-pump(4)
+pump(3)
+where = [(n, line.strip()[:100]) for n, line in enumerate(vt.display) if "voice" in line]
+check("a badge stays on screen while the call is on", bool(where), str(where))
+print("   bottom:", repr(row()[:140]))
 os.write(fd, b"\x0b"); pump(1.5)
 check("ctrl+k again ends it", "ended the call" in row() or "voice ended" in row(), row())
 os.write(fd, b"\x1b[1;2D"); pump(3)        # shift+left: back to the dashboard
+pump(2.5)
+check("the badge is gone after the call", "voice" not in row(), row())
 check("shift+left returns to the dashboard", "agentview" in vt.display[0] or "agentview" in "\n".join(vt.display[:4]), vt.display[0][:80])
 os.write(fd, b"\x1b"); pump(1)
 try:
