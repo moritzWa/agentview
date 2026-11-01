@@ -54,7 +54,18 @@ os.write(fd, b"\r"); pump(8)               # enter: open the session's own view
 screen = "\n".join(vt.display)
 check("the session's own view is showing", "agentview v0.2.0" not in screen.split("\n")[0], screen.split("\n")[0][:80])
 os.write(fd, voice_key); pump(1.5)           # the voice key
-check("ctrl+k in the view starts a call", "voice" in row(), row())
+def badge_cells():
+    out = []
+    for n, line in enumerate(vt.display):
+        c = line.find("voice")
+        if c >= 0 and ("●" in line or "◌" in line):
+            out.append((n, vt.buffer[n][max(c - 2, 0)]))
+    return out
+pump(1.5)
+cells = badge_cells()
+check("the key starts a call and a badge shows", bool(cells), str(cells[:1]))
+check("the badge is blue text with no background", bool(cells) and cells[0][1].fg == "blue" and cells[0][1].bg == "default", f"{cells[0][1].fg}/{cells[0][1].bg}" if cells else "")
+check("nothing is written on the bottom row", "voice" not in row() and "ended" not in row(), row())
 pump(8 if live else 3)
 where = [(n, line.strip()[:100]) for n, line in enumerate(vt.display) if "voice" in line]
 check("a badge stays on screen while the call is on", bool(where), str(where))
@@ -63,7 +74,8 @@ if live:
 print("   bottom:", repr(row()[:140]))
 print("   last rows:", [vt.display[n].rstrip()[-110:] for n in (-3, -2, -1)])
 os.write(fd, voice_key); pump(1.5)
-check("the key again ends it", "ended the call" in row() or "voice ended" in row(), row())
+pump(1.5)
+check("the key again ends it quietly", not badge_cells() and "ended" not in row(), f"{badge_cells()[:1]} {row()}")
 os.write(fd, b"\x1b[1;2D"); pump(3)        # shift+left: back to the dashboard
 pump(2.5)
 check("the badge is gone after the call", "voice" not in row(), row())

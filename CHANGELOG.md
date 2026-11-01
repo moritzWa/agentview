@@ -25,6 +25,10 @@ and released versions are intended to follow Semantic Versioning.
   Ctrl+] start and end a call. The voice knows which session is selected or
   open, and ends the call when you say goodbye.
 
+- Voice Mode in a session's own view: the badge is blue text without a
+  background, and starting or ending a call no longer writes a status line on
+  the bottom row (only failures and things to act on do).
+
 - Voice Mode: a short answer ("go", "continue", "sure") now goes to the session
   that asked, word for word, instead of being turned into a plan the voice
   carries out itself (it once started four sessions for one "go"). Reading a

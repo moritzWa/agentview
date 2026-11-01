@@ -145,8 +145,11 @@ transcribed and which tool it picked.
 
 A voice tab left open from an earlier version is told to close (it shows "not
 needed") and cannot take over a call. While a call is on inside a session's own
-view, a badge (`● voice 2:13`) stays on screen: in the blank stretch of the
-bottom row when there is one, else in the top right corner.
+view, a badge (`● voice 2:13`, blue text, no background) stays on screen: in
+the blank stretch of OpenCode's footer when there is one, else in the top right
+corner. Starting and ending a call write nothing else; only something to act on
+(no key, a failure, a microphone that is not allowed) shows as a line on the
+bottom row.
 
 Set `AGENTVIEW_VOICE_LOG=/some/file` before starting agentview: every transcript
 line, tool call (with its time and result) and event goes into that file as

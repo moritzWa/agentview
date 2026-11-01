@@ -1398,12 +1398,11 @@ fn install_voice_hook(voice: &crate::voice::VoiceService) {
     let last = std::sync::Mutex::new((Phase::Idle, None::<String>));
     crate::native_session::set_voice_hook(crate::native_session::VoiceHook {
         toggle: Box::new(move || match toggler.toggle() {
-            Toggle::Started => "● voice starting · the same key ends it".to_owned(),
-            Toggle::Ended => "voice ended".to_owned(),
-            Toggle::NeedKey => {
-                "voice needs an OpenAI key: go back with shift+← and press ctrl+k once".to_owned()
-            }
-            Toggle::Failed(error) => error,
+            Toggle::Started | Toggle::Ended => None,
+            Toggle::NeedKey => Some(
+                "voice needs an OpenAI key: go back with shift+← and press ctrl+k once".to_owned(),
+            ),
+            Toggle::Failed(error) => Some(error),
         }),
         badge: Box::new(move || {
             let status = badger.status();
@@ -1425,12 +1424,9 @@ fn install_voice_hook(voice: &crate::voice::VoiceService) {
                 return None;
             }
             *last = now;
-            Some(match (status.phase, status.notice) {
-                (_, Some(notice)) => notice,
-                (Phase::Live, None) => "● voice live".to_owned(),
-                (Phase::Connecting, None) => "● voice connecting".to_owned(),
-                (Phase::Idle, None) => "voice ended".to_owned(),
-            })
+            // Starting, going live and ending are shown by the badge, or by its
+            // absence. Only something to act on is said.
+            status.notice.filter(|_| !status.quiet)
         }),
     });
 }
