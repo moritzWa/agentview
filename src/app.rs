@@ -54,6 +54,7 @@ const DASHBOARD_COMMANDS: &[&str] = &[
     "/filter",
     "/migrate",
     "/usage",
+    "/voice",
 ];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -112,6 +113,8 @@ pub enum ComposerMode {
         target: Provider,
     },
     Filter,
+    /// An OpenAI API key for Voice Mode, shown masked.
+    VoiceKey,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -124,6 +127,12 @@ pub enum AppAction {
     None,
     Quit,
     Refresh,
+    /// Start Voice Mode, or end the call in progress.
+    ToggleVoice,
+    /// Save the OpenAI key typed into the Voice Mode prompt, then start a call.
+    SaveVoiceKey {
+        key: String,
+    },
     SetCompletedVisibility {
         include_completed: bool,
     },
@@ -326,6 +335,10 @@ pub struct App {
     pub usage: Vec<crate::usage::Usage>,
     /// The agent-bouncer queue, when that tool is installed.
     pub queue: Option<crate::queue::Queue>,
+    /// The Voice Mode call, for the status bar.
+    pub voice: crate::voice::PanelStatus,
+    /// Show the Voice Mode shortcut in the footer: nobody has used it yet.
+    pub voice_hint: bool,
 }
 
 impl App {
@@ -434,6 +447,8 @@ impl App {
             color_scheme: ColorScheme::Dark,
             usage: Vec::new(),
             queue: None,
+            voice: crate::voice::PanelStatus::idle(),
+            voice_hint: false,
         };
         app.rebuild_snapshot_cache();
         app.reconcile_selection();
@@ -1494,6 +1509,20 @@ impl App {
         self.overlay = Overlay::Composer(ComposerMode::Rename { session_id });
     }
 
+    /// Ask for the OpenAI key Voice Mode needs.
+    pub fn start_voice_key(&mut self) {
+        self.clear_input();
+        self.set_notice(
+            "Voice Mode needs an OpenAI API key with GPT-Live access: paste it, enter to save",
+        );
+        self.overlay = Overlay::Composer(ComposerMode::VoiceKey);
+    }
+
+    /// Parent links between sessions, child to parent by provider session id.
+    pub fn session_parent_links(&self) -> &HashMap<String, String> {
+        &self.session_parents
+    }
+
     pub fn start_migration(&mut self) {
         let Some(session) = self.selected_session() else {
             self.set_notice("select a session to migrate");
@@ -2011,6 +2040,7 @@ impl App {
                     ComposerMode::Filter
                         | ComposerMode::Rename { .. }
                         | ComposerMode::MigrationName { .. }
+                        | ComposerMode::VoiceKey
                 )
         )
     }
@@ -3055,6 +3085,7 @@ impl App {
                 self.set_filter(input);
                 AppAction::None
             }
+            ComposerMode::VoiceKey => AppAction::SaveVoiceKey { key: input },
         }
     }
 
@@ -3099,6 +3130,7 @@ impl App {
             .unwrap_or((input.as_str(), ""));
         match command.to_ascii_lowercase().as_str() {
             "/help" => self.toggle_help(),
+            "/voice" => return AppAction::ToggleVoice,
             "/harness" | "/provider" if argument.is_empty() => self.open_harness_picker(),
             "/harness" | "/provider" => self.select_launch_provider(argument),
             "/model" => return self.select_launch_model(argument),

@@ -431,6 +431,30 @@ impl ProviderController for OpenCodeController {
         })
     }
 
+    fn recent_messages(
+        &self,
+        session: &AgentSession,
+        count: usize,
+    ) -> Result<Vec<crate::opencode_supervisor::SessionMessage>> {
+        let owned = self.require_owned(session)?;
+        self.supervisor
+            .as_ref()
+            .context("managed OpenCode control is not configured")?
+            .recent_messages(&owned.id, count)
+    }
+
+    fn edit_last_message(&self, session: &AgentSession, text: &str) -> Result<ControlOutcome> {
+        let owned = self.require_owned(session)?;
+        self.supervisor
+            .as_ref()
+            .context("managed OpenCode control is not configured")?
+            .edit_last_message(&owned.id, text)?;
+        Ok(ControlOutcome {
+            message: format!("replaced the last message to {}", session.name),
+            provider_session_hint: Some(owned.id),
+        })
+    }
+
     fn interrupt(&self, session: &AgentSession) -> Result<ControlOutcome> {
         let owned = self.require_owned(session)?;
         if owned.state != SessionState::Working {
@@ -2010,6 +2034,11 @@ fn parse_opencode_db_records(input: &str) -> Result<Vec<OpenCodeRecord>> {
 }
 
 fn agent_session_from_managed(managed: &ManagedOpenCodeSession) -> AgentSession {
+    crate::last_message::remember_facts(
+        &format!("opencode:host:{}", managed.id),
+        managed.last_user_ms,
+        &managed.tail,
+    );
     AgentSession {
         id: format!("opencode:host:{}", managed.id),
         provider_session_id: managed.id.clone(),
@@ -2030,6 +2059,7 @@ fn agent_session_from_managed(managed: &ManagedOpenCodeSession) -> AgentSession 
 }
 
 fn overlay_managed(session: &mut AgentSession, managed: &ManagedOpenCodeSession) {
+    crate::last_message::remember_facts(&session.id, managed.last_user_ms, &managed.tail);
     session.kind = SessionKind::Managed;
     session.name = managed.title.clone();
     session.cwd = managed.cwd.clone();
@@ -2275,6 +2305,8 @@ mod tests {
             server_pid: 1,
             created_at_ms: 0,
             updated_at_ms: 0,
+            last_user_ms: 0,
+            tail: String::new(),
         };
         let mut sessions = vec![
             agent_session_from_managed(&managed("ses_watching", SessionState::Completed)),

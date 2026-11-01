@@ -35,6 +35,7 @@ pub mod theme;
 pub mod turn_classifier;
 pub mod ui;
 pub mod usage;
+pub mod voice;
 
 #[cfg(test)]
 pub(crate) mod test_support {

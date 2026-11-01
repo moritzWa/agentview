@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent View voice</title>
+<style>
+  :root { color-scheme: light; --blue:#506CF7; --line:#e2e2e2; --mute:#666; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#fff; color:#000; font:15px/1.5 -apple-system, system-ui, "Segoe UI", sans-serif; display:flex; flex-direction:column; height:100vh; }
+  header { display:flex; align-items:center; gap:12px; padding:14px 18px; border-bottom:1px solid var(--line); }
+  h1 { font-size:16px; margin:0; flex:1; }
+  #state { font-size:13px; padding:3px 10px; border-radius:99px; background:#f2f2f2; color:var(--mute); }
+  #state.live { background:#e9f6ee; color:#117a3d; }
+  #state.busy { background:#eef1ff; color:var(--blue); }
+  #state.bad { background:#fdecea; color:#b3261e; }
+  main { flex:1; overflow:auto; padding:14px 18px; }
+  .line { margin:0 0 10px; max-width:70ch; }
+  .line b { display:block; font-size:12px; color:var(--mute); font-weight:600; }
+  .you b { color:var(--blue); }
+  .note { color:var(--mute); }
+  footer { display:flex; gap:10px; padding:12px 18px; border-top:1px solid var(--line); }
+  button { font:inherit; padding:6px 14px; border:1px solid var(--line); border-radius:8px; background:#fff; cursor:pointer; }
+  button.primary { background:var(--blue); border-color:var(--blue); color:#fff; }
+  button:disabled { opacity:.4; cursor:default; }
+</style>
+</head>
+<body>
+<header><h1>Agent View voice</h1><span id="state">connecting to agentview</span></header>
+<main id="log"><p class="note" id="hint">Pin this tab. Press <b>Ctrl+K</b> in agentview to start a call. The first time, click <b>Enable microphone</b>.</p></main>
+<footer>
+  <button id="enable" class="primary">Enable microphone</button>
+  <button id="mute" disabled>Mute</button>
+  <button id="end" disabled>End call</button>
+</footer>
+<audio id="out" autoplay></audio>
+<script>
+// Protocol with agentview (JSON text frames over ws://<host>/ws). This page holds no logic:
+//   agentview -> page  {type:"start"}                begin a call (mic + WebRTC offer)
+//                      {type:"answer", sdp}          the SDP answer from OpenAI
+//                      {type:"send", event}          a client event for the data channel
+//                      {type:"mute", on}             mute or unmute the microphone track
+//                      {type:"end"}                  tear the call down
+//   page -> agentview  {type:"hello", ready}         page is up; ready = microphone already allowed
+//                      {type:"offer", sdp}           SDP offer with ICE candidates gathered
+//                      {type:"event", event}         one JSON event received on the data channel
+//                      {type:"state", state}         peer connection state
+//                      {type:"audio", on}            whether the browser lets the voice play yet
+//                      {type:"ended", reason}        the call is over on this side
+const $ = (id) => document.getElementById(id);
+const stateEl = $("state"), log = $("log"), out = $("out");
+let ws, pc, dc, stream, ready = false, muted = false;
+let youLine = null, voiceLine = null;
+
+function setState(text, kind = "") { stateEl.textContent = text; stateEl.className = kind; }
+function say(who, text) {
+  const p = document.createElement("p");
+  p.className = "line " + (who === "You" ? "you" : "");
+  p.innerHTML = "<b></b><span></span>";
+  p.firstChild.textContent = who; p.lastChild.textContent = text;
+  $("hint")?.remove();
+  log.appendChild(p); log.scrollTop = log.scrollHeight;
+  return p.lastChild;
+}
+function post(message) { if (ws?.readyState === 1) ws.send(JSON.stringify(message)); }
+
+async function allowMic() {
+  const probe = await navigator.mediaDevices.getUserMedia({ audio: true });
+  probe.getTracks().forEach((t) => t.stop());
+  ready = true; $("enable").hidden = true;
+  post({ type: "hello", ready });
+  if (!pc) setState("ready", "live");
+}
+$("enable").onclick = () => allowMic().catch((e) => setState("microphone blocked: " + e.name, "bad"));
+$("mute").onclick = () => { muted = !muted; applyMute(); post({ type: "muted", on: muted }); };
+$("end").onclick = () => end("you ended the call");
+
+// A fresh tab may not play sound until it has been clicked once; say so, and play on the click.
+function playOut() {
+  out.play().then(() => post({ type: "audio", on: true })).catch(() => {
+    setState("click this page once to hear the voice", "bad");
+    post({ type: "audio", on: false });
+  });
+}
+document.addEventListener("click", () => { if (out.srcObject) playOut(); });
+
+function applyMute() {
+  stream?.getAudioTracks().forEach((t) => { t.enabled = !muted; });
+  $("mute").textContent = muted ? "Unmute" : "Mute";
+}
+
+async function begin() {
+  if (pc) return;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+  } catch (e) { setState("microphone blocked: " + e.name, "bad"); post({ type: "ended", reason: "microphone " + e.name }); return; }
+  ready = true; $("enable").hidden = true; muted = false; applyMute();
+  setState("connecting call", "busy");
+  pc = new RTCPeerConnection();
+  stream.getTracks().forEach((t) => pc.addTrack(t, stream));
+  pc.ontrack = (e) => { out.srcObject = e.streams[0]; playOut(); };
+  dc = pc.createDataChannel("oai-events");
+  dc.onmessage = (m) => {
+    let event; try { event = JSON.parse(m.data); } catch { return; }
+    caption(event);
+    post({ type: "event", event });
+  };
+  dc.onclose = () => end("data channel closed");
+  pc.onconnectionstatechange = () => {
+    post({ type: "state", state: pc?.connectionState });
+    if (pc?.connectionState === "connected") setState("live", "live");
+    if (pc && ["failed", "closed"].includes(pc.connectionState)) end("connection " + pc.connectionState);
+  };
+  await pc.setLocalDescription(await pc.createOffer());
+  await new Promise((resolve) => {
+    if (pc.iceGatheringState === "complete") return resolve();
+    const done = () => pc.iceGatheringState === "complete" && (pc.removeEventListener("icegatheringstatechange", done), resolve());
+    pc.addEventListener("icegatheringstatechange", done);
+    setTimeout(resolve, 3000);
+  });
+  $("mute").disabled = false; $("end").disabled = false;
+  post({ type: "offer", sdp: pc.localDescription.sdp });
+}
+
+function caption(event) {
+  const type = event.type;
+  if (type === "session.input_transcript.delta") { voiceLine = null; youLine ||= say("You", ""); youLine.textContent += event.delta; }
+  else if (type === "session.output_transcript.delta") { youLine = null; voiceLine ||= say("Agent View", ""); voiceLine.textContent += event.delta; }
+}
+
+function end(reason) {
+  if (!pc && !stream) return;
+  try { dc?.close(); } catch {}
+  try { pc?.close(); } catch {}
+  stream?.getTracks().forEach((t) => t.stop());
+  pc = dc = stream = null; youLine = voiceLine = null;
+  out.srcObject = null;
+  $("mute").disabled = true; $("end").disabled = true;
+  setState(ready ? "ready" : "idle", ready ? "live" : "");
+  post({ type: "ended", reason });
+}
+
+function connect() {
+  ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onopen = () => {
+    setState(ready ? "ready" : "idle", ready ? "live" : "");
+    post({ type: "hello", ready });
+  };
+  ws.onmessage = async (m) => {
+    let msg; try { msg = JSON.parse(m.data); } catch { return; }
+    if (msg.type === "start") begin();
+    else if (msg.type === "answer" && pc) await pc.setRemoteDescription({ type: "answer", sdp: msg.sdp });
+    else if (msg.type === "send" && dc?.readyState === "open") dc.send(JSON.stringify(msg.event));
+    else if (msg.type === "mute") { muted = !!msg.on; applyMute(); }
+    else if (msg.type === "end") end(msg.reason || "ended by agentview");
+  };
+  ws.onclose = () => { end("agentview went away"); setState("waiting for agentview", "bad"); setTimeout(connect, 2000); };
+}
+navigator.permissions?.query({ name: "microphone" }).then((p) => {
+  if (p.state === "granted") { ready = true; $("enable").hidden = true; }
+}).catch(() => {});
+connect();
+</script>
+</body>
+</html>

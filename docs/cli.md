@@ -536,6 +536,7 @@ label.
 | Inspect peek | type, `enter` | Send an owned provider reply/steer or the current structured answer. |
 | Inspect peek | `y` / `n` | Allow once / deny only when the exact capability is advertised. |
 | Inspect peek | `enter` with no text | Open the provider-native interface when that managed/live boundary allows a second client. |
+| Session list or new-task composer | `ctrl+k` | Start a [Voice Mode](voice.md) call, or end the one running. `/voice` does the same. The first time it asks for an OpenAI API key. |
 | Session list | `ctrl+s` | Toggle status and working-directory grouping. |
 | Session list | `ctrl+f` | Edit the case-insensitive name/summary/path/provider filter. |
 | Session list | `ctrl+l` | Request an immediate provider refresh. |

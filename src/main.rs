@@ -77,6 +77,12 @@ enum Commands {
     Update,
     /// Check provider, Docker, and target availability without changing them.
     Doctor,
+    /// Voice Mode: talk to your sessions. Start a call with ctrl+k in the dashboard.
+    Voice {
+        /// Read an OpenAI API key with GPT-Live access from stdin, check it, and keep it.
+        #[arg(long)]
+        set_key: bool,
+    },
     /// Create and control only containers owned by agentview.
     Docker {
         #[command(subcommand)]
@@ -502,6 +508,21 @@ fn main() -> Result<()> {
     if let Some(command) = cli.command.as_ref() {
         match command {
             Commands::Update => run_self_update()?,
+            Commands::Voice { set_key } => {
+                if *set_key {
+                    let mut key = String::new();
+                    std::io::stdin().read_line(&mut key)?;
+                    agentview::voice::config::save_key(&key)?;
+                    println!("Saved. Press ctrl+k in agentview to start a call.");
+                } else {
+                    let have = agentview::voice::config::api_key().is_some();
+                    println!(
+                        "Voice Mode: press ctrl+k in agentview (or type /voice).\nOpenAI key: {}\nVoice page: http://127.0.0.1:{}/",
+                        if have { "saved" } else { "missing; paste it on first use, or pipe it into `agentview voice --set-key`" },
+                        agentview::voice::config::DEFAULT_PORT,
+                    );
+                }
+            }
             Commands::Doctor => {
                 let provider_bins = vec![
                     (Provider::Claude, cli.claude_bin.clone()),
