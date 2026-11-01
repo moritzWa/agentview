@@ -2386,7 +2386,7 @@ fn draw_voice_badge(
             return None;
         }
         let gap = start - gap_start;
-        (gap >= width + 2).then(|| start - width - 1)
+        (gap >= width + 2).then_some(start - width - 1)
     };
     // OpenCode keeps its footer on the last or second to last row.
     let found = (rows.saturating_sub(3)..rows)
