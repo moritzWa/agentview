@@ -245,6 +245,17 @@ impl Inner {
     }
 
     fn send_page(state: &State, message: Value) {
+        if message["type"] == "send" {
+            let event = &message["event"];
+            let kind = event["type"].as_str().unwrap_or_default();
+            // Answers to tool calls are logged with the tool; the rest says what the voice was told.
+            if !kind.starts_with("response.") {
+                log(
+                    "send",
+                    json!({"type": kind, "content": clip(event["content"].as_str().unwrap_or_default(), 300)}),
+                );
+            }
+        }
         if let Some(page) = &state.page {
             let _ = page.outgoing.send(message.to_string());
         }
@@ -394,6 +405,14 @@ impl Inner {
                 }
             }
             Stage::Live => {
+                // A goodbye ends the call once the voice has answered it.
+                if active.call.farewell
+                    && Instant::now().duration_since(active.last_heard) >= Duration::from_secs(5)
+                {
+                    drop(state);
+                    self.finish("Ended at your request.", true);
+                    return;
+                }
                 let tools = active.tools.clone();
                 let now = Instant::now();
                 let elapsed = active
@@ -534,7 +553,7 @@ impl Inner {
                 Action::Failed(message) => {
                     self.lock().notice = Some(message);
                 }
-                Action::Run(calls) => {
+                Action::Run { calls, stale } => {
                     let (tools, outgoing) = {
                         let state = self.lock();
                         let Some(active) = state.active.as_ref() else {
@@ -546,6 +565,7 @@ impl Inner {
                         )
                     };
                     let Some(outgoing) = outgoing else { return };
+                    let this = self.clone();
                     thread::spawn(move || {
                         let send = |event: Value| {
                             let _ =
@@ -554,10 +574,30 @@ impl Inner {
                         for call_ in &calls {
                             let args: Value =
                                 serde_json::from_str(&call_.arguments).unwrap_or(Value::Null);
-                            let result = tools.run(&call_.name, &args);
+                            let started = Instant::now();
+                            let result = if stale && Tools::is_read_only(&call_.name) {
+                                // Reading on for a request the developer has moved past.
+                                json!({"error": "the developer has asked something new: stop looking things up and answer in one short sentence"})
+                            } else {
+                                tools.run(&call_.name, &args)
+                            };
+                            log(
+                                "tool",
+                                json!({
+                                    "name": call_.name,
+                                    "args": args,
+                                    "ms": started.elapsed().as_millis() as u64,
+                                    "result": clip(&result.to_string(), 600),
+                                }),
+                            );
                             send(call::function_output(&call_.call_id, &result));
                         }
                         send(call::continue_response());
+                        if calls.iter().any(|call| call.name == "end_call") {
+                            // Long enough for the goodbye to be said.
+                            thread::sleep(Duration::from_secs(6));
+                            this.finish("Ended at your request.", true);
+                        }
                     });
                 }
             }
@@ -644,6 +684,22 @@ impl PageSink for Sink {
                     this.on_event(event);
                 }
             }
+            "mic" => {
+                let flat = message
+                    .get("flat_seconds")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.0);
+                let mut state = this.lock();
+                let silent = state
+                    .active
+                    .as_ref()
+                    .is_some_and(|active| active.stage == Stage::Live && !active.call.user_spoke);
+                if silent && flat >= DEAD_MIC_SECONDS {
+                    state.notice = Some(DEAD_MIC_NOTICE.into());
+                } else if flat < 1.0 && state.notice.as_deref() == Some(DEAD_MIC_NOTICE) {
+                    state.notice = None;
+                }
+            }
             "audio" => {
                 let mut state = this.lock();
                 let blocked = message.get("on").and_then(Value::as_bool) == Some(false);
@@ -673,6 +729,9 @@ impl PageSink for Sink {
 }
 
 const MIC_NOTICE: &str = "Allow the microphone in the Agent View voice tab.";
+/// A microphone that is exactly silent this long, with nothing heard yet, is not on.
+const DEAD_MIC_SECONDS: f64 = 20.0;
+const DEAD_MIC_NOTICE: &str = "No sound from the microphone. On a Mac, allow your terminal or the browser under System Settings, Privacy & Security, Microphone.";
 const CLICK_NOTICE: &str = "Click the Agent View voice tab once so the browser lets it play sound.";
 
 fn sentence(reason: &str) -> String {
@@ -1148,6 +1207,44 @@ mod tests {
             .notice
             .unwrap()
             .contains("voice browser closed"));
+    }
+
+    #[test]
+    fn a_microphone_that_stays_dead_is_reported_until_it_makes_a_sound() {
+        let rig = rig(Settings::default(), Some("sk-test"));
+        let (id, _inbox) = page(&rig);
+        say(&rig, id, json!({"type": "hello", "ready": true}));
+        rig.service.toggle();
+        say(&rig, id, json!({"type": "offer", "sdp": "x"}));
+        say(
+            &rig,
+            id,
+            json!({"type": "event", "event": {"type": "session.started", "session": {"id": "l"}}}),
+        );
+        until(|| rig.service.status().phase == Phase::Live);
+        say(
+            &rig,
+            id,
+            json!({"type": "mic", "rms": 0.0, "flat_seconds": 10.0}),
+        );
+        assert_eq!(rig.service.status().notice, None);
+        say(
+            &rig,
+            id,
+            json!({"type": "mic", "rms": 0.0, "flat_seconds": 20.0}),
+        );
+        assert!(rig
+            .service
+            .status()
+            .notice
+            .unwrap()
+            .contains("No sound from the microphone"));
+        say(
+            &rig,
+            id,
+            json!({"type": "mic", "rms": 0.02, "flat_seconds": 0.0}),
+        );
+        assert_eq!(rig.service.status().notice, None);
     }
 
     #[test]

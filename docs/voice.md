@@ -1,7 +1,22 @@
 # Voice Mode
 
-Talk to your OpenCode sessions while your hands are busy. Press `Ctrl+K` in the
-dashboard (or type `/voice`), say what you want, and press `Ctrl+K` again to end.
+Talk to your OpenCode sessions while your hands are busy. Press `Ctrl+K` or
+`Cmd+K` in the dashboard (or type `/voice`), say what you want, and press the key
+again to end. Inside a session's own view, `Ctrl+K` (OpenCode), `Cmd+K` and
+`Ctrl+]` do the same, and the repaint that `Ctrl+K` used to do moves to
+`Ctrl+\`. Saying "that's all, bye" ends the call too.
+
+`Cmd+K` reaches agentview only where the terminal passes it on; in Ghostty add
+`keybind = super+k=unbind`.
+
+## What it knows about what you are looking at
+
+The session selected in the dashboard, or open in its own view, is the one
+"this" and "it" mean. The voice is told when you move to another, and
+`list_sessions` marks it `on_screen` and always includes it. "Start one in the
+same folder" uses its folder. A call keeps working while you are inside a
+session: it asks for fresh session data itself, because the dashboard is not
+refreshing then.
 
 ## What you can say
 
@@ -12,6 +27,8 @@ dashboard (or type `/voice`), say what you want, and press `Ctrl+K` again to end
 - "Tell it to go with option two." It sends your words to that session, as if
   you had typed them. A busy session queues the message.
 - "Stop that one." Same as pressing Escape in OpenCode.
+- "Tell it to continue." A session whose last turn failed takes a message to
+  retry. The voice never starts a new session to recover another.
 - "Actually, make it about laundry instead." It stops the session if it is
   running, rewinds to just before your last message the way `/undo` does
   (including that message's file changes), and sends the corrected text.
@@ -46,15 +63,24 @@ you ── mic/speaker ── voice page (a pinned browser tab, 127.0.0.1:47617)
                   talker + backend model                 runs the tools
 ```
 
-The browser tab holds the microphone and speaker, because it brings echo
+A browser holds the microphone and speaker, because it brings echo
 cancellation and noise suppression with it. agentview starts the OpenAI session
 with `curl`, so the key never reaches the page. The page only relays events; the
 tools run in agentview, against the same sessions the dashboard shows.
 
-The first time, agentview opens the page in your default browser. Pin the tab
-and allow the microphone once. Next time `Ctrl+K` starts a call at once, because
-the tab is already connected. The page listens on `127.0.0.1` only and accepts
-a WebSocket only from its own origin.
+By default agentview runs that browser itself, **hidden**: a Chromium-based
+browser (Chrome, Chromium, Edge or Brave) in headless mode, with its own
+profile, started when a call starts and stopped when it ends. No tab or window
+appears and nothing needs pinning. It costs a browser's worth of memory (about
+350 MB) only while a call is open. The first call, macOS asks once to let your
+terminal (or the browser) use the microphone. If no such browser is found,
+agentview falls back to opening a tab. The page listens on `127.0.0.1` only and
+accepts a WebSocket only from its own origin.
+
+The `browser` setting changes this: `"tab"` opens a tab in your default browser
+(pin it and allow the microphone once; a connected tab is used at once), and
+`"none"` leaves the page to you at `http://127.0.0.1:47617/`. `chrome_path`
+points at a particular browser.
 
 ## Setup and cost
 
@@ -85,7 +111,9 @@ a WebSocket only from its own origin.
   "reasoning_effort": "low",
   "service_tier": "priority",
   "idle_minutes": 10,
-  "max_minutes": 60
+  "max_minutes": 60,
+  "browser": "hidden",
+  "chrome_path": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 }
 ```
 
@@ -93,12 +121,22 @@ a WebSocket only from its own origin.
 voice). On the backend, picking a tool takes about a second on every model
 tried, so a bigger model buys quality, not speed.
 
+## When something goes wrong
+
+Set `AGENTVIEW_VOICE_LOG=/some/file` before starting agentview: every transcript
+line, tool call (with its time and result) and event goes into that file as
+JSON lines. `scripts/voice-spike/summarize.py FILE` prints it as a conversation.
+A microphone that stays exactly silent for 20 seconds shows "No sound from the
+microphone" in the footer: on a Mac that is the Privacy & Security setting for
+your terminal or browser.
+
 ## Testing
 
 `scripts/voice-spike/` holds the manual checks, which use real OpenAI calls and
 cost a few cents. `spike.mjs` runs the page against a stand-in server.
-`e2e.py` runs the real dashboard in a pseudo-terminal with a headless browser as
-the voice tab and a synthesized, muted microphone. `onboarding.py` covers the
-first run. `cargo test --test voice_edit_real -- --ignored` checks the correction
+`e2e.py` runs the real dashboard in a pseudo-terminal, lets agentview start its
+hidden browser with a synthesized, muted microphone, and prints what the call
+did; `scenario.sh` wraps it with the log summary. `native_view.py` presses the
+voice key inside a session's own view. `onboarding.py` covers the first run. `cargo test --test voice_edit_real -- --ignored` checks the correction
 against a running OpenCode server. Run the browser parts under
 `~/.claude/scripts/heavy-job.py --wait --`.

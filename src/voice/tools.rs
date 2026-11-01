@@ -41,7 +41,15 @@ struct Watch {
     id: String,
     until: Until,
     was_busy: bool,
+    registered: u64,
+    /// The session was just given work and may not show as busy yet.
+    expects_busy: bool,
 }
+
+/// How long after a message the session may still show as idle.
+const SETTLE_MS: u64 = 60_000;
+/// How long a watch waits to see work start before it calls it already done.
+const NEVER_BUSY_MS: u64 = 45_000;
 
 pub struct Tools {
     host: Arc<dyn VoiceHost>,
@@ -54,6 +62,10 @@ pub struct Tools {
     focus: Mutex<Option<String>>,
     /// The session on the developer's screen: selected in the dashboard, or open.
     viewing: Mutex<Option<String>>,
+    /// When recent `read_session` calls ran, to stop one request reading everything.
+    reads: Mutex<Vec<u64>>,
+    /// When each session was last given work by a tool.
+    touched: Mutex<std::collections::HashMap<String, u64>>,
     /// Folders whose children a spoken name may refer to, such as `~/Code`.
     roots: Vec<PathBuf>,
 }
@@ -64,6 +76,9 @@ pub fn now_ms() -> u64 {
         .map_or(0, |elapsed| elapsed.as_millis() as u64)
 }
 
+/// Sessions read in a row before the backend is told to answer from what it has.
+const READS_PER_WINDOW: usize = 5;
+const READ_WINDOW_MS: u64 = 30_000;
 const READ_DEFAULT: usize = 6;
 const READ_MAX: usize = 20;
 const READ_MESSAGE_CHARS: usize = 1200;
@@ -89,6 +104,8 @@ impl Tools {
             watches: Mutex::default(),
             focus: Mutex::default(),
             viewing: Mutex::default(),
+            reads: Mutex::default(),
+            touched: Mutex::default(),
             roots: Vec::new(),
         }
     }
@@ -103,9 +120,19 @@ impl Tools {
             "edit_last_message" => self.edit_last(args),
             "start_session" => self.start(args),
             "watch_session" => self.watch(args),
+            "end_call" => Ok(
+                json!({"ok": true, "note": "the call ends in a few seconds: say a short goodbye"}),
+            ),
             other => Err(anyhow::anyhow!("there is no tool called {other}")),
         };
         result.unwrap_or_else(|error| json!({"error": format!("{error:#}")}))
+    }
+
+    fn touch(&self, id: &str) {
+        self.touched
+            .lock()
+            .unwrap()
+            .insert(id.to_owned(), (self.clock)());
     }
 
     fn text(args: &Value, key: &str) -> Result<String> {
@@ -115,19 +142,54 @@ impl Tools {
         }
     }
 
+    /// The session an `id` argument means: a short id from this call, "this" for
+    /// the one on screen, "it" for the one last discussed, or part of a title.
     fn resolve(&self, args: &Value) -> Result<String> {
-        let handle = Self::text(args, "id")?;
-        let id = self
-            .handles
-            .lock()
-            .unwrap()
-            .id(&handle)
-            .map(str::to_owned)
-            .ok_or_else(|| {
-                anyhow::anyhow!("{handle} is not a session id; call list_sessions first")
-            })?;
+        let given = Self::text(args, "id")?;
+        let known = self.handles.lock().unwrap().id(&given).map(str::to_owned);
+        let id = match known {
+            Some(id) => id,
+            None => self.resolve_by_words(&given)?,
+        };
         *self.focus.lock().unwrap() = Some(id.clone());
         Ok(id)
+    }
+
+    fn resolve_by_words(&self, given: &str) -> Result<String> {
+        let words = given.trim().to_lowercase();
+        let remembered = |slot: &Mutex<Option<String>>| slot.lock().unwrap().clone();
+        match words.as_str() {
+            "this" | "this session" | "current" | "on_screen" | "on screen" => {
+                if let Some(id) = remembered(&self.viewing) {
+                    return Ok(id);
+                }
+            }
+            "it" | "that" | "that one" | "last" => {
+                if let Some(id) = remembered(&self.focus) {
+                    return Ok(id);
+                }
+            }
+            _ => {}
+        }
+        let infos = self.host.infos();
+        let found: Vec<&Info> = infos
+            .iter()
+            .filter(|info| !words.is_empty() && info.title.to_lowercase().contains(&words))
+            .collect();
+        match found.as_slice() {
+            [one] => {
+                self.handles.lock().unwrap().handle(&one.id);
+                Ok(one.id.clone())
+            }
+            [] => bail!("{given} is not a session id or a session title; call list_sessions first"),
+            many => bail!(
+                "more than one session matches {given}: {}",
+                many.iter()
+                    .map(|info| format!("\"{}\"", info.title))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        }
     }
 
     fn list(&self, args: &Value) -> Result<Value> {
@@ -142,9 +204,11 @@ impl Tools {
         };
         let viewing = self.viewing.lock().unwrap().clone();
         let mut rows = rows;
-        // The session on screen is always there, whether or not it is recent.
+        let searching = all || query.is_some_and(|query| !query.trim().is_empty());
+        // The session on screen is always in the default list, recent or not.
         if let Some(on_screen) = viewing
             .as_ref()
+            .filter(|_| !searching)
             .and_then(|id| infos.iter().find(|info| &info.id == id))
         {
             if !rows.iter().any(|info| info.id == on_screen.id) {
@@ -174,6 +238,15 @@ impl Tools {
     }
 
     fn read(&self, args: &Value) -> Result<Value> {
+        {
+            let now = (self.clock)();
+            let mut reads = self.reads.lock().unwrap();
+            reads.retain(|at| now.saturating_sub(*at) < READ_WINDOW_MS);
+            if reads.len() >= READS_PER_WINDOW {
+                bail!("enough sessions have been read for one request: answer from what you have; list_sessions already carries what each session last said");
+            }
+            reads.push(now);
+        }
         let id = self.resolve(args)?;
         let count = args
             .get("last_n")
@@ -200,6 +273,7 @@ impl Tools {
     fn send(&self, args: &Value) -> Result<Value> {
         let id = self.resolve(args)?;
         self.host.send(&id, &Self::text(args, "text")?)?;
+        self.touch(&id);
         Ok(json!({"ok": true, "note": "sent; a busy session queues it"}))
     }
 
@@ -212,6 +286,7 @@ impl Tools {
     fn edit_last(&self, args: &Value) -> Result<Value> {
         let id = self.resolve(args)?;
         self.host.edit_last(&id, &Self::text(args, "text")?)?;
+        self.touch(&id);
         Ok(
             json!({"ok": true, "note": "stopped it if it was running, rewound to before the last message and sent the corrected one"}),
         )
@@ -223,6 +298,7 @@ impl Tools {
         let cwd = self.resolve_folder(&folder)?;
         let id = self.host.start(&cwd, &task)?;
         let handle = self.handles.lock().unwrap().handle(&id);
+        self.touch(&id);
         *self.focus.lock().unwrap() = Some(id);
         Ok(json!({
             "ok": true,
@@ -240,8 +316,15 @@ impl Tools {
         };
         let infos = self.host.infos();
         let info = infos.iter().find(|info| info.id == id);
+        let now = (self.clock)();
+        let just_given_work = self
+            .touched
+            .lock()
+            .unwrap()
+            .get(&id)
+            .is_some_and(|at| now.saturating_sub(*at) < SETTLE_MS);
         match (info, until) {
-            (Some(info), Until::Done) if !info.busy() => {
+            (Some(info), Until::Done) if !info.busy() && !just_given_work => {
                 return Ok(
                     json!({"already": true, "note": format!("it is already {}", info.state_word())}),
                 );
@@ -257,6 +340,8 @@ impl Tools {
             id,
             until,
             was_busy: info.is_some_and(Info::busy),
+            registered: now,
+            expects_busy: just_given_work,
         });
         Ok(json!({"ok": true, "note": "the developer will hear when it happens"}))
     }
@@ -360,6 +445,7 @@ impl Tools {
     pub fn poll(&self) -> Polled {
         let infos = self.host.infos();
         let mut polled = Polled::default();
+        let now = (self.clock)();
         let mut watches = self.watches.lock().unwrap();
         watches.retain_mut(|watch| {
             let Some(info) = infos.iter().find(|info| info.id == watch.id) else {
@@ -368,9 +454,13 @@ impl Tools {
             let fired = match watch.until {
                 Until::Done => {
                     let busy = info.busy();
-                    let finished = watch.was_busy && !busy;
-                    watch.was_busy = busy;
-                    finished
+                    watch.was_busy |= busy;
+                    // Work given a moment ago can start and end between two looks.
+                    let never_seen_busy = watch.expects_busy
+                        && !watch.was_busy
+                        && !busy
+                        && now.saturating_sub(watch.registered) >= NEVER_BUSY_MS;
+                    (watch.was_busy && !busy) || never_seen_busy
                 }
                 Until::NeedsYou => info.needs_you(),
             };
@@ -387,6 +477,7 @@ impl Tools {
                     _ => format!("\"{}\" finished.{said}", info.title),
                 };
                 self.seen.lock().unwrap().told(&info.id, &info.tail);
+                self.known.lock().unwrap().record(info);
                 polled.spoken.push(line);
             }
             !fired
@@ -405,6 +496,11 @@ impl Tools {
             polled.quiet.push(change.text);
         }
         polled
+    }
+
+    /// Whether a tool only looks and never changes anything.
+    pub fn is_read_only(name: &str) -> bool {
+        matches!(name, "list_sessions" | "read_session")
     }
 
     /// Whether anything is being watched, which keeps a quiet call open.
@@ -605,6 +701,51 @@ mod tests {
     }
 
     #[test]
+    fn a_session_can_be_named_by_its_title_this_or_it() {
+        let (host, tools) = tools(two());
+        tools.run("send_message", &json!({"id": "VOICE mode", "text": "go"}));
+        assert_eq!(
+            host.log.lock().unwrap().last().unwrap(),
+            "send opencode:host:b go"
+        );
+        tools.run("interrupt_session", &json!({"id": "it"}));
+        assert_eq!(
+            host.log.lock().unwrap().last().unwrap(),
+            "interrupt opencode:host:b"
+        );
+        tools.set_viewing(Some("opencode:host:a".into()));
+        tools.run("interrupt_session", &json!({"id": "this"}));
+        assert_eq!(
+            host.log.lock().unwrap().last().unwrap(),
+            "interrupt opencode:host:a"
+        );
+        let none = tools.run("interrupt_session", &json!({"id": "dentist"}));
+        assert!(none["error"]
+            .as_str()
+            .unwrap()
+            .contains("not a session id or a session title"));
+    }
+
+    #[test]
+    fn a_title_that_matches_two_sessions_asks_which() {
+        let mut infos = two();
+        infos.push(info(
+            "opencode:host:c",
+            "voice notes",
+            "misc",
+            SessionState::Completed,
+        ));
+        let (_, tools) = tools(infos);
+        let result = tools.run("read_session", &json!({"id": "voice"}));
+        let error = result["error"].as_str().unwrap();
+        assert!(
+            error.contains("more than one session")
+                && error.contains("voice mode")
+                && error.contains("voice notes")
+        );
+    }
+
+    #[test]
     fn a_host_failure_comes_back_as_an_error_the_model_can_say() {
         let (host, tools) = tools(two());
         tools.run("list_sessions", &json!({}));
@@ -629,6 +770,23 @@ mod tests {
         );
         tools.run("read_session", &json!({"id": "s1", "last_n": 500}));
         assert_eq!(host.log.lock().unwrap()[1], "read opencode:host:a 20");
+    }
+
+    #[test]
+    fn one_request_cannot_read_every_session() {
+        let (_, tools) = tools(two());
+        tools.run("list_sessions", &json!({}));
+        for _ in 0..READS_PER_WINDOW {
+            assert!(tools
+                .run("read_session", &json!({"id": "s1"}))
+                .get("messages")
+                .is_some());
+        }
+        let refused = tools.run("read_session", &json!({"id": "s2"}));
+        assert!(refused["error"]
+            .as_str()
+            .unwrap()
+            .contains("enough sessions have been read"));
     }
 
     #[test]
@@ -807,6 +965,59 @@ mod tests {
         assert!(polled.spoken[0].contains("voice mode") && polled.spoken[0].contains("Merged."));
         assert!(!tools.watching());
         assert!(tools.poll().spoken.is_empty());
+    }
+
+    fn timed(infos: Vec<Info>) -> (Arc<FakeHost>, Tools, Arc<std::sync::atomic::AtomicU64>) {
+        let host = FakeHost::with(infos);
+        let clock = Arc::new(std::sync::atomic::AtomicU64::new(1_100_000));
+        let reader = clock.clone();
+        let tools = Tools::with_clock(
+            host.clone(),
+            Arc::new(move || reader.load(std::sync::atomic::Ordering::SeqCst)),
+        );
+        (host, tools, clock)
+    }
+
+    #[test]
+    fn a_watch_right_after_a_message_waits_for_the_work_it_started() {
+        let (host, tools, _) = timed(vec![info(
+            "opencode:host:a",
+            "haiku",
+            "f",
+            SessionState::Completed,
+        )]);
+        tools.run("list_sessions", &json!({}));
+        tools.run("send_message", &json!({"id": "s1", "text": "one more"}));
+        // The dashboard has not seen the session start working yet.
+        let watched = tools.run("watch_session", &json!({"id": "s1"}));
+        assert_eq!(watched["ok"], true, "{watched}");
+        assert!(tools.poll().spoken.is_empty());
+        host.infos.lock().unwrap()[0].state = SessionState::Working;
+        assert!(tools.poll().spoken.is_empty());
+        {
+            let mut infos = host.infos.lock().unwrap();
+            infos[0].state = SessionState::Completed;
+            infos[0].tail = "Wrote it.".into();
+        }
+        let polled = tools.poll();
+        assert_eq!(polled.spoken.len(), 1);
+        assert!(polled.spoken[0].contains("Wrote it."));
+    }
+
+    #[test]
+    fn a_watch_that_never_sees_work_still_ends_after_a_while() {
+        let (_, tools, clock) = timed(vec![info(
+            "opencode:host:a",
+            "haiku",
+            "f",
+            SessionState::Completed,
+        )]);
+        tools.run("list_sessions", &json!({}));
+        tools.run("send_message", &json!({"id": "s1", "text": "quick"}));
+        tools.run("watch_session", &json!({"id": "s1"}));
+        assert!(tools.poll().spoken.is_empty());
+        clock.fetch_add(NEVER_BUSY_MS + 1, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(tools.poll().spoken.len(), 1);
     }
 
     #[test]

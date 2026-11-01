@@ -187,9 +187,11 @@ impl Seen {
             "title": info.title,
             "folder": info.folder(),
             "state": info.state_word(),
-            "you_last_wrote": ago(now_ms, info.last_user_ms),
             "agent_last_active": ago(now_ms, info.updated_ms),
         });
+        if info.last_user_ms > 0 {
+            row["you_last_wrote"] = json!(ago(now_ms, info.last_user_ms));
+        }
         if let Some(doing) = &info.doing {
             row["doing"] = json!(format!("waiting on a background command: {doing}"));
         }
@@ -233,6 +235,12 @@ pub struct Known {
 }
 
 impl Known {
+    /// The model has been told how this session looks now: no change to report.
+    pub fn record(&mut self, info: &Info) {
+        self.seen
+            .insert(info.id.clone(), (info.state, info.tail.clone()));
+    }
+
     /// Records the current state of `infos`. The first look at a session only
     /// records it; after that a changed state, or a changed ending of a
     /// finished session, is a change.

@@ -1,9 +1,164 @@
 [
-  {"type":"function","name":"list_sessions","description":"List the developer's coding sessions with state (working, needs_you, done), folder, when they last wrote to it, what it is doing and a preview of what it last said. By default only the sessions they are actively working in. Use scope \"all\" or a query to find an older one.","parameters":{"type":"object","properties":{"scope":{"type":"string","enum":["recent","all"]},"query":{"type":"string","description":"Part of a session title or folder name."}},"additionalProperties":false}},
-  {"type":"function","name":"read_session","description":"Read the last messages of one session.","parameters":{"type":"object","properties":{"id":{"type":"string"},"last_n":{"type":"integer","description":"How many messages, default 6."}},"required":["id"],"additionalProperties":false}},
-  {"type":"function","name":"send_message","description":"Send a message to a session, as if the developer had typed it. A busy session queues it. This is also how to retry or continue a session whose last turn failed: send \"continue\".","parameters":{"type":"object","properties":{"id":{"type":"string"},"text":{"type":"string"}},"required":["id","text"],"additionalProperties":false}},
-  {"type":"function","name":"interrupt_session","description":"Stop the turn a session is running, like pressing Escape.","parameters":{"type":"object","properties":{"id":{"type":"string"}},"required":["id"],"additionalProperties":false}},
-  {"type":"function","name":"edit_last_message","description":"Correct the last message sent to a session: stops it if it is running, rewinds to just before that message (like /undo, including its file changes) and sends the corrected text.","parameters":{"type":"object","properties":{"id":{"type":"string"},"text":{"type":"string"}},"required":["id","text"],"additionalProperties":false}},
-  {"type":"function","name":"start_session","description":"Start a brand new session in a folder with a first task. Never use it to retry, restart, recover or continue an existing session: use send_message for that. folder is a path, a folder name the developer has used, or \"same\" for the folder of the session being discussed.","parameters":{"type":"object","properties":{"folder":{"type":"string"},"task":{"type":"string"}},"required":["folder","task"],"additionalProperties":false}},
-  {"type":"function","name":"watch_session","description":"Tell the developer when a session finishes or needs them.","parameters":{"type":"object","properties":{"id":{"type":"string"},"until":{"type":"string","enum":["done","needs_you"]}},"required":["id"],"additionalProperties":false}}
+  {
+    "type": "function",
+    "name": "list_sessions",
+    "description": "List the developer's coding sessions with state (working, needs_you, done), folder, when they last wrote to it, what it is doing and a preview of what it last said. By default only the sessions they are actively working in. Use scope \"all\" or a query to find an older one.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "scope": {
+          "type": "string",
+          "enum": [
+            "recent",
+            "all"
+          ]
+        },
+        "query": {
+          "type": "string",
+          "description": "Part of a session title or folder name."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "read_session",
+    "description": "Read the last messages of one session.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "A session id from list_sessions or start_session, \"this\" for the session on screen, \"it\" for the one just discussed, or part of its title."
+        },
+        "last_n": {
+          "type": "integer",
+          "description": "How many messages, default 6."
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "send_message",
+    "description": "Add a message to a session, as if the developer had typed it. A busy session queues it behind what it is doing; this does not stop or change the work in progress (use interrupt_session to stop it, edit_last_message to change what it was just asked). This is also how to retry or continue a session whose last turn failed: send \"continue\".",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "A session id from list_sessions or start_session, \"this\" for the session on screen, \"it\" for the one just discussed, or part of its title."
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "text"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "interrupt_session",
+    "description": "Stop the turn a session is running, like pressing Escape.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "A session id from list_sessions or start_session, \"this\" for the session on screen, \"it\" for the one just discussed, or part of its title."
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "edit_last_message",
+    "description": "Use this when the developer changes their mind about what they just asked a session (\"actually\", \"no, instead\", \"change that to\"). Corrects the last message sent to a session: stops it if it is running, rewinds to just before that message (like /undo, including its file changes) and sends the corrected text.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "A session id from list_sessions or start_session, \"this\" for the session on screen, \"it\" for the one just discussed, or part of its title."
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "text"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "start_session",
+    "description": "Start a brand new session in a folder with a first task. Never use it to retry, restart, recover or continue an existing session: use send_message for that. folder is a path, a folder name the developer has used, or \"same\" for the folder of the session being discussed.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "folder": {
+          "type": "string"
+        },
+        "task": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "folder",
+        "task"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "watch_session",
+    "description": "Tell the developer when a session finishes or needs them.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "A session id from list_sessions or start_session, \"this\" for the session on screen, \"it\" for the one just discussed, or part of its title."
+        },
+        "until": {
+          "type": "string",
+          "enum": [
+            "done",
+            "needs_you"
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "end_call",
+    "description": "Hang up the voice call when the developer says they are done (\"that's all\", \"bye\", \"hang up\", \"end the call\"). The call stops a few seconds later, so say a short goodbye.",
+    "parameters": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  }
 ]

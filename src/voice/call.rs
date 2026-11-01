@@ -33,7 +33,11 @@ pub struct FunctionCall {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Action {
     /// The backend asked for these tools; return their results and continue.
-    Run(Vec<FunctionCall>),
+    /// `stale`: the developer has said something new since this was asked.
+    Run {
+        calls: Vec<FunctionCall>,
+        stale: bool,
+    },
     /// OpenAI says the session is open.
     Started,
     /// OpenAI closed the session.
@@ -46,10 +50,45 @@ pub enum Action {
 pub struct Call {
     lines: VecDeque<Line>,
     pending: HashMap<String, Vec<FunctionCall>>,
+    /// The newest request the voice handed to the backend.
+    latest_delegation: String,
     pub session_id: Option<String>,
     pub usage_seconds: u64,
     /// Whether anyone has spoken since the call opened or since this was cleared.
     pub heard: bool,
+    /// What they just said sounds like goodbye.
+    pub farewell: bool,
+    /// Whether anything they said has been transcribed yet.
+    pub user_spoke: bool,
+}
+
+/// "That's all, bye": a short line that ends the call.
+pub fn is_farewell(line: &str) -> bool {
+    let text = line.to_lowercase().replace('\u{2019}', "'");
+    let words: Vec<&str> = text
+        .split(|c: char| !c.is_alphanumeric() && c != '\'')
+        .filter(|word| !word.is_empty())
+        .collect();
+    if words.is_empty() || words.len() > 12 {
+        return false;
+    }
+    let joined = words.join(" ");
+    [
+        "goodbye",
+        "good bye",
+        "hang up",
+        "that's all",
+        "that is all",
+        "end the call",
+        "end call",
+        "we're done",
+        "i'm done",
+        "that will be all",
+        "talk to you later",
+    ]
+    .iter()
+    .any(|phrase| joined.contains(phrase))
+        || words.contains(&"bye")
 }
 
 impl Call {
@@ -69,6 +108,10 @@ impl Call {
         }
         if let Some(line) = self.lines.back_mut() {
             line.text.push_str(delta);
+            if who == Who::You {
+                self.farewell = is_farewell(&line.text);
+                self.user_spoke = true;
+            }
         }
     }
 
@@ -114,6 +157,12 @@ impl Call {
                     .unwrap_or("the voice session reported an error");
                 vec![Action::Failed(message.to_owned())]
             }
+            "session.delegation.created" => {
+                if let Some(id) = event.pointer("/delegation/id").and_then(Value::as_str) {
+                    self.latest_delegation = id.to_owned();
+                }
+                Vec::new()
+            }
             "response.event" => self.on_response_event(event),
             _ => Vec::new(),
         }
@@ -152,7 +201,11 @@ impl Call {
                 Vec::new()
             }
             "response.completed" | "response.done" => match self.pending.remove(&delegation) {
-                Some(calls) if !calls.is_empty() => vec![Action::Run(calls)],
+                Some(calls) if !calls.is_empty() => {
+                    let stale =
+                        !self.latest_delegation.is_empty() && self.latest_delegation != delegation;
+                    vec![Action::Run { calls, stale }]
+                }
                 _ => Vec::new(),
             },
             "response.failed" | "response.incomplete" => {
@@ -268,7 +321,7 @@ mod tests {
             ))
             .is_empty());
         let actions = call.on_event(&response_event("d1", json!({"type": "response.completed"})));
-        let [Action::Run(calls)] = actions.as_slice() else {
+        let [Action::Run { calls, .. }] = actions.as_slice() else {
             panic!("expected one run: {actions:?}")
         };
         assert_eq!(
@@ -294,8 +347,21 @@ mod tests {
         ));
         let actions = call.on_event(&response_event("d2", json!({"type": "response.completed"})));
         assert!(
-            matches!(&actions[0], Action::Run(calls) if calls.len() == 1 && calls[0].call_id == "c2")
+            matches!(&actions[0], Action::Run { calls, .. } if calls.len() == 1 && calls[0].call_id == "c2")
         );
+    }
+
+    #[test]
+    fn calls_of_an_older_request_are_stale_once_a_newer_one_exists() {
+        let mut call = Call::default();
+        call.on_event(&json!({"type": "session.delegation.created", "delegation": {"id": "d1"}}));
+        call.on_event(&response_event("d1", done_call("c1", "read_session", "{}")));
+        call.on_event(&json!({"type": "session.delegation.created", "delegation": {"id": "d2"}}));
+        let actions = call.on_event(&response_event("d1", json!({"type": "response.completed"})));
+        assert!(matches!(&actions[0], Action::Run { stale: true, .. }));
+        call.on_event(&response_event("d2", done_call("c2", "read_session", "{}")));
+        let actions = call.on_event(&response_event("d2", json!({"type": "response.completed"})));
+        assert!(matches!(&actions[0], Action::Run { stale: false, .. }));
     }
 
     #[test]
@@ -334,6 +400,24 @@ mod tests {
         );
         assert_eq!(lines[1].text, "Checking. Two do.");
         assert!(call.heard);
+    }
+
+    #[test]
+    fn a_short_goodbye_is_recognised_and_a_longer_request_is_not() {
+        assert!(is_farewell("Okay, that is all for now. Thanks. Bye."));
+        assert!(is_farewell("hang up"));
+        assert!(is_farewell("That’s all, thank you"));
+        assert!(!is_farewell("Tell the pineapple session that is all I needed from it and stop the old essay run as well"));
+        assert!(!is_farewell("What does the bypass session do"));
+        assert!(!is_farewell(""));
+        let mut call = Call::default();
+        call.on_event(&json!({"type": "session.input_transcript.delta", "delta": "okay bye"}));
+        assert!(call.farewell);
+        call.on_event(&json!({"type": "session.output_transcript.delta", "delta": "Bye."}));
+        call.on_event(
+            &json!({"type": "session.input_transcript.delta", "delta": "wait, one more thing"}),
+        );
+        assert!(!call.farewell);
     }
 
     #[test]
@@ -402,7 +486,8 @@ mod tests {
                 "interrupt_session",
                 "edit_last_message",
                 "start_session",
-                "watch_session"
+                "watch_session",
+                "end_call"
             ]
         );
         assert!(body["session"]["instructions"]

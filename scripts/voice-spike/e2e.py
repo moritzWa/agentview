@@ -68,6 +68,9 @@ def chrome_processes():
     return [l for l in out.splitlines() if "voice/browser-profile" in l or "browser-profile" in l and "headless" in l]
 
 pump(10)
+for _ in range(int(os.environ.get("E2E_SELECT_DOWN", "0"))):
+    os.write(fd, b"\x1b[B")
+    pump(0.3)
 print("dashboard up; footer:", footer()[:120])
 before = len(chrome_processes())
 os.write(fd, b"\x0b")  # ctrl+k
