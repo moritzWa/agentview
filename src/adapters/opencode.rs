@@ -2176,7 +2176,20 @@ fn parse_opencode_models(input: &str) -> Result<Vec<String>> {
     Ok(models.into_iter().collect())
 }
 
+/// When the conversation last moved. The session row's own update time also
+/// moves for events that are not conversation, such as a model switch, so the
+/// latest message wins when there is one.
+fn activity_ms(record: &OpenCodeRecord) -> u64 {
+    record
+        .last
+        .as_ref()
+        .map(|last| last.completed.unwrap_or(0).max(last.created))
+        .filter(|&time| time > 0)
+        .unwrap_or(record.updated)
+}
+
 fn normalize_record(record: OpenCodeRecord, runtime: Runtime) -> AgentSession {
+    let activity_ms = activity_ms(&record);
     let runtime_id = match &runtime {
         Runtime::Host => "host",
         Runtime::Docker { container_id, .. } => container_id,
@@ -2202,7 +2215,7 @@ fn normalize_record(record: OpenCodeRecord, runtime: Runtime) -> AgentSession {
         raw_state: Some("persisted".into()),
         pid: None,
         started_at: Some(SystemTime::UNIX_EPOCH + Duration::from_millis(record.created)),
-        updated_at: Some(SystemTime::UNIX_EPOCH + Duration::from_millis(record.updated)),
+        updated_at: Some(SystemTime::UNIX_EPOCH + Duration::from_millis(activity_ms)),
         pull_requests: None,
         capabilities,
     }
@@ -2227,6 +2240,29 @@ fn is_throwaway_directory(directory: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_session_row_bumped_by_a_model_switch_keeps_its_last_message_time() {
+        let sessions = parse_opencode_session_list(
+            r#"[
+              {"id":"ses_switched","title":"t","updated":9000,"created":1,"projectId":"g","directory":"/work",
+               "last":{"role":"assistant","created":1000,"completed":2000}},
+              {"id":"ses_plain","title":"t","updated":7000,"created":1,"projectId":"g","directory":"/work"}
+            ]"#,
+            Runtime::Host,
+        )
+        .unwrap();
+        let millis = |session: &AgentSession| {
+            session
+                .updated_at
+                .unwrap()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_millis()
+        };
+        assert_eq!(millis(&sessions[0]), 2000);
+        assert_eq!(millis(&sessions[1]), 7000);
+    }
+
     #[test]
     fn a_native_background_shell_keeps_its_idle_session_working() {
         let managed = |id: &str, state| ManagedOpenCodeSession {

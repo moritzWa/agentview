@@ -413,6 +413,7 @@ fn owned(entry: &Entry, messages: &Value) -> OwnedSession {
             .unwrap_or_else(|| "Adopted from a verified V2 handoff".into()),
         created_at_ms: entry.created_at_ms,
         updated_at_ms: entry.updated_at_ms,
+        server_updated_ms: 0,
     }
 }
 

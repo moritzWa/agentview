@@ -337,13 +337,12 @@ pub fn run_dashboard(
     }
     // The queue is local files, so it is read in every mode except a fixture
     // that has not asked for a queue directory of its own.
-    let queue_watcher = if control.provider_io_enabled()
-        || std::env::var_os("AGENT_BOUNCER_DIR").is_some()
-    {
-        crate::queue::QueueWatcher::spawn()
-    } else {
-        None
-    };
+    let queue_watcher =
+        if control.provider_io_enabled() || std::env::var_os("AGENT_BOUNCER_DIR").is_some() {
+            crate::queue::QueueWatcher::spawn()
+        } else {
+            None
+        };
     let mut usage_minute = 0;
     let mut last_queue_second = 0;
     let mut terminal = TerminalSession::enter()?;
@@ -832,7 +831,9 @@ pub fn run_dashboard(
         }
         // Waits and run times count up, so a busy queue redraws every second.
         let queue_second = crate::queue::now_ms() / 1000;
-        if app.queue.as_ref().is_some_and(|queue| !queue.is_idle()) && queue_second != last_queue_second {
+        if app.queue.as_ref().is_some_and(|queue| !queue.is_idle())
+            && queue_second != last_queue_second
+        {
             last_queue_second = queue_second;
             needs_draw = true;
         }

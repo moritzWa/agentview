@@ -204,7 +204,9 @@ fn queue_panel_height(app: &App, spare: u16) -> u16 {
         return 0;
     }
     let jobs = queue.running.len() + queue.waiting.len();
-    let rows = jobs.min(QUEUE_PANEL_JOB_ROWS).min(usize::from(spare - fixed));
+    let rows = jobs
+        .min(QUEUE_PANEL_JOB_ROWS)
+        .min(usize::from(spare - fixed));
     fixed + rows as u16
 }
 
@@ -236,7 +238,11 @@ fn render_queue_panel(frame: &mut Frame<'_>, app: &App, area: Rect) {
     }
     let mut lines = vec![Line::default(), Line::from(heading)];
 
-    let shown = if jobs > rows { rows.saturating_sub(1) } else { rows };
+    let shown = if jobs > rows {
+        rows.saturating_sub(1)
+    } else {
+        rows
+    };
     let folder = |cwd: &str| {
         let parts: Vec<_> = std::path::Path::new(cwd)
             .components()
@@ -263,27 +269,41 @@ fn render_queue_panel(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .map(|(name, _)| display_width(name))
         .max()
         .unwrap_or(0);
-    let room = usize::from(area.width).saturating_sub(STATUS_WIDTH + TIME_WIDTH + 2 + 2 + folder_width);
+    let room =
+        usize::from(area.width).saturating_sub(STATUS_WIDTH + TIME_WIDTH + 2 + 2 + folder_width);
     let name_width = longest_name.min(room.max(12));
     let row = |status: &str, style: Style, since_ms: u64, name: &str, cwd: &str| {
         Line::from(vec![
             Span::styled(format!("{status:<STATUS_WIDTH$}"), style),
             Span::styled(
-                format!("{:>TIME_WIDTH$}  ", crate::queue::duration_text(now.saturating_sub(since_ms))),
+                format!(
+                    "{:>TIME_WIDTH$}  ",
+                    crate::queue::duration_text(now.saturating_sub(since_ms))
+                ),
                 dim,
             ),
             Span::raw(pad_to_width(truncate(name, name_width), name_width)),
             Span::styled(format!("  {}", truncate(&folder(cwd), folder_width)), dim),
         ])
     };
-    let running = queue
-        .running
-        .iter()
-        .map(|job| row("Running", Style::default().fg(palette().fg), job.started_ms, &job.name(), &job.cwd));
-    let waiting = queue
-        .waiting
-        .iter()
-        .map(|job| row(job.status_text(), attention, job.since_ms, &job.name(), &job.cwd));
+    let running = queue.running.iter().map(|job| {
+        row(
+            "Running",
+            Style::default().fg(palette().fg),
+            job.started_ms,
+            &job.name(),
+            &job.cwd,
+        )
+    });
+    let waiting = queue.waiting.iter().map(|job| {
+        row(
+            job.status_text(),
+            attention,
+            job.since_ms,
+            &job.name(),
+            &job.cwd,
+        )
+    });
     lines.extend(running.chain(waiting).take(shown));
     if jobs > shown {
         lines.push(Line::from(Span::styled(
@@ -307,24 +327,22 @@ fn queued_note(app: &App, session: &AgentSession) -> Option<String> {
     // sessions share that folder there is no telling which one asked, so
     // neither says anything.
     let depth = |other: &AgentSession| other.cwd.components().count();
-    let (place, job) = app
-        .queue
-        .as_ref()?
-        .waiting
-        .iter()
-        .enumerate()
-        .find_map(|(index, job)| {
-            let folder = std::path::Path::new(&job.cwd);
-            let owners = app
-                .snapshot
-                .sessions
-                .iter()
-                .filter(|other| other.state == SessionState::Working && folder.starts_with(&other.cwd));
-            let closest = owners.clone().map(depth).max()?;
-            let mut nearest = owners.filter(|other| depth(other) == closest);
-            let first = nearest.next()?;
-            (nearest.next().is_none() && first.id == session.id).then_some((index + 1, job))
-        })?;
+    let (place, job) =
+        app.queue
+            .as_ref()?
+            .waiting
+            .iter()
+            .enumerate()
+            .find_map(|(index, job)| {
+                let folder = std::path::Path::new(&job.cwd);
+                let owners = app.snapshot.sessions.iter().filter(|other| {
+                    other.state == SessionState::Working && folder.starts_with(&other.cwd)
+                });
+                let closest = owners.clone().map(depth).max()?;
+                let mut nearest = owners.filter(|other| depth(other) == closest);
+                let first = nearest.next()?;
+                (nearest.next().is_none() && first.id == session.id).then_some((index + 1, job))
+            })?;
     Some(format!(
         "#{place} in line for {} · {}",
         truncate(&job.name(), 40),
@@ -586,7 +604,10 @@ fn render_tree_session_row(
     queued: Option<&str>,
 ) -> Line<'static> {
     let waiting = view_mode == ViewMode::Directory
-        && !matches!(session.state, SessionState::Working | SessionState::NeedsInput)
+        && !matches!(
+            session.state,
+            SessionState::Working | SessionState::NeedsInput
+        )
         && children != ChildActivity::default();
     let shown_state = if waiting {
         SessionState::Working
@@ -3128,14 +3149,19 @@ mod tests {
         };
         let row_text = |state, view_mode| {
             let item = session("manager", state);
-            render_tree_session_row(&item, view_mode, 120, true, false, true, None, 0, children, None)
-                .spans
-                .iter()
-                .map(|span| span.content.to_string())
-                .collect::<String>()
+            render_tree_session_row(
+                &item, view_mode, 120, true, false, true, None, 0, children, None,
+            )
+            .spans
+            .iter()
+            .map(|span| span.content.to_string())
+            .collect::<String>()
         };
         let done = row_text(SessionState::Completed, ViewMode::Directory);
-        assert!(done.contains("Waiting · 2 working · 1 needs input"), "{done}");
+        assert!(
+            done.contains("Waiting · 2 working · 1 needs input"),
+            "{done}"
+        );
         assert!(done.contains(" ✳ "), "{done}");
 
         let asking = row_text(SessionState::NeedsInput, ViewMode::Directory);
@@ -3154,7 +3180,11 @@ mod tests {
             ChildActivity::default(),
             None,
         );
-        let quiet: String = quiet.spans.iter().map(|span| span.content.to_string()).collect();
+        let quiet: String = quiet
+            .spans
+            .iter()
+            .map(|span| span.content.to_string())
+            .collect();
         assert!(quiet.contains("Done"), "{quiet}");
     }
 
@@ -4381,18 +4411,28 @@ mod tests {
             .map(|span| span.content.to_string())
             .collect::<String>()
         };
-        assert!(row(Some(&note)).contains("Queued · #1 in line for e2e"), "{}", row(Some(&note)));
+        assert!(
+            row(Some(&note)).contains("Queued · #1 in line for e2e"),
+            "{}",
+            row(Some(&note))
+        );
         assert!(!row(None).contains("Queued"));
 
         let mut sibling = session("sibling", SessionState::Working);
         sibling.cwd = PathBuf::from("/work/web");
         app.snapshot.sessions.push(sibling);
-        assert!(queued_note(&app, &app.snapshot.sessions[0]).is_none(), "the closer folder owns the job");
+        assert!(
+            queued_note(&app, &app.snapshot.sessions[0]).is_none(),
+            "the closer folder owns the job"
+        );
         assert!(queued_note(&app, &app.snapshot.sessions[1]).is_some());
         let mut twin = session("twin", SessionState::Working);
         twin.cwd = PathBuf::from("/work/web");
         app.snapshot.sessions.push(twin);
-        assert!(queued_note(&app, &app.snapshot.sessions[1]).is_none(), "two sessions share the folder");
+        assert!(
+            queued_note(&app, &app.snapshot.sessions[1]).is_none(),
+            "two sessions share the folder"
+        );
         app.snapshot.sessions.truncate(1);
         app.snapshot.sessions[0].state = SessionState::Completed;
         assert!(queued_note(&app, &app.snapshot.sessions[0]).is_none());
@@ -4410,7 +4450,10 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(110, 30)).unwrap();
         terminal.draw(|frame| render(frame, &app)).unwrap();
         let rendered = buffer_text(terminal.backend().buffer());
-        assert!(rendered.contains("Heavy jobs · all clear in ~3m"), "{rendered}");
+        assert!(
+            rendered.contains("Heavy jobs · all clear in ~3m"),
+            "{rendered}"
+        );
         let running = rendered.find("Running").expect(&rendered);
         let waiting = rendered.find("Waiting").expect(&rendered);
         let composer = rendered.find("describe a task").expect(&rendered);
@@ -4451,7 +4494,10 @@ mod tests {
             .map(|line| line.find("cargo-").expect(&rendered))
             .collect();
         assert_eq!(columns.len(), 3, "{rendered}");
-        assert!(columns.iter().all(|column| *column == columns[0]), "{rendered}");
+        assert!(
+            columns.iter().all(|column| *column == columns[0]),
+            "{rendered}"
+        );
         assert!(rendered.contains("15m08s"), "{rendered}");
     }
 
@@ -4482,7 +4528,8 @@ mod tests {
         running.cwd = "/Users/m/.worktrees/public-source".into();
         let mut waiting = queue.waiting[0].clone();
         waiting.label = None;
-        waiting.cmd = "bash -c set -e\ngo test -C services/workspace-exec-daemon -count=1 -v ./...".into();
+        waiting.cmd =
+            "bash -c set -e\ngo test -C services/workspace-exec-daemon -count=1 -v ./...".into();
         waiting.cwd = "/Users/m/Code/arca-wt/browser-profile".into();
         queue.running = vec![running];
         queue.waiting = vec![waiting];
@@ -4490,8 +4537,14 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(110, 30)).unwrap();
         terminal.draw(|frame| render(frame, &app)).unwrap();
         let rendered = buffer_text(terminal.backend().buffer());
-        assert!(rendered.contains("bun run test:web:backend -- tests/backend/public-mcp.test.ts"), "{rendered}");
-        assert!(rendered.contains("go test -C services/workspace-exec-daemon -count=1 -v ./..."), "{rendered}");
+        assert!(
+            rendered.contains("bun run test:web:backend -- tests/backend/public-mcp.test.ts"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("go test -C services/workspace-exec-daemon -count=1 -v ./..."),
+            "{rendered}"
+        );
         assert!(rendered.contains("arca-wt/browser-profile"), "{rendered}");
         println!("{rendered}");
     }

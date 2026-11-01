@@ -343,7 +343,13 @@ mod tests {
         let queue = Queue::parse(STATUS.as_bytes()).unwrap();
         assert_eq!((queue.slots_in_use, queue.slots_total), (2, 2));
         assert_eq!(queue.running[0].name(), "cargo test");
-        assert_eq!(friendly_name(None, "bash -c cd apps/web && node scripts/test.mjs a.tsx > /tmp/x.log 2>&1; echo EXIT"), "node scripts/test.mjs a.tsx");
+        assert_eq!(
+            friendly_name(
+                None,
+                "bash -c cd apps/web && node scripts/test.mjs a.tsx > /tmp/x.log 2>&1; echo EXIT"
+            ),
+            "node scripts/test.mjs a.tsx"
+        );
         assert_eq!(queue.waiting[0].name(), "e2e");
         assert_eq!(queue.waiting[1].reason_text(), "others are ahead");
         assert!(!queue.is_idle());
@@ -353,9 +359,18 @@ mod tests {
     fn commands_lose_their_wrapping_noise() {
         let name = |cmd: &str| friendly_name(None, cmd);
         assert_eq!(name("env -u FORCE_COLOR NO_COLOR=1 PATH=/a:/b bash -c git commit --no-edit && bun run test:web && git push"), "bun run test:web");
-        assert_eq!(name("bash -c set -e\ngo test -count=1 ./...\nbun run ship"), "go test -count=1 ./...");
-        assert_eq!(name("fnm exec --using 24.22.1 -- bun run test:web:backend -- tests/a.ts"), "bun run test:web:backend -- tests/a.ts");
-        assert_eq!(name("env POSTGRES_URL=postgresql://x NODE_ENV=dev /usr/local/bin/bun run test"), "bun run test");
+        assert_eq!(
+            name("bash -c set -e\ngo test -count=1 ./...\nbun run ship"),
+            "go test -count=1 ./..."
+        );
+        assert_eq!(
+            name("fnm exec --using 24.22.1 -- bun run test:web:backend -- tests/a.ts"),
+            "bun run test:web:backend -- tests/a.ts"
+        );
+        assert_eq!(
+            name("env POSTGRES_URL=postgresql://x NODE_ENV=dev /usr/local/bin/bun run test"),
+            "bun run test"
+        );
         assert_eq!(name("cargo test --lib"), "cargo test --lib");
         assert_eq!(name("set -e"), "set -e");
         assert_eq!(friendly_name(Some("evals"), "x"), "evals");

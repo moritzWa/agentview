@@ -83,7 +83,14 @@ struct OwnedSession {
     title: String,
     summary: String,
     created_at_ms: u64,
+    /// When the conversation last moved: its latest real message, not the
+    /// server's session time, which events such as a model switch also bump.
     updated_at_ms: u64,
+    /// The server's own session update time at the last refresh. Only a change
+    /// in it (or a title change) makes the next refresh read the messages.
+    /// Zero until a record written by an older version is read once.
+    #[serde(default)]
+    server_updated_ms: u64,
 }
 
 pub const MANAGED_RAW_STATE: &str = "managed_server";
@@ -324,6 +331,7 @@ impl OpenCodeSupervisor {
                     .and_then(Value::as_u64)
                     .unwrap_or(now),
                 updated_at_ms: now,
+                server_updated_ms: 0,
             },
         );
         // Persist ownership before starting the turn. A 2xx async acceptance
@@ -360,7 +368,7 @@ impl OpenCodeSupervisor {
         }
         let mut refreshed = BTreeMap::new();
         for owned in record.sessions.values() {
-            let Some((title, updated_at_ms)) = provider_session_metadata(
+            let Some((title, server_updated_ms)) = provider_session_metadata(
                 sessions_by_directory
                     .get(&owned.cwd)
                     .expect("sessions were fetched for each owned directory"),
@@ -374,18 +382,30 @@ impl OpenCodeSupervisor {
             } else {
                 title
             };
-            if updated_at_ms <= owned.updated_at_ms && title == owned.title {
+            if owned.server_updated_ms != 0
+                && server_updated_ms <= owned.server_updated_ms
+                && title == owned.title
+            {
                 continue;
             }
             let path = with_directory_query(
                 &format!("/session/{}/message", url_path_segment(&owned.id)),
                 &owned.cwd,
             );
-            let summary = self
+            let messages = self
                 .request_json(&record, "GET", &format!("{path}&limit=20"), None)
-                .ok()
-                .and_then(|messages| latest_assistant_summary(&messages));
-            refreshed.insert(owned.id.clone(), (title, summary, updated_at_ms));
+                .ok();
+            let summary = messages.as_ref().and_then(latest_assistant_summary);
+            // No readable message: fall back to the server's time, so the
+            // session is not read again on every refresh.
+            let activity_ms = messages
+                .as_ref()
+                .and_then(latest_activity_ms)
+                .unwrap_or(server_updated_ms);
+            refreshed.insert(
+                owned.id.clone(),
+                (title, summary, server_updated_ms, activity_ms),
+            );
         }
         if !refreshed.is_empty() {
             // The requests above ran unlocked, so the record may have changed
@@ -394,18 +414,26 @@ impl OpenCodeSupervisor {
             if let Some(mut current) = load_record(&self.record_path, &self.state_dir)?
                 .filter(|current| current.pid == record.pid)
             {
-                for (id, (title, summary, updated_at_ms)) in refreshed {
+                for (id, (title, summary, server_updated_ms, activity_ms)) in refreshed {
                     let Some(owned) = current.sessions.get_mut(&id) else {
                         continue;
                     };
-                    if updated_at_ms < owned.updated_at_ms {
+                    if server_updated_ms < owned.server_updated_ms {
                         continue;
                     }
                     owned.title = title;
                     if let Some(summary) = summary {
                         owned.summary = summary;
                     }
-                    owned.updated_at_ms = updated_at_ms;
+                    // A record from an older version holds the server's time,
+                    // bumped by events that are not conversation: replace it.
+                    // Otherwise a reply made since the messages were read is newer.
+                    owned.updated_at_ms = if owned.server_updated_ms == 0 {
+                        activity_ms
+                    } else {
+                        activity_ms.max(owned.updated_at_ms)
+                    };
+                    owned.server_updated_ms = server_updated_ms;
                 }
                 save_record(&self.record_path, &current)?;
                 record = current;
@@ -2824,6 +2852,28 @@ fn is_default_title(title: &str) -> bool {
         })
 }
 
+/// When the conversation last moved, from a message list: the newest time a
+/// user, assistant, shell or compaction message was created or completed.
+/// Model and agent switches also change a session's own update time but are
+/// not conversation, so they are skipped.
+fn latest_activity_ms(value: &Value) -> Option<u64> {
+    value
+        .as_array()?
+        .iter()
+        .filter(|message| {
+            matches!(
+                message.pointer("/info/role").and_then(Value::as_str),
+                Some("user" | "assistant" | "synthetic" | "idle" | "shell" | "compaction")
+            )
+        })
+        .flat_map(|message| {
+            ["/info/time/created", "/info/time/completed"]
+                .into_iter()
+                .filter_map(|pointer| message.pointer(pointer).and_then(Value::as_u64))
+        })
+        .max()
+}
+
 fn latest_assistant_summary(value: &Value) -> Option<String> {
     let messages = value.as_array()?;
     messages
@@ -3677,6 +3727,7 @@ pub(crate) fn start_test_server(
                     summary: String::new(),
                     created_at_ms: 1,
                     updated_at_ms: 1,
+                    server_updated_ms: 0,
                 };
                 ((*id).to_owned(), session)
             })
@@ -4122,6 +4173,22 @@ mod tests {
     }
 
     #[test]
+    fn activity_time_skips_model_switches_and_reads_completion_times() {
+        let messages = json!([
+            {"info":{"role":"user","time":{"created":1_000}},"parts":[]},
+            {"info":{"role":"assistant","time":{"created":1_100,"completed":2_000}},"parts":[]},
+            {"info":{"role":"model-switched","time":{"created":9_000}},"parts":[]},
+            {"info":{"role":"agent-switched","time":{"created":9_500}},"parts":[]}
+        ]);
+        assert_eq!(latest_activity_ms(&messages), Some(2_000));
+        assert_eq!(latest_activity_ms(&json!([])), None);
+        assert_eq!(
+            latest_activity_ms(&json!([{"info":{"role":"model-switched","time":{"created":5}}}])),
+            None
+        );
+    }
+
+    #[test]
     fn extracts_current_provider_metadata_and_latest_assistant_summary() {
         let sessions = json!([
             {"id":"other","title":"other","time":{"updated":2}},
@@ -4234,6 +4301,7 @@ mod tests {
                     summary: String::new(),
                     created_at_ms: 1,
                     updated_at_ms: 1,
+                    server_updated_ms: 0,
                 },
             )]),
         };
@@ -4249,6 +4317,7 @@ mod tests {
             summary: String::new(),
             created_at_ms: 1,
             updated_at_ms: 1,
+            server_updated_ms: 0,
         };
         let record = ServerRecord {
             api: ApiVersion::V1,
