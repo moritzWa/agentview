@@ -900,7 +900,7 @@ fn bridge_session(
     let mut return_gesture = ReturnGesture::for_session(session_key);
     let mut redraw_restore_at = None;
     let mut voice_line_until: Option<Instant> = None;
-    let mut voice_badge: Option<(u16, usize)> = None;
+    let mut voice_badge: Option<VoiceBadge> = None;
     let mut voice_poll_at = Instant::now();
     let mut hidden_queries = TerminalQueryScanner::default();
     let mut shown_queries = TerminalQueryScanner::default();
@@ -1070,8 +1070,8 @@ fn bridge_session(
                         voice_badge = draw_voice_badge(&mut stdout, &screen, &text, voice_badge)?;
                     }
                     None => {
-                        if let Some((row, _)) = voice_badge.take() {
-                            restore_row(&mut stdout, &screen, row)?;
+                        if let Some(badge) = voice_badge.take() {
+                            restore_row(&mut stdout, &screen, badge.row)?;
                         }
                     }
                 }
@@ -2334,54 +2334,68 @@ fn write_return_hint(
     Ok(())
 }
 
-/// Draws `text` as a badge in the blank stretch of the bottom row, left of what
-/// the provider shows at the right (OpenCode puts its token count there), or in
-/// the top right corner when the bottom row has no room. Returns where it went,
+/// Where the call badge was drawn.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct VoiceBadge {
+    row: u16,
+    column: usize,
+    width: usize,
+}
+
+/// Draws `text` as a badge in the blank stretch of the provider's footer row,
+/// left of what it shows at the right (OpenCode puts its token count there), or
+/// in the top right corner when no footer row has room. Returns where it went,
 /// so it can be taken away again.
 fn draw_voice_badge(
     output: &mut impl Write,
     screen: &vt100::Parser,
     text: &str,
-    previous: Option<(u16, usize)>,
-) -> Result<Option<(u16, usize)>> {
+    previous: Option<VoiceBadge>,
+) -> Result<Option<VoiceBadge>> {
     let (rows, cols) = screen.screen().size();
     let label = format!(" {text} ");
     let width = label.chars().count();
-    if usize::from(cols) < width + 4 || rows < 2 {
+    if usize::from(cols) < width + 4 || rows < 4 {
         return Ok(None);
     }
-    let place = |row: u16| -> Option<usize> {
-        let line: Vec<char> = (0..cols)
+    let line_of = |row: u16| -> Vec<char> {
+        (0..cols)
             .map(|column| {
                 screen
                     .screen()
                     .cell(row, column)
                     .map_or(' ', |cell| cell.contents().chars().next().unwrap_or(' '))
             })
-            .collect();
-        // The rightmost text starts after the last long blank gap.
+            .collect()
+    };
+    // The blank stretch before the rightmost text of a row, if wide enough.
+    let place = |row: u16| -> Option<usize> {
+        let line = line_of(row);
         let last_text = line.iter().rposition(|c| *c != ' ')?;
         let mut start = last_text;
         while start > 0 && !(line[start - 1] == ' ' && start >= 2 && line[start - 2] == ' ') {
             start -= 1;
         }
-        let gap_end = start.saturating_sub(1);
-        // How much blank there is to the left of that text.
-        let mut gap_start = gap_end;
+        // `start` is the first column of the rightmost run of text.
+        let mut gap_start = start;
         while gap_start > 0 && line[gap_start - 1] == ' ' {
             gap_start -= 1;
         }
-        (gap_end.saturating_sub(gap_start) >= width + 2).then(|| gap_end.saturating_sub(width + 1))
-    };
-    let bottom = rows - 1;
-    let (row, column) = match place(bottom) {
-        Some(column) => (bottom, column),
-        None => (0, usize::from(cols) - width - 1),
-    };
-    if previous.is_some_and(|(old_row, _)| old_row != row) {
-        if let Some((old_row, _)) = previous {
-            restore_row(output, screen, old_row)?;
+        // The gap must have text to its left: it is a gap, not a margin.
+        if gap_start == 0 {
+            return None;
         }
+        let gap = start - gap_start;
+        (gap >= width + 2).then_some(start - width - 1)
+    };
+    // OpenCode keeps its footer on the last or second to last row.
+    let found = (rows.saturating_sub(3)..rows)
+        .rev()
+        .find_map(|row| place(row).map(|column| (row, column)));
+    let (row, column) = found.unwrap_or((0, usize::from(cols) - width - 1));
+    let badge = VoiceBadge { row, column, width };
+    if let Some(old) = previous.filter(|old| *old != badge) {
+        restore_row(output, screen, old.row)?;
     }
     write!(
         output,
@@ -2391,7 +2405,7 @@ fn draw_voice_badge(
         label
     )?;
     output.flush()?;
-    Ok(Some((row, column)))
+    Ok(Some(badge))
 }
 
 /// Puts the provider's own text back on a row.
