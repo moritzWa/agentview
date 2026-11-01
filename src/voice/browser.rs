@@ -100,6 +100,37 @@ pub fn spawn_hidden(chrome: &Path, url: &str, profile: &Path, extra: &str) -> io
     command.spawn()
 }
 
+/// Stops hidden browsers an earlier agentview left running (it was killed, or
+/// crashed, before it could stop its own): they keep the profile locked and the
+/// microphone open. Only browsers whose parent is gone are touched.
+pub fn stop_orphans(profile: &Path) {
+    #[cfg(unix)]
+    {
+        let marker = format!("--user-data-dir={}", profile.display());
+        let Ok(output) = Command::new("ps")
+            .args(["-A", "-o", "pid=,ppid=,command="])
+            .output()
+        else {
+            return;
+        };
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            let mut parts = line.split_whitespace();
+            let (Some(pid), Some(parent)) = (parts.next(), parts.next()) else {
+                continue;
+            };
+            if parent == "1" && line.contains(&marker) && line.contains("--headless") {
+                if let Ok(pid) = pid.parse::<libc::pid_t>() {
+                    unsafe {
+                        libc::kill(pid, libc::SIGTERM);
+                    }
+                }
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = profile;
+}
+
 /// Stops the browser and everything it started.
 pub fn stop(mut child: Child) {
     #[cfg(unix)]

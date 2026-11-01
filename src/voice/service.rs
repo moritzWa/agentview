@@ -231,8 +231,18 @@ impl VoiceService {
 
     /// Ends any call when the dashboard closes.
     pub fn shutdown(&self) {
+        // The browser stops now, not after the usual moment: this process is ending.
+        let browser = self
+            .inner
+            .lock()
+            .active
+            .as_mut()
+            .and_then(|active| active.browser.take());
         if self.inner.lock().active.is_some() {
             self.inner.finish("agentview closed.", true);
+        }
+        if let Some(child) = browser {
+            browser::stop(child);
         }
     }
 }
@@ -760,6 +770,7 @@ fn launcher(settings: &Settings) -> Launcher {
             Mode::Hidden => {
                 let started = browser::find_chrome(configured.as_deref()).and_then(|chrome| {
                     let profile = config::browser_profile_dir()?;
+                    browser::stop_orphans(&profile);
                     let extra = std::env::var("AGENTVIEW_VOICE_CHROME_ARGS").unwrap_or_default();
                     browser::spawn_hidden(&chrome, &format!("{url}?hidden=1"), &profile, &extra)
                         .ok()
