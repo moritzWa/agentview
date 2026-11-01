@@ -23,6 +23,8 @@ pub trait VoiceHost: Send + Sync {
     fn infos(&self) -> Vec<Info>;
     fn recent_messages(&self, id: &str, count: usize) -> Result<Vec<Message>>;
     fn send(&self, id: &str, text: &str) -> Result<()>;
+    /// Asks for fresh session data; the dashboard may be busy elsewhere.
+    fn refresh(&self) {}
     fn interrupt(&self, id: &str) -> Result<()>;
     fn edit_last(&self, id: &str, text: &str) -> Result<()>;
     /// Starts a session in `cwd` and returns its id.
@@ -50,6 +52,8 @@ pub struct Tools {
     watches: Mutex<Vec<Watch>>,
     /// The session last read, messaged or started: what "it" and "that one" mean.
     focus: Mutex<Option<String>>,
+    /// The session on the developer's screen: selected in the dashboard, or open.
+    viewing: Mutex<Option<String>>,
     /// Folders whose children a spoken name may refer to, such as `~/Code`.
     roots: Vec<PathBuf>,
 }
@@ -84,6 +88,7 @@ impl Tools {
             known: Mutex::default(),
             watches: Mutex::default(),
             focus: Mutex::default(),
+            viewing: Mutex::default(),
             roots: Vec::new(),
         }
     }
@@ -135,11 +140,28 @@ impl Tools {
         } else {
             digest::recent(&infos, now)
         };
+        let viewing = self.viewing.lock().unwrap().clone();
+        let mut rows = rows;
+        // The session on screen is always there, whether or not it is recent.
+        if let Some(on_screen) = viewing
+            .as_ref()
+            .and_then(|id| infos.iter().find(|info| &info.id == id))
+        {
+            if !rows.iter().any(|info| info.id == on_screen.id) {
+                rows.insert(0, on_screen);
+            }
+        }
         let mut handles = self.handles.lock().unwrap();
         let mut seen = self.seen.lock().unwrap();
         let sessions: Vec<Value> = rows
             .iter()
-            .map(|info| seen.row(info, &handles.handle(&info.id), now))
+            .map(|info| {
+                let mut row = seen.row(info, &handles.handle(&info.id), now);
+                if viewing.as_deref() == Some(info.id.as_str()) {
+                    row["on_screen"] = json!(true);
+                }
+                row
+            })
             .collect();
         let mut out = json!({ "sessions": sessions });
         if parked.count > 0 {
@@ -391,7 +413,45 @@ impl Tools {
     }
 
     pub fn notes(&self) -> String {
-        digest::notes(&self.host.infos(), (self.clock)())
+        let infos = self.host.infos();
+        let mut notes = digest::notes(&infos, (self.clock)());
+        if let Some(line) = self.viewing_line(&infos) {
+            notes.push('\n');
+            notes.push_str(&line);
+        }
+        notes
+    }
+
+    fn viewing_line(&self, infos: &[Info]) -> Option<String> {
+        let id = self.viewing.lock().unwrap().clone()?;
+        let info = infos.iter().find(|info| info.id == id)?;
+        Some(format!(
+            "The developer is looking at \"{}\" ({}) right now: \"this\", \"this one\" and \"it\" mean that session unless they name another.",
+            info.title,
+            info.folder()
+        ))
+    }
+
+    /// The session on screen changed. Returns what the voice should be told,
+    /// when it differs from what it knew.
+    pub fn set_viewing(&self, id: Option<String>) -> Option<String> {
+        {
+            let mut viewing = self.viewing.lock().unwrap();
+            if *viewing == id {
+                return None;
+            }
+            *viewing = id.clone();
+        }
+        if let Some(id) = &id {
+            *self.focus.lock().unwrap() = Some(id.clone());
+        }
+        let infos = self.host.infos();
+        match id {
+            Some(_) => self
+                .viewing_line(&infos)
+                .map(|line| line.replace("is looking at", "is now looking at")),
+            None => Some("The developer is not looking at a particular session now.".into()),
+        }
     }
 
     /// Records what the sessions look like now without reporting changes.
@@ -658,6 +718,55 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("no folder matches"));
+    }
+
+    #[test]
+    fn the_session_on_screen_is_marked_and_always_listed() {
+        let mut infos = two();
+        for n in 0..12 {
+            infos.push(info(
+                &format!("opencode:host:x{n}"),
+                "filler",
+                "misc",
+                SessionState::Completed,
+            ));
+        }
+        // The on-screen one is very old, so it is not "recent".
+        infos[0].last_user_ms = 1;
+        infos[0].updated_ms = 1;
+        let (_, tools) = tools(infos);
+        assert!(tools.set_viewing(Some("opencode:host:a".into())).is_some());
+        let listed = tools.run("list_sessions", &json!({}));
+        let on_screen: Vec<&Value> = listed["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["on_screen"] == true)
+            .collect();
+        assert_eq!(on_screen.len(), 1);
+        assert_eq!(on_screen[0]["title"], "semantic search");
+        assert!(tools
+            .notes()
+            .contains("looking at \"semantic search\" (arca) right now"));
+        // "Start one in the same folder" means the folder on screen.
+        let started = tools.run("start_session", &json!({"folder": "same", "task": "go"}));
+        assert_eq!(started["folder"], "arca");
+    }
+
+    #[test]
+    fn a_change_of_session_on_screen_is_reported_once() {
+        let (_, tools) = tools(two());
+        assert!(tools
+            .set_viewing(Some("opencode:host:a".into()))
+            .unwrap()
+            .contains("looking at"));
+        assert_eq!(tools.set_viewing(Some("opencode:host:a".into())), None);
+        let moved = tools.set_viewing(Some("opencode:host:b".into())).unwrap();
+        assert!(moved.contains("now looking at \"voice mode\""));
+        assert!(tools
+            .set_viewing(None)
+            .unwrap()
+            .contains("not looking at a particular session"));
     }
 
     #[test]

@@ -41,6 +41,26 @@ const ARROW_RETURN_WINDOW: Duration = Duration::from_millis(1600);
 const LEADER_HOLD: Duration = Duration::from_millis(350);
 const CTRL_X: u8 = 0x18;
 const CTRL_K: u8 = 0x0b;
+const CTRL_BACKSLASH: u8 = 0x1c;
+const CTRL_RIGHT_BRACKET: u8 = 0x1d;
+/// How long a message about the voice call stays on the bottom row.
+const VOICE_LINE_HOLD: Duration = Duration::from_millis(3000);
+
+/// What Voice Mode gives a provider's own view: a key that starts or ends a
+/// call, and a way to hear that something about the call changed.
+pub struct VoiceHook {
+    /// Called on the key; returns what to show on the bottom row.
+    pub toggle: Box<dyn Fn() -> String + Send + Sync>,
+    /// Returns a message when the call changed (it ended, or failed).
+    pub poll: Box<dyn Fn() -> Option<String> + Send + Sync>,
+}
+
+static VOICE_HOOK: OnceLock<VoiceHook> = OnceLock::new();
+
+/// Registered once by the dashboard when Voice Mode is available.
+pub fn set_voice_hook(hook: VoiceHook) {
+    let _ = VOICE_HOOK.set(hook);
+}
 const RETURN_HINT_REFRESH: Duration = Duration::from_millis(100);
 const EMPTY_PROMPT_MAX_COLUMN: u16 = 4;
 const MAX_INITIAL_INPUT_BYTES: usize = 256 * 1024;
@@ -877,6 +897,8 @@ fn bridge_session(
     let mut parser = DetachParser::for_session(session_key);
     let mut return_gesture = ReturnGesture::for_session(session_key);
     let mut redraw_restore_at = None;
+    let mut voice_line_until: Option<Instant> = None;
+    let mut voice_poll_at = Instant::now();
     let mut hidden_queries = TerminalQueryScanner::default();
     let mut shown_queries = TerminalQueryScanner::default();
     let answer_colors = answers_color_queries(session_key);
@@ -996,6 +1018,13 @@ fn bridge_session(
                                 detach = true;
                                 break;
                             }
+                            InputAction::Voice => {
+                                if let Some(hook) = VOICE_HOOK.get() {
+                                    let message = (hook.toggle)();
+                                    write_status_line(&mut stdout, &screen, &message)?;
+                                    voice_line_until = Some(Instant::now() + VOICE_LINE_HOLD);
+                                }
+                            }
                             InputAction::Redraw => {
                                 // OpenCode ignores a resize to its current
                                 // size, so show it one row shorter first.
@@ -1028,6 +1057,19 @@ fn bridge_session(
         if !detach && parser.take_expired_leader() {
             REMOVAL_REQUESTED.store(true, std::sync::atomic::Ordering::SeqCst);
             detach = true;
+        }
+        if let Some(hook) = VOICE_HOOK.get() {
+            if voice_poll_at.elapsed() >= Duration::from_millis(500) {
+                voice_poll_at = Instant::now();
+                if let Some(message) = (hook.poll)() {
+                    write_status_line(&mut stdout, &screen, &message)?;
+                    voice_line_until = Some(Instant::now() + VOICE_LINE_HOLD);
+                }
+            }
+        }
+        if voice_line_until.is_some_and(|until| Instant::now() >= until) {
+            voice_line_until = None;
+            restore_bottom_row(&mut stdout, &screen)?;
         }
         pending_input.write_to(&mut master)?;
         if detach {
@@ -1914,6 +1956,7 @@ enum InputAction {
     Arrow(ArrowDirection, &'static [u8]),
     Detach,
     Redraw,
+    Voice,
 }
 
 const SHIFT_LEFT: &[u8] = b"\x1b[1;2D";
@@ -1938,6 +1981,45 @@ struct DetachParser {
     holds_leader: bool,
     held_leader_since: Option<Instant>,
     redraws: bool,
+    /// Voice Mode is available: Cmd+K, Ctrl+] and, where the provider leaves
+    /// it free, Ctrl+K start or end a call.
+    voice: bool,
+}
+
+/// Cmd+K as a terminal with the kitty keyboard protocol reports it.
+enum CmdK {
+    Press(usize),
+    Release(usize),
+    Partial,
+    No,
+}
+
+fn cmd_k(input: &[u8]) -> CmdK {
+    const HEAD: &[u8] = b"\x1b[107;9";
+    if input.len() < HEAD.len() {
+        return if HEAD.starts_with(input) {
+            CmdK::Partial
+        } else {
+            CmdK::No
+        };
+    }
+    if !input.starts_with(HEAD) {
+        return CmdK::No;
+    }
+    let tail = &input[HEAD.len()..];
+    let event = |bytes: &[u8]| bytes.iter().all(|b| matches!(b, b':' | b'0'..=b'9'));
+    match tail.iter().position(|byte| *byte == b'u') {
+        Some(end) if event(&tail[..end]) => {
+            let length = HEAD.len() + end + 1;
+            if &tail[..end] == b":3" {
+                CmdK::Release(length)
+            } else {
+                CmdK::Press(length)
+            }
+        }
+        None if tail.len() < 6 && event(tail) => CmdK::Partial,
+        _ => CmdK::No,
+    }
 }
 
 impl DetachParser {
@@ -1945,6 +2027,7 @@ impl DetachParser {
         Self {
             holds_leader: session_key.starts_with("opencode:"),
             redraws: redraws_on_ctrl_k(session_key),
+            voice: VOICE_HOOK.get().is_some(),
             ..Self::default()
         }
     }
@@ -1983,7 +2066,25 @@ impl DetachParser {
                         APPLICATION_RIGHT.len(),
                     ))
                 } else if self.redraws && remaining[0] == CTRL_K {
+                    // With Voice Mode, Ctrl+K starts a call and a repaint moves to Ctrl+\.
+                    Some((
+                        if self.voice {
+                            InputAction::Voice
+                        } else {
+                            InputAction::Redraw
+                        },
+                        1,
+                    ))
+                } else if self.redraws && self.voice && remaining[0] == CTRL_BACKSLASH {
                     Some((InputAction::Redraw, 1))
+                } else if self.voice && remaining[0] == CTRL_RIGHT_BRACKET {
+                    Some((InputAction::Voice, 1))
+                } else if let (true, CmdK::Press(length)) = (self.voice, cmd_k(remaining)) {
+                    Some((InputAction::Voice, length))
+                } else if let (true, CmdK::Release(length)) = (self.voice, cmd_k(remaining)) {
+                    // Only the press counts; the release of the same key is dropped.
+                    index += length;
+                    continue;
                 } else {
                     None
                 };
@@ -1997,9 +2098,10 @@ impl DetachParser {
             }
 
             if remaining[0] == 0x1b
-                && RECOGNIZED_ARROWS
+                && (RECOGNIZED_ARROWS
                     .iter()
                     .any(|sequence| sequence.starts_with(remaining))
+                    || (self.voice && matches!(cmd_k(remaining), CmdK::Partial)))
             {
                 self.pending.extend_from_slice(&bytes[index..]);
                 self.pending_since = Some(Instant::now());
@@ -2218,6 +2320,20 @@ fn write_return_hint(
     Ok(())
 }
 
+/// A short message on the bottom row, drawn over the provider's screen.
+fn write_status_line(output: &mut impl Write, screen: &vt100::Parser, message: &str) -> Result<()> {
+    let (rows, cols) = screen.screen().size();
+    let message = truncate_to_columns(&format!(" {message}"), usize::from(cols));
+    write!(
+        output,
+        "\x1b7\x1b[{};1H\x1b[2K\x1b[30;46m{}\x1b[0m\x1b8",
+        rows.max(1),
+        message
+    )?;
+    output.flush()?;
+    Ok(())
+}
+
 fn restore_bottom_row(output: &mut impl Write, screen: &vt100::Parser) -> Result<()> {
     let (rows, cols) = screen.screen().size();
     let last_row = screen
@@ -2349,6 +2465,61 @@ mod tests {
         });
         assert_eq!(tiny.ws_row, 1);
         assert_eq!(tiny.ws_col, FALLBACK_TERMINAL_COLUMNS);
+    }
+
+    fn voice_parser(session: &str) -> DetachParser {
+        DetachParser {
+            voice: true,
+            redraws: redraws_on_ctrl_k(session),
+            ..DetachParser::default()
+        }
+    }
+
+    #[test]
+    fn cmd_k_and_ctrl_right_bracket_start_voice_in_any_provider() {
+        let mut parser = voice_parser("claude:worker");
+        assert_eq!(parser.push(b"\x1b[107;9u"), vec![InputAction::Voice]);
+        assert_eq!(
+            parser.push(b"a\x1b[107;9:1ub"),
+            vec![
+                InputAction::Forward(b"a".to_vec()),
+                InputAction::Voice,
+                InputAction::Forward(b"b".to_vec()),
+            ]
+        );
+        assert_eq!(parser.push(b"\x1d"), vec![InputAction::Voice]);
+        // Releasing the key is not a second press.
+        assert_eq!(parser.push(b"\x1b[107;9:3u"), Vec::<InputAction>::new());
+        // Another key in the kitty encoding, or Ctrl+K in Claude, is Claude's own.
+        assert_eq!(
+            parser.push(b"\x1b[108;9u"),
+            vec![InputAction::Forward(b"\x1b[108;9u".to_vec())]
+        );
+        assert_eq!(
+            parser.push(b"\x0b"),
+            vec![InputAction::Forward(b"\x0b".to_vec())]
+        );
+    }
+
+    #[test]
+    fn a_split_cmd_k_sequence_waits_for_its_end() {
+        let mut parser = voice_parser("opencode:ses_1");
+        assert!(parser.push(b"\x1b[107").is_empty());
+        assert_eq!(parser.push(b";9u"), vec![InputAction::Voice]);
+    }
+
+    #[test]
+    fn ctrl_k_in_opencode_is_voice_and_the_repaint_moves_to_ctrl_backslash() {
+        let mut parser = voice_parser("opencode:ses_1");
+        assert_eq!(parser.push(b"\x0b"), vec![InputAction::Voice]);
+        assert_eq!(parser.push(b"\x1c"), vec![InputAction::Redraw]);
+        // Without Voice Mode the old repaint key stays.
+        let mut plain = DetachParser::for_session("opencode:ses_1");
+        assert_eq!(plain.push(b"\x0b"), vec![InputAction::Redraw]);
+        assert_eq!(
+            plain.push(b"\x1d"),
+            vec![InputAction::Forward(b"\x1d".to_vec())]
+        );
     }
 
     #[test]

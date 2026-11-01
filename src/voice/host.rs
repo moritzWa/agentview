@@ -1,7 +1,8 @@
 //! The real `VoiceHost`: the dashboard's latest sessions plus the control hub.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::path::Path;
+use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 use std::time::UNIX_EPOCH;
 
@@ -9,41 +10,41 @@ use anyhow::{bail, Result};
 
 use super::digest::Info;
 use super::tools::{Message, VoiceHost};
+use crate::adapters::DiscoveryRequest;
 use crate::control::ControlHub;
 use crate::domain::{AgentSession, Capability, Provider, Runtime, SessionKind, SessionState};
 
-#[derive(Default)]
-struct View {
-    sessions: Vec<AgentSession>,
-    paused: BTreeSet<String>,
-    /// Child to parent, by provider session id.
-    parents: HashMap<String, String>,
-}
-
 pub struct DashboardHost {
     control: ControlHub,
-    view: Mutex<View>,
+    sessions: Mutex<Vec<AgentSession>>,
+    paused: crate::paused::PausedSessions,
+    parents: Mutex<crate::session_tree::ParentLinks>,
+    refresher: Mutex<Option<(SyncSender<DiscoveryRequest>, DiscoveryRequest)>>,
 }
 
 impl DashboardHost {
-    pub fn new(control: ControlHub) -> Arc<Self> {
+    pub fn new(control: ControlHub, paused: crate::paused::PausedSessions) -> Arc<Self> {
         Arc::new(Self {
             control,
-            view: Mutex::default(),
+            sessions: Mutex::default(),
+            paused,
+            parents: Mutex::new(
+                crate::session_tree::ParentLinks::load_default().unwrap_or_default(),
+            ),
+            refresher: Mutex::default(),
         })
     }
 
-    /// The dashboard calls this whenever its sessions refresh.
-    pub fn publish(
-        &self,
-        sessions: &[AgentSession],
-        paused: &BTreeMap<String, u64>,
-        parents: &HashMap<String, String>,
-    ) {
-        if let Ok(mut view) = self.view.lock() {
-            view.sessions = sessions.to_vec();
-            view.paused = paused.keys().cloned().collect();
-            view.parents = parents.clone();
+    /// How a call asks the refresh worker for fresh sessions when the dashboard
+    /// itself is busy in a session's own view.
+    pub fn set_refresher(&self, sender: SyncSender<DiscoveryRequest>, request: DiscoveryRequest) {
+        *self.refresher.lock().unwrap() = Some((sender, request));
+    }
+
+    /// The refresh worker and the dashboard call this whenever sessions refresh.
+    pub fn publish(&self, sessions: &[AgentSession]) {
+        if let Ok(mut view) = self.sessions.lock() {
+            *view = sessions.to_vec();
         }
     }
 
@@ -51,10 +52,10 @@ impl DashboardHost {
     /// dashboard's list yet, but its supervisor already knows it.
     fn session(&self, id: &str) -> Result<AgentSession> {
         if let Some(session) = self
-            .view
+            .sessions
             .lock()
             .ok()
-            .and_then(|view| view.sessions.iter().find(|s| s.id == id).cloned())
+            .and_then(|sessions| sessions.iter().find(|s| s.id == id).cloned())
         {
             return Ok(session);
         }
@@ -92,7 +93,9 @@ fn needs_you_because(session: &AgentSession) -> Option<String> {
     }
     Some(
         match session.raw_state.as_deref() {
-            Some("turn failed") => "its last turn failed; it needs recovery in OpenCode itself",
+            Some("turn failed") => {
+                "its last turn failed; send it a message such as \"continue\" to retry it"
+            }
             Some("question asked") => {
                 "it asked a question in OpenCode and waits for the answer there"
             }
@@ -110,23 +113,28 @@ fn millis(time: Option<std::time::SystemTime>) -> u64 {
 
 impl VoiceHost for DashboardHost {
     fn infos(&self) -> Vec<Info> {
-        let Ok(view) = self.view.lock() else {
+        let Ok(sessions) = self.sessions.lock() else {
             return Vec::new();
         };
+        let paused = self.paused.paused();
+        let parents = {
+            let mut links = self.parents.lock().unwrap();
+            links.reload_if_changed();
+            links.links().clone()
+        };
         let holds = crate::holds::default_holds_dir();
-        view.sessions
+        sessions
             .iter()
             .filter(|session| {
                 session.provider == Provider::OpenCode && session.runtime == Runtime::Host
             })
             .map(|session| {
                 let facts = crate::last_message::facts_for(&session.id).unwrap_or_default();
-                let subagents = view
-                    .sessions
+                let subagents = sessions
                     .iter()
                     .filter(|child| {
                         child.state == SessionState::Working
-                            && view.parents.get(&child.provider_session_id)
+                            && parents.get(&child.provider_session_id)
                                 == Some(&session.provider_session_id)
                     })
                     .count();
@@ -142,8 +150,8 @@ impl VoiceHost for DashboardHost {
                         crate::holds::live_hold(root, "opencode", &session.provider_session_id)
                     }),
                     subagents,
-                    paused: view.paused.contains(&session.id),
-                    top_level: !view.parents.contains_key(&session.provider_session_id),
+                    paused: paused.contains_key(&session.id),
+                    top_level: !parents.contains_key(&session.provider_session_id),
                     can_message: session.capabilities.contains(&Capability::Reply),
                     why: needs_you_because(session),
                 }
@@ -177,6 +185,12 @@ impl VoiceHost for DashboardHost {
     fn edit_last(&self, id: &str, text: &str) -> Result<()> {
         let session = self.session(id)?;
         self.control.edit_last_message(&session, text).map(|_| ())
+    }
+
+    fn refresh(&self) {
+        if let Some((sender, request)) = self.refresher.lock().unwrap().as_ref() {
+            let _ = sender.try_send(request.clone());
+        }
     }
 
     fn start(&self, cwd: &Path, task: &str) -> Result<String> {

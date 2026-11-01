@@ -214,6 +214,16 @@ pub fn run_dashboard(
     let (migration_tx, migration_rx) = mpsc::channel::<MigrationWorkerResult>();
     let (restorable_tx, restorable_rx) = mpsc::channel::<(Vec<RestorableSession>, Vec<String>)>();
     let (history_worker, history_index_rx) = crate::history_index::Worker::start(control.clone());
+    let voice_host = control
+        .provider_io_enabled()
+        .then(|| crate::voice::host::DashboardHost::new(control.clone(), paused_sessions.clone()));
+    if let Some(host) = &voice_host {
+        host.set_refresher(
+            refresh_tx.clone(),
+            discovery_request_for_pending_launch(request, None),
+        );
+    }
+    let worker_voice = voice_host.clone();
     let worker_engine = (*engine).clone();
     let worker_control = control.clone();
     let worker_hidden_sessions = hidden_sessions.clone();
@@ -276,6 +286,9 @@ pub fn run_dashboard(
             worker_session_aliases.apply_snapshot(&mut snapshot);
             if let Some(classifier) = &turn_classifier {
                 classifier.apply(&mut snapshot);
+            }
+            if let Some(host) = &worker_voice {
+                host.publish(&snapshot.sessions);
             }
             if snapshot_tx.send((snapshot, true)).is_err() {
                 break;
@@ -343,14 +356,13 @@ pub fn run_dashboard(
         } else {
             None
         };
-    let voice_host = control
-        .provider_io_enabled()
-        .then(|| crate::voice::host::DashboardHost::new(control.clone()));
     let voice = voice_host
         .as_ref()
         .map(|host| crate::voice::VoiceService::new(host.clone()));
     app.voice_hint = voice.is_some() && !crate::voice::config::hint_seen();
-    let mut voice_published = Instant::now() - Duration::from_secs(60);
+    if let Some(voice) = &voice {
+        install_voice_hook(voice);
+    }
     let mut voice_notice: Option<String> = None;
     let mut usage_minute = 0;
     let mut last_queue_second = 0;
@@ -851,7 +863,8 @@ pub fn run_dashboard(
             usage_minute = minute;
             needs_draw = true;
         }
-        if let (Some(host), Some(voice)) = (&voice_host, &voice) {
+        if let Some(voice) = &voice {
+            crate::voice::set_viewing(app.selected_session().map(|session| session.id.clone()));
             let mut status = voice.status();
             if status.phase == crate::voice::Phase::Idle {
                 // How a call ended is said once, in the footer.
@@ -864,16 +877,6 @@ pub fn run_dashboard(
                 }
             } else {
                 voice_notice = None;
-            }
-            if status.phase != crate::voice::Phase::Idle
-                && voice_published.elapsed() >= Duration::from_secs(1)
-            {
-                host.publish(
-                    &app.snapshot.sessions,
-                    &app.paused,
-                    app.session_parent_links(),
-                );
-                voice_published = Instant::now();
             }
             if status != app.voice {
                 if status.phase != crate::voice::Phase::Idle {
@@ -1019,11 +1022,7 @@ pub fn run_dashboard(
                             }
                             AppAction::ToggleVoice => {
                                 if let Some(host) = &voice_host {
-                                    host.publish(
-                                        &app.snapshot.sessions,
-                                        &app.paused,
-                                        app.session_parent_links(),
-                                    );
+                                    host.publish(&app.snapshot.sessions);
                                 }
                                 match &voice {
                                     Some(voice) => toggle_voice(&mut app, voice),
@@ -1037,11 +1036,7 @@ pub fn run_dashboard(
                                 match crate::voice::config::save_key(&key) {
                                     Ok(()) => {
                                         if let (Some(host), Some(voice)) = (&voice_host, &voice) {
-                                            host.publish(
-                                                &app.snapshot.sessions,
-                                                &app.paused,
-                                                app.session_parent_links(),
-                                            );
+                                            host.publish(&app.snapshot.sessions);
                                             toggle_voice(&mut app, voice);
                                         }
                                     }
@@ -1387,6 +1382,40 @@ pub fn run_dashboard(
     drop(refresh_tx);
     crate::native_session::shutdown_all();
     result
+}
+
+/// Lets a provider's own view start and end a call with the voice key, and say
+/// how the call is going on its bottom row.
+fn install_voice_hook(voice: &crate::voice::VoiceService) {
+    use crate::voice::{Phase, Toggle};
+    let toggler = voice.clone();
+    let poller = voice.clone();
+    let last = std::sync::Mutex::new((Phase::Idle, None::<String>));
+    crate::native_session::set_voice_hook(crate::native_session::VoiceHook {
+        toggle: Box::new(move || match toggler.toggle() {
+            Toggle::Started => "● voice starting · the same key ends it".to_owned(),
+            Toggle::Ended => "voice ended".to_owned(),
+            Toggle::NeedKey => {
+                "voice needs an OpenAI key: go back with shift+← and press ctrl+k once".to_owned()
+            }
+            Toggle::Failed(error) => error,
+        }),
+        poll: Box::new(move || {
+            let status = poller.status();
+            let mut last = last.lock().ok()?;
+            let now = (status.phase, status.notice.clone());
+            if *last == now {
+                return None;
+            }
+            *last = now;
+            Some(match (status.phase, status.notice) {
+                (_, Some(notice)) => notice,
+                (Phase::Live, None) => "● voice live".to_owned(),
+                (Phase::Connecting, None) => "● voice connecting".to_owned(),
+                (Phase::Idle, None) => "voice ended".to_owned(),
+            })
+        }),
+    });
 }
 
 /// Starts a Voice Mode call or ends the one running, asking for the OpenAI key
@@ -2128,6 +2157,15 @@ fn handle_key(app: &mut App, key: KeyEvent) -> AppAction {
         return app.request_image_paste();
     }
     if key.modifiers.contains(KeyModifiers::SUPER)
+        && key.code == KeyCode::Char('k')
+        && matches!(
+            app.overlay,
+            Overlay::None | Overlay::Composer(ComposerMode::NewSession)
+        )
+    {
+        return AppAction::ToggleVoice;
+    }
+    if key.modifiers.contains(KeyModifiers::SUPER)
         && key.code == KeyCode::Char('p')
         && matches!(app.overlay, Overlay::None | Overlay::Peek)
     {
@@ -2827,6 +2865,8 @@ fn handle_action_legacy<T: DashboardTerminal, C: DashboardControl>(
                 return false;
             }
             let started = Instant::now();
+            // A voice call hears which session is in front while it is open.
+            crate::voice::set_viewing(Some(session.id.clone()));
             let result = control.open_session(&session);
             let resume_result = terminal.resume_dashboard();
             crate::perf!(
