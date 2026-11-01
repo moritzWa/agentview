@@ -75,6 +75,16 @@ struct ServerRecord {
     sessions: BTreeMap<String, OwnedSession>,
 }
 
+/// What one refresh read about a session whose server time moved.
+struct Refreshed {
+    title: String,
+    summary: Option<String>,
+    tail: Option<String>,
+    last_user_ms: Option<u64>,
+    server_updated_ms: u64,
+    activity_ms: u64,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct OwnedSession {
@@ -91,6 +101,13 @@ struct OwnedSession {
     /// Zero until a record written by an older version is read once.
     #[serde(default)]
     server_updated_ms: u64,
+    /// When the person last wrote to the session, as far as the messages read
+    /// at the last refresh show; zero when none of them was theirs.
+    #[serde(default)]
+    last_user_ms: u64,
+    /// The closing sentences of the latest assistant message.
+    #[serde(default)]
+    tail: String,
 }
 
 pub const MANAGED_RAW_STATE: &str = "managed_server";
@@ -108,6 +125,17 @@ pub struct ManagedOpenCodeSession {
     pub server_pid: u32,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
+    pub last_user_ms: u64,
+    pub tail: String,
+}
+
+/// One message of a session, as plain text.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionMessage {
+    pub id: String,
+    pub role: String,
+    pub text: String,
+    pub created_ms: u64,
 }
 
 /// Top-level and subagent sessions the live server has a turn in flight for.
@@ -332,6 +360,8 @@ impl OpenCodeSupervisor {
                     .unwrap_or(now),
                 updated_at_ms: now,
                 server_updated_ms: 0,
+                last_user_ms: now,
+                tail: String::new(),
             },
         );
         // Persist ownership before starting the turn. A 2xx async acceptance
@@ -396,6 +426,8 @@ impl OpenCodeSupervisor {
                 .request_json(&record, "GET", &format!("{path}&limit=20"), None)
                 .ok();
             let summary = messages.as_ref().and_then(latest_assistant_summary);
+            let tail = messages.as_ref().and_then(latest_assistant_tail);
+            let last_user_ms = messages.as_ref().and_then(latest_user_ms);
             // No readable message: fall back to the server's time, so the
             // session is not read again on every refresh.
             let activity_ms = messages
@@ -404,7 +436,14 @@ impl OpenCodeSupervisor {
                 .unwrap_or(server_updated_ms);
             refreshed.insert(
                 owned.id.clone(),
-                (title, summary, server_updated_ms, activity_ms),
+                Refreshed {
+                    title,
+                    summary,
+                    tail,
+                    last_user_ms,
+                    server_updated_ms,
+                    activity_ms,
+                },
             );
         }
         if !refreshed.is_empty() {
@@ -414,7 +453,15 @@ impl OpenCodeSupervisor {
             if let Some(mut current) = load_record(&self.record_path, &self.state_dir)?
                 .filter(|current| current.pid == record.pid)
             {
-                for (id, (title, summary, server_updated_ms, activity_ms)) in refreshed {
+                for (id, found) in refreshed {
+                    let Refreshed {
+                        title,
+                        summary,
+                        tail,
+                        last_user_ms,
+                        server_updated_ms,
+                        activity_ms,
+                    } = found;
                     let Some(owned) = current.sessions.get_mut(&id) else {
                         continue;
                     };
@@ -424,6 +471,12 @@ impl OpenCodeSupervisor {
                     owned.title = title;
                     if let Some(summary) = summary {
                         owned.summary = summary;
+                    }
+                    if let Some(tail) = tail {
+                        owned.tail = tail;
+                    }
+                    if let Some(last_user_ms) = last_user_ms {
+                        owned.last_user_ms = owned.last_user_ms.max(last_user_ms);
                     }
                     // A record from an older version holds the server's time,
                     // bumped by events that are not conversation: replace it.
@@ -648,6 +701,82 @@ impl OpenCodeSupervisor {
             &owned.cwd,
         );
         self.request_empty(&record, "POST", &path, Some(&json!({})))
+    }
+
+    /// The last `count` user and assistant messages that have text, oldest first.
+    pub fn recent_messages(&self, session_id: &str, count: usize) -> Result<Vec<SessionMessage>> {
+        let record = self.required_live_record()?;
+        let owned = require_owned(&record, session_id)?;
+        let path = with_directory_query(
+            &format!("/session/{}/message", url_path_segment(session_id)),
+            &owned.cwd,
+        );
+        // Tool calls and switches share the list, so read more than asked for.
+        let limit = count.saturating_mul(4).clamp(8, 100);
+        let messages = self.request_json(&record, "GET", &format!("{path}&limit={limit}"), None)?;
+        Ok(parse_session_messages(&messages, count))
+    }
+
+    /// Correct the last message sent to a session: stop the running turn,
+    /// rewind to just before that message the way `/undo` does, and send the
+    /// corrected text.
+    pub fn edit_last_message(&self, session_id: &str, text: &str) -> Result<()> {
+        let text = text.trim();
+        if text.is_empty() {
+            bail!("the corrected message cannot be empty");
+        }
+        let record = self.required_live_record()?;
+        let owned = require_owned(&record, session_id)?.clone();
+        let seg = url_path_segment(session_id);
+        if self.status_for(&record, &owned)? == SessionState::Working {
+            let abort = with_directory_query(&format!("/session/{seg}/abort"), &owned.cwd);
+            self.request_empty(&record, "POST", &abort, Some(&json!({})))?;
+            for _ in 0..30 {
+                std::thread::sleep(Duration::from_millis(200));
+                if self.status_for(&record, &owned)? != SessionState::Working {
+                    break;
+                }
+            }
+        }
+        let path = with_directory_query(&format!("/session/{seg}/message"), &owned.cwd);
+        let messages = self.request_json(&record, "GET", &format!("{path}&limit=50"), None)?;
+        let last_user = messages.as_array().and_then(|messages| {
+            messages
+                .iter()
+                .rev()
+                .find(|message| {
+                    message.pointer("/info/role").and_then(Value::as_str) == Some("user")
+                })
+                .and_then(|message| message.pointer("/info/id").and_then(Value::as_str))
+                .map(str::to_owned)
+        });
+        if let Some(message_id) = last_user {
+            if record.api == ApiVersion::V2 {
+                let staged = request_http(
+                    &record,
+                    "POST",
+                    &format!("/api/session/{seg}/revert/stage"),
+                    Some(&json!({"messageID": message_id, "files": true})),
+                )?;
+                ensure_http_success(&staged)?;
+                let committed = request_http(
+                    &record,
+                    "POST",
+                    &format!("/api/session/{seg}/revert/commit"),
+                    Some(&json!({})),
+                )?;
+                ensure_http_success(&committed)?;
+            } else {
+                let revert = with_directory_query(&format!("/session/{seg}/revert"), &owned.cwd);
+                self.request_empty(
+                    &record,
+                    "POST",
+                    &revert,
+                    Some(&json!({"messageID": message_id})),
+                )?;
+            }
+        }
+        self.reply(session_id, text)
     }
 
     /// Build a native TUI client attached to the exact authenticated server
@@ -1087,7 +1216,7 @@ impl OpenCodeSupervisor {
                 on_wait(&running);
                 last_reported = running;
             }
-            thread::sleep(IDLE_POLL.min(deadline.saturating_duration_since(Instant::now())));
+            std::thread::sleep(IDLE_POLL.min(deadline.saturating_duration_since(Instant::now())));
         }
     }
 
@@ -1735,6 +1864,8 @@ impl OpenCodeSupervisor {
             server_pid: record.pid,
             created_at_ms: owned.created_at_ms,
             updated_at_ms: owned.updated_at_ms,
+            last_user_ms: owned.last_user_ms,
+            tail: owned.tail.clone(),
         }
     }
 
@@ -2874,36 +3005,96 @@ fn latest_activity_ms(value: &Value) -> Option<u64> {
         .max()
 }
 
-fn latest_assistant_summary(value: &Value) -> Option<String> {
-    let messages = value.as_array()?;
-    messages
+fn message_text(message: &Value) -> String {
+    message
+        .get("parts")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|part| part.get("type").and_then(Value::as_str) == Some("text"))
+        .filter_map(|part| part.get("text").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The text of the newest assistant message that has any, on one line.
+fn latest_assistant_text(value: &Value) -> Option<String> {
+    value
+        .as_array()?
         .iter()
         .filter(|message| {
             message.pointer("/info/role").and_then(Value::as_str) == Some("assistant")
         })
         .filter_map(|message| {
-            let text = message
-                .get("parts")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter(|part| part.get("type").and_then(Value::as_str) == Some("text"))
-                .filter_map(|part| part.get("text").and_then(Value::as_str))
-                .collect::<Vec<_>>()
-                .join("\n");
+            let text = message_text(message);
             let text = text.trim();
-            (!text.is_empty()).then(|| {
-                let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
-                if normalized.chars().count() <= 160 {
-                    normalized
-                } else {
-                    let mut summary = normalized.chars().take(159).collect::<String>();
-                    summary.push('…');
-                    summary
-                }
-            })
+            (!text.is_empty()).then(|| text.split_whitespace().collect::<Vec<_>>().join(" "))
         })
         .last()
+}
+
+fn latest_assistant_summary(value: &Value) -> Option<String> {
+    latest_assistant_text(value).map(|normalized| {
+        if normalized.chars().count() <= 160 {
+            normalized
+        } else {
+            let mut summary = normalized.chars().take(159).collect::<String>();
+            summary.push('…');
+            summary
+        }
+    })
+}
+
+/// The closing sentences of the newest assistant message: its result or its
+/// question, where its opening is mostly preamble.
+fn latest_assistant_tail(value: &Value) -> Option<String> {
+    latest_assistant_text(value).map(|text| crate::last_message::end_excerpt(&text, 220))
+}
+
+fn parse_session_messages(value: &Value, count: usize) -> Vec<SessionMessage> {
+    let mut messages = value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|message| {
+            let role = message.pointer("/info/role").and_then(Value::as_str)?;
+            if role != "user" && role != "assistant" {
+                return None;
+            }
+            let text = message_text(message);
+            let text = text.trim();
+            (!text.is_empty()).then(|| SessionMessage {
+                id: message
+                    .pointer("/info/id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                role: role.to_owned(),
+                text: text.to_owned(),
+                created_ms: message
+                    .pointer("/info/time/created")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+            })
+        })
+        .collect::<Vec<_>>();
+    let skip = messages.len().saturating_sub(count);
+    messages.drain(..skip);
+    messages
+}
+
+/// When the person last wrote to the session, among the messages listed.
+fn latest_user_ms(value: &Value) -> Option<u64> {
+    value
+        .as_array()?
+        .iter()
+        .filter(|message| message.pointer("/info/role").and_then(Value::as_str) == Some("user"))
+        .filter_map(|message| {
+            message
+                .pointer("/info/time/created")
+                .and_then(Value::as_u64)
+        })
+        .max()
 }
 
 fn capitalize(value: &str) -> String {
@@ -3728,6 +3919,8 @@ pub(crate) fn start_test_server(
                     created_at_ms: 1,
                     updated_at_ms: 1,
                     server_updated_ms: 0,
+                    last_user_ms: 0,
+                    tail: String::new(),
                 };
                 ((*id).to_owned(), session)
             })
@@ -4302,6 +4495,8 @@ mod tests {
                     created_at_ms: 1,
                     updated_at_ms: 1,
                     server_updated_ms: 0,
+                    last_user_ms: 0,
+                    tail: String::new(),
                 },
             )]),
         };
@@ -4318,6 +4513,8 @@ mod tests {
             created_at_ms: 1,
             updated_at_ms: 1,
             server_updated_ms: 0,
+            last_user_ms: 0,
+            tail: String::new(),
         };
         let record = ServerRecord {
             api: ApiVersion::V1,

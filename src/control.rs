@@ -217,6 +217,21 @@ pub trait ProviderController: Send + Sync {
         bail!("{} inline reply is unavailable", self.provider().label())
     }
 
+    /// The last `count` messages of a session as text, oldest first.
+    fn recent_messages(
+        &self,
+        _session: &AgentSession,
+        _count: usize,
+    ) -> Result<Vec<crate::opencode_supervisor::SessionMessage>> {
+        bail!("{} message reading is unavailable", self.provider().label())
+    }
+
+    /// Stop the running turn, rewind to before the last message sent, and send
+    /// `text` in its place.
+    fn edit_last_message(&self, _session: &AgentSession, _text: &str) -> Result<ControlOutcome> {
+        bail!("{} message editing is unavailable", self.provider().label())
+    }
+
     fn archive(&self, _session: &AgentSession) -> Result<ControlOutcome> {
         bail!("{} archive is unavailable", self.provider().label())
     }
@@ -714,6 +729,28 @@ impl ControlHub {
             bail!("reply authority was not granted for this session");
         }
         self.controller(&session.provider)?.reply(session, prompt)
+    }
+
+    pub fn recent_messages(
+        &self,
+        session: &AgentSession,
+        count: usize,
+    ) -> Result<Vec<crate::opencode_supervisor::SessionMessage>> {
+        self.ensure_provider_io()?;
+        if !session.capabilities.contains(&Capability::Inspect) {
+            bail!("inspection authority was not granted for this session");
+        }
+        self.controller(&session.provider)?
+            .recent_messages(session, count)
+    }
+
+    pub fn edit_last_message(&self, session: &AgentSession, text: &str) -> Result<ControlOutcome> {
+        self.ensure_provider_io()?;
+        if !session.capabilities.contains(&Capability::Reply) {
+            bail!("reply authority was not granted for this session");
+        }
+        self.controller(&session.provider)?
+            .edit_last_message(session, text)
     }
 
     pub fn archive(&self, session: &AgentSession) -> Result<ControlOutcome> {

@@ -99,6 +99,10 @@ own interface.
   running or waiting, with how long each has been at it and when the queue
   should clear. A session whose own run is stuck in line says
   `#1 in line for cargo test`. agentview only reads the queue.
+- **Talk to your sessions** with `Ctrl+K`. Ask which ones need you, hear what
+  one last said, tell it what to do, or start a new one, with your hands in the
+  dishwasher. Voice runs on OpenAI's GPT-Live in a pinned browser tab, about
+  5 cents a minute, for OpenCode sessions. See [Voice Mode](docs/voice.md).
 - **`Ctrl+X` twice** stops and hides or deletes a session, no dialog.
 
 ### Refresh time by harness
@@ -182,7 +186,7 @@ that survive Cursor dropping out.
 
 ## Docs
 
-[Install](docs/install.md) · [CLI](docs/cli.md) ·
+[Install](docs/install.md) · [CLI](docs/cli.md) · [Voice Mode](docs/voice.md) ·
 [Troubleshooting](docs/troubleshooting.md) ·
 [Architecture](docs/architecture.md) · [Testing](docs/testing.md) ·
 [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)

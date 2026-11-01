@@ -414,6 +414,8 @@ fn owned(entry: &Entry, messages: &Value) -> OwnedSession {
         created_at_ms: entry.created_at_ms,
         updated_at_ms: entry.updated_at_ms,
         server_updated_ms: 0,
+        last_user_ms: 0,
+        tail: String::new(),
     }
 }
 

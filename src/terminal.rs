@@ -343,6 +343,15 @@ pub fn run_dashboard(
         } else {
             None
         };
+    let voice_host = control
+        .provider_io_enabled()
+        .then(|| crate::voice::host::DashboardHost::new(control.clone()));
+    let voice = voice_host
+        .as_ref()
+        .map(|host| crate::voice::VoiceService::new(host.clone()));
+    app.voice_hint = voice.is_some() && !crate::voice::config::hint_seen();
+    let mut voice_published = Instant::now() - Duration::from_secs(60);
+    let mut voice_notice: Option<String> = None;
     let mut usage_minute = 0;
     let mut last_queue_second = 0;
     let mut terminal = TerminalSession::enter()?;
@@ -842,6 +851,38 @@ pub fn run_dashboard(
             usage_minute = minute;
             needs_draw = true;
         }
+        if let (Some(host), Some(voice)) = (&voice_host, &voice) {
+            let mut status = voice.status();
+            if status.phase == crate::voice::Phase::Idle {
+                // How a call ended is said once, in the footer.
+                if let Some(notice) = status.notice.take() {
+                    if voice_notice.as_ref() != Some(&notice) {
+                        app.set_notice(notice.clone());
+                        voice_notice = Some(notice);
+                        needs_draw = true;
+                    }
+                }
+            } else {
+                voice_notice = None;
+            }
+            if status.phase != crate::voice::Phase::Idle
+                && voice_published.elapsed() >= Duration::from_secs(1)
+            {
+                host.publish(
+                    &app.snapshot.sessions,
+                    &app.paused,
+                    app.session_parent_links(),
+                );
+                voice_published = Instant::now();
+            }
+            if status != app.voice {
+                if status.phase != crate::voice::Phase::Idle {
+                    app.voice_hint = false;
+                }
+                app.voice = status;
+                needs_draw = true;
+            }
+        }
         if needs_draw {
             watchdog::set_phase(watchdog::Phase::Draw);
             terminal.terminal.draw(|frame| ui::render(frame, &app))?;
@@ -974,6 +1015,41 @@ pub fn run_dashboard(
                                     paused,
                                     &keys,
                                 );
+                                ActionEffect::default()
+                            }
+                            AppAction::ToggleVoice => {
+                                if let Some(host) = &voice_host {
+                                    host.publish(
+                                        &app.snapshot.sessions,
+                                        &app.paused,
+                                        app.session_parent_links(),
+                                    );
+                                }
+                                match &voice {
+                                    Some(voice) => toggle_voice(&mut app, voice),
+                                    None => app
+                                        .set_notice("voice mode needs a live provider connection"),
+                                }
+                                ActionEffect::default()
+                            }
+                            AppAction::SaveVoiceKey { key } => {
+                                app.set_notice("checking the key with OpenAI…");
+                                match crate::voice::config::save_key(&key) {
+                                    Ok(()) => {
+                                        if let (Some(host), Some(voice)) = (&voice_host, &voice) {
+                                            host.publish(
+                                                &app.snapshot.sessions,
+                                                &app.paused,
+                                                app.session_parent_links(),
+                                            );
+                                            toggle_voice(&mut app, voice);
+                                        }
+                                    }
+                                    Err(error) => {
+                                        app.start_voice_key();
+                                        app.set_notice(format!("{error:#}"));
+                                    }
+                                }
                                 ActionEffect::default()
                             }
                             AppAction::BrowseHidden => {
@@ -1303,11 +1379,26 @@ pub fn run_dashboard(
         }
     };
 
+    if let Some(voice) = &voice {
+        voice.shutdown();
+    }
     engine.cancel();
     drop(history_worker);
     drop(refresh_tx);
     crate::native_session::shutdown_all();
     result
+}
+
+/// Starts a Voice Mode call or ends the one running, asking for the OpenAI key
+/// the first time.
+fn toggle_voice(app: &mut App, voice: &crate::voice::VoiceService) {
+    use crate::voice::Toggle;
+    match voice.toggle() {
+        Toggle::Started => app.set_notice("starting voice mode…"),
+        Toggle::Ended => app.set_notice("voice call ended"),
+        Toggle::NeedKey => app.start_voice_key(),
+        Toggle::Failed(error) => app.set_notice(error),
+    }
 }
 
 fn session_page_size_for_terminal(height: u16) -> usize {
@@ -1977,6 +2068,14 @@ fn handle_key(app: &mut App, key: KeyEvent) -> AppAction {
             }
             KeyCode::Char('o') if app.overlay == Overlay::DirectoryPicker => app.escape(),
             KeyCode::Char('l') if app.overlay == Overlay::None => AppAction::Refresh,
+            KeyCode::Char('k')
+                if matches!(
+                    app.overlay,
+                    Overlay::None | Overlay::Composer(ComposerMode::NewSession)
+                ) =>
+            {
+                AppAction::ToggleVoice
+            }
             KeyCode::Char('b')
                 if matches!(
                     app.overlay,
@@ -2567,7 +2666,10 @@ fn dispatch_action<T: DashboardTerminal, C: DashboardControl>(
                 }
             }
         }
-        AppAction::SetPaused { .. } | AppAction::SetSortKeys { .. } => ActionEffect::default(),
+        AppAction::SetPaused { .. }
+        | AppAction::SetSortKeys { .. }
+        | AppAction::ToggleVoice
+        | AppAction::SaveVoiceKey { .. } => ActionEffect::default(),
         AppAction::Hide { session_ids } => ActionEffect {
             hide_session_ids: session_ids,
             ..ActionEffect::default()
@@ -2678,6 +2780,8 @@ fn handle_action_legacy<T: DashboardTerminal, C: DashboardControl>(
         | AppAction::SetPaused { .. }
         | AppAction::SetSortKeys { .. }
         | AppAction::BrowseHidden
+        | AppAction::ToggleVoice
+        | AppAction::SaveVoiceKey { .. }
         | AppAction::PasteImage
         | AppAction::Unhide { .. }
         | AppAction::Restore { .. } => false,

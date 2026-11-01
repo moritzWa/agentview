@@ -762,7 +762,7 @@ fn render_composer(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let renaming = matches!(app.overlay, Overlay::Composer(ComposerMode::Rename { .. }));
     let naming_migration = matches!(
         app.overlay,
-        Overlay::Composer(ComposerMode::MigrationName { .. })
+        Overlay::Composer(ComposerMode::MigrationName { .. } | ComposerMode::VoiceKey)
     );
     let mut block = Block::default()
         .borders(Borders::TOP | Borders::BOTTOM)
@@ -790,6 +790,13 @@ fn render_composer(frame: &mut Frame<'_>, app: &App, area: Rect) {
             }
         }
         block = block.title(Line::from(title));
+    } else if matches!(app.overlay, Overlay::Composer(ComposerMode::VoiceKey)) {
+        block = block.title(Span::styled(
+            " voice mode · OpenAI API key ",
+            Style::default()
+                .fg(palette().accent)
+                .add_modifier(Modifier::BOLD),
+        ));
     } else if let Overlay::Composer(ComposerMode::MigrationName { target, .. }) = &app.overlay {
         block = block.title(Span::styled(
             format!(" migrate to {} · choose local name ", target.label()),
@@ -831,6 +838,7 @@ fn render_composer(frame: &mut Frame<'_>, app: &App, area: Rect) {
             ("name ❯ ", app.input.as_str(), true)
         }
         Overlay::Composer(ComposerMode::Filter) => ("❯ filter ", app.input.as_str(), true),
+        Overlay::Composer(ComposerMode::VoiceKey) => ("key ❯ ", app.input.as_str(), true),
         _ => (
             "❯ ",
             if app.filter.is_empty() {
@@ -1120,8 +1128,24 @@ fn composer_draft_layout(app: &App, width: u16) -> Option<DraftLayout> {
             "name ❯ "
         }
         Overlay::Composer(ComposerMode::Filter) => "❯ filter ",
+        Overlay::Composer(ComposerMode::VoiceKey) => "key ❯ ",
         _ => return None,
     };
+    if matches!(app.overlay, Overlay::Composer(ComposerMode::VoiceKey)) {
+        // A key is shown as dots, one per character, so it cannot be read off the screen.
+        let chars_before = |byte: usize| app.input[..byte.min(app.input.len())].chars().count();
+        let masked = "*".repeat(app.input.chars().count());
+        let selection = app
+            .input_selection()
+            .map(|range| chars_before(range.start)..chars_before(range.end));
+        return Some(layout_draft(
+            &masked,
+            chars_before(app.input_cursor()),
+            selection,
+            display_width(prefix),
+            width as usize,
+        ));
+    }
     Some(layout_draft(
         &app.input,
         app.input_cursor(),
@@ -1139,7 +1163,56 @@ fn render_help(frame: &mut Frame<'_>, app: &App, area: Rect) {
     );
 }
 
+/// The one-line status of a Voice Mode call.
+fn voice_bar(app: &App, width: u16) -> String {
+    use crate::voice::{Phase, Who};
+    let voice = &app.voice;
+    let head = match voice.phase {
+        Phase::Idle => return String::new(),
+        Phase::Connecting => "● voice: connecting".to_owned(),
+        Phase::Live => format!(
+            "● voice live {}:{:02}",
+            voice.seconds / 60,
+            voice.seconds % 60
+        ),
+    };
+    let tail = voice
+        .notice
+        .clone()
+        .or_else(|| {
+            voice.lines.last().map(|line| {
+                let who = if line.who == Who::You { "you" } else { "agent" };
+                format!("{who}: {}", line.text.trim())
+            })
+        })
+        .unwrap_or_default();
+    let end = " · ctrl+k ends";
+    let room = usize::from(width).saturating_sub(display_width(&head) + display_width(end) + 3);
+    let tail = sanitize_inline(&tail);
+    // The newest words matter most: keep the end of a long line.
+    let shown: String = if display_width(&tail) > room {
+        let skip = tail.chars().count().saturating_sub(room.saturating_sub(1));
+        format!("…{}", tail.chars().skip(skip).collect::<String>())
+    } else {
+        tail
+    };
+    if shown.is_empty() {
+        format!("{head}{end}")
+    } else {
+        format!("{head} · {shown}{end}")
+    }
+}
+
 fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    if app.voice.phase != crate::voice::Phase::Idle {
+        frame.render_widget(
+            Paragraph::new(voice_bar(app, area.width))
+                .style(Style::default().bg(palette().bg).fg(palette().accent))
+                .alignment(Alignment::Left),
+            area,
+        );
+        return;
+    }
     let footer = if let Some(notice) = &app.notice {
         sanitize_inline(notice)
     } else if app.overlay != Overlay::None {
@@ -1150,7 +1223,13 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .iter()
         .find(|warning| !is_history_cap_warning(warning))
     {
-        format!("warning: {}", sanitize_inline(warning))
+        // A standing warning would otherwise hide the hint for good.
+        let hint = if app.voice_hint && area.width >= 80 {
+            "ctrl+k talk to your agents · "
+        } else {
+            ""
+        };
+        format!("{hint}warning: {}", sanitize_inline(warning))
     } else {
         contextual_footer(app, area.width)
     };
@@ -1408,6 +1487,9 @@ fn is_history_cap_warning(warning: &str) -> bool {
 fn contextual_footer(app: &App, width: u16) -> String {
     match &app.overlay {
         Overlay::Composer(ComposerMode::Filter) => "enter to apply · esc to cancel".into(),
+        Overlay::Composer(ComposerMode::VoiceKey) => {
+            "paste an OpenAI API key with GPT-Live access · enter saves it and starts · esc cancels".into()
+        }
         Overlay::Composer(ComposerMode::Rename { .. }) if width >= 85 => {
             "rename session · type a new name · enter save · empty resets to provider name · esc cancel".into()
         }
@@ -1539,7 +1621,7 @@ fn contextual_footer(app: &App, width: u16) -> String {
                 (true, true) => " · back: ← on empty prompt",
                 (true, false) => " · back: ←/→ twice",
             };
-            format!("enter to open{back}{peek}{control} · ? for shortcuts")
+            format!("enter to open{back}{peek}{control} · ? for shortcuts{}", voice_hint(app, width))
         }
         Overlay::None if app.selected_session().is_some() && width >= 55 => {
             let session = app.selected_session().expect("selection checked");
@@ -1551,9 +1633,10 @@ fn contextual_footer(app: &App, width: u16) -> String {
         Overlay::None if app.selected_session().is_some() => {
             "enter/right to open · ? for shortcuts".into()
         }
-        _ if width >= 90 => {
-            "type to create · ctrl+o to pick folder · ctrl+f to filter · ? for shortcuts".into()
-        }
+        _ if width >= 90 => format!(
+            "type to create · ctrl+o to pick folder · ctrl+f to filter · ? for shortcuts{}",
+            voice_hint(app, width)
+        ),
         _ if width >= 70 => "type to create · ↑/↓ to select · /completed · ? for shortcuts".into(),
         _ => "↑/↓ to select · ? for shortcuts".into(),
     }
@@ -1599,6 +1682,15 @@ fn session_peek_suffix(session: &AgentSession) -> &'static str {
     }
 }
 
+/// Until the first call, the footer says how to start one.
+fn voice_hint(app: &App, width: u16) -> &'static str {
+    if app.voice_hint && width >= 100 {
+        " · ctrl+k talk to your agents"
+    } else {
+        ""
+    }
+}
+
 fn returns_on_one_left(session: &AgentSession) -> bool {
     matches!(session.provider, Provider::Claude | Provider::OpenCode)
 }
@@ -1627,6 +1719,7 @@ fn help_sections(app: &App) -> Vec<HelpSection> {
             ("ctrl+f", "filter sessions"),
             ("cmd+↑ / ↓", "jump between folders"),
             ("ctrl+g", "bring back a hidden session"),
+            ("ctrl+k", "voice mode, again to end"),
             ("ctrl+s", "switch view"),
             ("ctrl+l", "refresh"),
             ("esc", "quit"),
@@ -3492,7 +3585,7 @@ mod tests {
             warnings: vec![],
         });
         app.toggle_help();
-        let backend = TestBackend::new(120, 30);
+        let backend = TestBackend::new(120, 32);
         let mut terminal = Terminal::new(backend).unwrap();
 
         terminal.draw(|frame| render(frame, &app)).unwrap();

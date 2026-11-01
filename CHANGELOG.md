@@ -10,6 +10,18 @@ and released versions are intended to follow Semantic Versioning.
 
 ### Added
 
+- Voice Mode: press Ctrl+K (or type `/voice`) and talk to your OpenCode sessions
+  while your hands are busy. A pinned browser tab holds the microphone and
+  speaks with OpenAI's GPT-Live; it can list the sessions you are working in,
+  read what one last said, send it a message, stop it, correct your last
+  message, start a new session, and tell you when one finishes. It lists your
+  most recent sessions by when you last wrote to them, not every parked one.
+  The first call asks for an OpenAI API key with GPT-Live access
+  (`agentview voice --set-key` takes one on stdin). See `docs/voice.md`.
+
+- An OpenCode session's age now follows its latest real message. A model or
+  agent switch used to bump it, so several sessions could all read "6 hours".
+
 - When [agent-bouncer](https://github.com/moritzWa/agent-bouncer) is installed,
   a panel above the input lists its running and waiting heavy jobs and when the
   queue should clear, and a Working session whose tool call waits in line reads
