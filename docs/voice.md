@@ -36,8 +36,7 @@ refreshing then.
 - "Go", "continue", "sure", "yes". A short answer goes, word for word, to the
   session that last asked or proposed something. It never starts new sessions to
   carry out what a session proposed: that session does the work once it hears
-  "go". The voice also refuses to start a session when all you said was a short
-  answer.
+  "go".
 - "Close the naming session." It stops the session if it is running and removes
   it from Agent View, your list of sessions in focus. The history is kept, and
   Ctrl+G restores it.
