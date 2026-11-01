@@ -10,7 +10,13 @@ binary = sys.argv[2] if len(sys.argv) > 2 else os.path.expanduser("~/Code/agentv
 key = os.environ.get("VOICE_E2E_KEY") or subprocess.run(
     ["op", "item", "get", os.environ.get("VOICE_E2E_OP_ITEM", "arca agentview voice agent"), "--fields", "api key", "--reveal"],
     capture_output=True, text=True).stdout.strip()
-env = dict(os.environ, AGENTVIEW_OPENAI_API_KEY=key, AGENTVIEW_VOICE_NO_BROWSER="1", AGENTVIEW_VOICE_PORT="47698", TERM="xterm-256color")
+env = dict(os.environ, AGENTVIEW_OPENAI_API_KEY=key, AGENTVIEW_VOICE_PORT="47698", TERM="xterm-256color")
+live = bool(os.environ.get("NATIVE_LIVE"))
+if live:
+    # A real hidden browser with a silent fake microphone: the call really connects.
+    env["AGENTVIEW_VOICE_CHROME_ARGS"] = "--no-sandbox --use-fake-device-for-media-stream --mute-audio"
+else:
+    env["AGENTVIEW_VOICE_NO_BROWSER"] = "1"
 pid, fd = pty.fork()
 if pid == 0:
     os.execve(binary, [binary, "--opencode-bin", os.path.expanduser("~/.local/bin/opencode-dev"),
@@ -43,10 +49,13 @@ screen = "\n".join(vt.display)
 check("the session's own view is showing", "agentview v0.2.0" not in screen.split("\n")[0], screen.split("\n")[0][:80])
 os.write(fd, b"\x0b"); pump(1.5)           # ctrl+k
 check("ctrl+k in the view starts a call", "voice" in row(), row())
-pump(3)
+pump(8 if live else 3)
 where = [(n, line.strip()[:100]) for n, line in enumerate(vt.display) if "voice" in line]
 check("a badge stays on screen while the call is on", bool(where), str(where))
+if live:
+    check("the call is live, not stuck connecting", any("voice 0:" in line or "voice 1:" in line for line in vt.display), str(where))
 print("   bottom:", repr(row()[:140]))
+print("   last rows:", [vt.display[n].rstrip()[-110:] for n in (-3, -2, -1)])
 os.write(fd, b"\x0b"); pump(1.5)
 check("ctrl+k again ends it", "ended the call" in row() or "voice ended" in row(), row())
 os.write(fd, b"\x1b[1;2D"); pump(3)        # shift+left: back to the dashboard
