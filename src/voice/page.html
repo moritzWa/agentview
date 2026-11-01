@@ -32,6 +32,7 @@
   <button id="enable" class="primary">Enable microphone</button>
   <button id="mute" disabled>Mute</button>
   <button id="end" disabled>End call</button>
+  <div style="flex:1;align-self:center"><div style="height:6px;background:#eee;border-radius:3px"><div id="level" style="height:6px;width:0;background:#506CF7;border-radius:3px"></div></div></div>
 </footer>
 <audio id="out" autoplay></audio>
 <script>
@@ -49,7 +50,9 @@
 //                      {type:"ended", reason}        the call is over on this side
 const $ = (id) => document.getElementById(id);
 const stateEl = $("state"), log = $("log"), out = $("out");
-let ws, pc, dc, stream, ready = false, muted = false;
+// agentview runs this page in a hidden browser with `?hidden`: the microphone is allowed and there is nothing to click.
+const hidden = new URLSearchParams(location.search).has("hidden");
+let ws, pc, dc, stream, ready = hidden, muted = false;
 let youLine = null, voiceLine = null;
 
 function setState(text, kind = "") { stateEl.textContent = text; stateEl.className = kind; }
@@ -84,6 +87,28 @@ function playOut() {
 }
 document.addEventListener("click", () => { if (out.srcObject) playOut(); });
 
+// How loud the microphone is, shown in the page and reported so agentview can tell a dead one.
+let meterTimer = null;
+function meter(media) {
+  clearInterval(meterTimer);
+  try {
+    const context = new AudioContext();
+    const analyser = context.createAnalyser();
+    analyser.fftSize = 512;
+    context.createMediaStreamSource(media).connect(analyser);
+    const samples = new Float32Array(analyser.fftSize);
+    let quiet = 0;
+    meterTimer = setInterval(() => {
+      analyser.getFloatTimeDomainData(samples);
+      const rms = Math.sqrt(samples.reduce((sum, x) => sum + x * x, 0) / samples.length);
+      $("level").style.width = Math.min(100, Math.round(rms * 400)) + "%";
+      quiet = rms > 0.002 ? 0 : quiet + 1;
+      if (++ticks % 2 === 0) post({ type: "mic", rms: Number(rms.toFixed(4)), flat_seconds: quiet / 2 });
+    }, 500);
+  } catch {}
+}
+let ticks = 0;
+
 function applyMute() {
   stream?.getAudioTracks().forEach((t) => { t.enabled = !muted; });
   $("mute").textContent = muted ? "Unmute" : "Mute";
@@ -93,8 +118,12 @@ async function begin() {
   if (pc) return;
   try {
     stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
-  } catch (e) { setState("microphone blocked: " + e.name, "bad"); post({ type: "ended", reason: "microphone " + e.name }); return; }
-  ready = true; $("enable").hidden = true; muted = false; applyMute();
+  } catch (e) {
+    setState("microphone blocked: " + e.name, "bad");
+    post({ type: "ended", reason: `the microphone is blocked (${e.name}). On a Mac, allow your terminal or browser under System Settings, Privacy & Security, Microphone` });
+    return;
+  }
+  ready = true; $("enable").hidden = true; muted = false; applyMute(); meter(stream);
   setState("connecting call", "busy");
   pc = new RTCPeerConnection();
   stream.getTracks().forEach((t) => pc.addTrack(t, stream));
@@ -133,6 +162,7 @@ function end(reason) {
   try { dc?.close(); } catch {}
   try { pc?.close(); } catch {}
   stream?.getTracks().forEach((t) => t.stop());
+  clearInterval(meterTimer);
   pc = dc = stream = null; youLine = voiceLine = null;
   out.srcObject = null;
   $("mute").disabled = true; $("end").disabled = true;
@@ -156,6 +186,7 @@ function connect() {
   };
   ws.onclose = () => { end("agentview went away"); setState("waiting for agentview", "bad"); setTimeout(connect, 2000); };
 }
+if (hidden) $("enable").hidden = true;
 navigator.permissions?.query({ name: "microphone" }).then((p) => {
   if (p.state === "granted") { ready = true; $("enable").hidden = true; }
 }).catch(() => {});

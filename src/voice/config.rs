@@ -10,6 +10,14 @@ use serde::{Deserialize, Serialize};
 /// microphone permission for this address.
 pub const DEFAULT_PORT: u16 = 47617;
 
+/// The port to serve on; `AGENTVIEW_VOICE_PORT` lets a test run beside a real dashboard.
+pub fn port() -> u16 {
+    std::env::var("AGENTVIEW_VOICE_PORT")
+        .ok()
+        .and_then(|port| port.parse().ok())
+        .unwrap_or(DEFAULT_PORT)
+}
+
 fn state_dir() -> Result<PathBuf> {
     // Tests and demos keep the key and the hint flag out of the real state.
     if let Some(dir) = crate::fs_util::xdg_home("AGENTVIEW_VOICE_STATE_DIR") {
@@ -108,6 +116,11 @@ pub struct Settings {
     pub max_minutes: u64,
     /// `priority` asks OpenAI for its fast tier on the backend model.
     pub service_tier: Option<String>,
+    /// Who holds the microphone: `hidden` (a browser agentview starts and stops),
+    /// `tab` (a tab in your browser) or `none` (a page is opened some other way).
+    pub browser: String,
+    /// The Chromium-based browser `hidden` runs, when it is not where agentview looks.
+    pub chrome_path: Option<String>,
 }
 
 impl Default for Settings {
@@ -119,6 +132,8 @@ impl Default for Settings {
             idle_minutes: 10,
             max_minutes: 60,
             service_tier: None,
+            browser: "hidden".into(),
+            chrome_path: None,
         }
     }
 }
@@ -136,6 +151,11 @@ impl Settings {
 /// Written once the person has started a call, so the footer hint can go.
 pub fn hint_seen() -> bool {
     state_dir().is_ok_and(|dir| dir.join("hint-seen").exists())
+}
+
+/// Where the hidden browser keeps its profile.
+pub fn browser_profile_dir() -> Option<PathBuf> {
+    state_dir().ok().map(|dir| dir.join("browser-profile"))
 }
 
 pub fn mark_hint_seen() {

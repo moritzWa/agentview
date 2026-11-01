@@ -387,23 +387,26 @@ impl OpenCodeSupervisor {
         let mut sessions_by_directory = BTreeMap::new();
         for owned in record.sessions.values() {
             if !statuses_by_directory.contains_key(&owned.cwd) {
+                // A folder that no longer exists makes the server answer 404;
+                // that must hide its own sessions, not every other row.
                 let path = with_directory_query("/session/status", &owned.cwd);
-                let statuses = self.request_json(&record, "GET", &path, None)?;
-                statuses_by_directory.insert(owned.cwd.clone(), statuses);
-
+                let Ok(statuses) = self.request_json(&record, "GET", &path, None) else {
+                    continue;
+                };
                 let path = with_directory_query("/session", &owned.cwd);
-                let sessions = self.request_json(&record, "GET", &path, None)?;
+                let Ok(sessions) = self.request_json(&record, "GET", &path, None) else {
+                    continue;
+                };
+                statuses_by_directory.insert(owned.cwd.clone(), statuses);
                 sessions_by_directory.insert(owned.cwd.clone(), sessions);
             }
         }
         let mut refreshed = BTreeMap::new();
         for owned in record.sessions.values() {
-            let Some((title, server_updated_ms)) = provider_session_metadata(
-                sessions_by_directory
-                    .get(&owned.cwd)
-                    .expect("sessions were fetched for each owned directory"),
-                &owned.id,
-            )?
+            let Some(sessions) = sessions_by_directory.get(&owned.cwd) else {
+                continue;
+            };
+            let Some((title, server_updated_ms)) = provider_session_metadata(sessions, &owned.id)?
             else {
                 continue;
             };

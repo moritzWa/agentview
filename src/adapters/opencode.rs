@@ -418,7 +418,9 @@ impl ProviderController for OpenCodeController {
 
     fn reply(&self, session: &AgentSession, prompt: &str) -> Result<ControlOutcome> {
         let owned = self.require_owned(session)?;
-        if owned.state == SessionState::NeedsInput {
+        // A failed turn is continued by sending the next message; a pending
+        // question or permission is answered in OpenCode itself.
+        if owned.state == SessionState::NeedsInput && owned.raw_state != "turn failed" {
             bail!("the managed OpenCode session needs provider-native recovery");
         }
         self.supervisor
@@ -2084,6 +2086,9 @@ fn grant_managed_capabilities(session: &mut AgentSession, managed: &ManagedOpenC
         SessionState::Completed | SessionState::ReadyForReview => {
             session.capabilities.insert(Capability::Reply);
         }
+        SessionState::NeedsInput if managed.raw_state == "turn failed" => {
+            session.capabilities.insert(Capability::Reply);
+        }
         SessionState::NeedsInput | SessionState::Unknown => {}
     }
 }
@@ -2291,6 +2296,39 @@ mod tests {
         };
         assert_eq!(millis(&sessions[0]), 2000);
         assert_eq!(millis(&sessions[1]), 7000);
+    }
+
+    #[test]
+    fn a_failed_turn_can_be_continued_but_a_pending_question_cannot() {
+        let managed = |state, raw_state| ManagedOpenCodeSession {
+            id: "ses_x".into(),
+            cwd: PathBuf::from("/work"),
+            title: "x".into(),
+            summary: String::new(),
+            state,
+            raw_state,
+            server_pid: 1,
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            last_user_ms: 0,
+            tail: String::new(),
+        };
+        let granted = |managed: &ManagedOpenCodeSession| {
+            let mut session = agent_session_from_managed(managed);
+            grant_managed_capabilities(&mut session, managed);
+            session.capabilities
+        };
+        assert!(
+            granted(&managed(SessionState::NeedsInput, "turn failed")).contains(&Capability::Reply)
+        );
+        assert!(
+            !granted(&managed(SessionState::NeedsInput, "question asked"))
+                .contains(&Capability::Reply)
+        );
+        assert!(
+            !granted(&managed(SessionState::NeedsInput, "permission requested"))
+                .contains(&Capability::Reply)
+        );
     }
 
     #[test]

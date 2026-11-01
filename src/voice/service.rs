@@ -10,8 +10,10 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 
+use super::browser::{self, Mode};
 use super::call::{self, Action, Call, Line};
 use super::config::{self, Settings};
+use super::log::{clip, log};
 use super::server::{self, PageSink};
 use super::tools::{Tools, VoiceHost};
 
@@ -30,6 +32,18 @@ pub enum Phase {
     Idle,
     Connecting,
     Live,
+}
+
+static VIEWING: Mutex<Option<String>> = Mutex::new(None);
+
+/// The session the developer is looking at: selected in the dashboard, or open
+/// in its own view. A call in progress is told when it changes.
+pub fn set_viewing(id: Option<String>) {
+    *VIEWING.lock().unwrap_or_else(|p| p.into_inner()) = id;
+}
+
+fn viewing() -> Option<String> {
+    VIEWING.lock().unwrap_or_else(|p| p.into_inner()).clone()
 }
 
 /// What the dashboard shows about the call.
@@ -87,8 +101,11 @@ struct ActiveCall {
     since: Instant,
     live_since: Option<Instant>,
     opened_browser: bool,
+    /// The hidden browser holding the microphone, when agentview started one.
+    browser: Option<std::process::Child>,
     last_heard: Instant,
     last_poll: Instant,
+    polls: u32,
     warned: bool,
     call: Call,
     tools: Arc<Tools>,
@@ -103,7 +120,8 @@ struct State {
     notice: Option<String>,
 }
 
-type Opener = Box<dyn Fn(&str) + Send + Sync>;
+/// Gets a browser onto the voice page; a hidden one comes back to be stopped later.
+type Launcher = Box<dyn Fn(&str) -> Option<std::process::Child> + Send + Sync>;
 type KeySource = Box<dyn Fn() -> Option<String> + Send + Sync>;
 type Creator = Box<dyn Fn(&str, &Value) -> Result<Created> + Send + Sync>;
 
@@ -112,7 +130,7 @@ struct Inner {
     settings: Settings,
     port: u16,
     state: Mutex<State>,
-    open_browser: Opener,
+    launch: Launcher,
     key: KeySource,
     create: Creator,
 }
@@ -124,11 +142,13 @@ pub struct VoiceService {
 
 impl VoiceService {
     pub fn new(host: Arc<dyn VoiceHost>) -> Self {
+        let settings = Settings::load();
+        let launch = launcher(&settings);
         Self::with_parts(
             host,
-            Settings::load(),
-            config::DEFAULT_PORT,
-            Box::new(open_in_browser),
+            settings,
+            config::port(),
+            launch,
             Box::new(config::api_key),
             Box::new(create_session),
         )
@@ -138,7 +158,7 @@ impl VoiceService {
         host: Arc<dyn VoiceHost>,
         settings: Settings,
         port: u16,
-        open_browser: Opener,
+        launch: Launcher,
         key: KeySource,
         create: Creator,
     ) -> Self {
@@ -148,7 +168,7 @@ impl VoiceService {
                 settings,
                 port,
                 state: Mutex::default(),
-                open_browser,
+                launch,
                 key,
                 create,
             }),
@@ -211,8 +231,18 @@ impl VoiceService {
 
     /// Ends any call when the dashboard closes.
     pub fn shutdown(&self) {
+        // The browser stops now, not after the usual moment: this process is ending.
+        let browser = self
+            .inner
+            .lock()
+            .active
+            .as_mut()
+            .and_then(|active| active.browser.take());
         if self.inner.lock().active.is_some() {
             self.inner.finish("agentview closed.", true);
+        }
+        if let Some(child) = browser {
+            browser::stop(child);
         }
     }
 }
@@ -225,6 +255,17 @@ impl Inner {
     }
 
     fn send_page(state: &State, message: Value) {
+        if message["type"] == "send" {
+            let event = &message["event"];
+            let kind = event["type"].as_str().unwrap_or_default();
+            // Answers to tool calls are logged with the tool; the rest says what the voice was told.
+            if !kind.starts_with("response.") {
+                log(
+                    "send",
+                    json!({"type": kind, "content": clip(event["content"].as_str().unwrap_or_default(), 300)}),
+                );
+            }
+        }
         if let Some(page) = &state.page {
             let _ = page.outgoing.send(message.to_string());
         }
@@ -251,6 +292,7 @@ impl Inner {
             bail!(error);
         }
         let tools = Arc::new(Tools::new(self.host.clone()));
+        tools.set_viewing(viewing());
         tools.prime();
         let now = Instant::now();
         state.notice = None;
@@ -259,13 +301,24 @@ impl Inner {
             since: now,
             live_since: None,
             opened_browser: false,
+            browser: None,
             last_heard: now,
             last_poll: now,
+            polls: 0,
             warned: false,
             call: Call::default(),
             tools,
         });
         config::mark_hint_seen();
+        // A hidden browser starts at once. A tab in your own browser is only
+        // opened after a pinned one has had a moment to connect.
+        if state.page.is_none() && Mode::parse(&self.settings.browser) == Mode::Hidden {
+            let url = format!("http://127.0.0.1:{}/", self.port);
+            if let Some(active) = state.active.as_mut() {
+                active.opened_browser = true;
+                active.browser = (self.launch)(&url);
+            }
+        }
         if let Some(page) = &state.page {
             if !page.ready {
                 state.notice = Some(MIC_NOTICE.into());
@@ -292,10 +345,19 @@ impl Inner {
     /// Ends the call: tells OpenAI to close, then the page to hang up.
     fn finish(&self, reason: &str, notify_page: bool) {
         let mut state = self.lock();
-        let Some(active) = state.active.take() else {
+        let Some(mut active) = state.active.take() else {
             return;
         };
         state.notice = Some(reason.to_owned());
+        log("end", json!({"reason": reason}));
+        if let Some(child) = active.browser.take() {
+            // Give OpenAI's close a moment to go out before the browser stops.
+            let wait = if notify_page { 1500 } else { 0 };
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(wait));
+                browser::stop(child);
+            });
+        }
         let seconds = active.call.usage_seconds;
         if notify_page {
             Self::send_page(&state, json!({"type": "send", "event": call::close()}));
@@ -321,13 +383,21 @@ impl Inner {
         let Some(active) = state.active.as_mut() else {
             return;
         };
+        if let Some(child) = active.browser.as_mut() {
+            if matches!(child.try_wait(), Ok(Some(_))) {
+                active.browser = None;
+                drop(state);
+                self.finish("The voice browser closed unexpectedly.", false);
+                return;
+            }
+        }
         let idle_limit = Duration::from_secs(self.settings.idle_minutes * 60);
         let max = Duration::from_secs(self.settings.max_minutes * 60);
         match active.stage {
             Stage::Waiting => {
                 if active.since.elapsed() >= PAGE_GRACE && !active.opened_browser {
                     active.opened_browser = true;
-                    (self.open_browser)(&format!("http://127.0.0.1:{}/", self.port));
+                    active.browser = (self.launch)(&format!("http://127.0.0.1:{}/", self.port));
                 }
                 if active.since.elapsed() >= START_TIMEOUT {
                     let url = format!("http://127.0.0.1:{}/", self.port);
@@ -345,6 +415,14 @@ impl Inner {
                 }
             }
             Stage::Live => {
+                // A goodbye ends the call once the voice has answered it.
+                if active.call.farewell
+                    && Instant::now().duration_since(active.last_heard) >= Duration::from_secs(5)
+                {
+                    drop(state);
+                    self.finish("Ended at your request.", true);
+                    return;
+                }
                 let tools = active.tools.clone();
                 let now = Instant::now();
                 let elapsed = active
@@ -379,10 +457,24 @@ impl Inner {
                 }
                 if now.duration_since(active.last_poll) >= POLL_EVERY {
                     active.last_poll = now;
+                    active.polls += 1;
+                    let refresh = active.polls % 4 == 0;
                     drop(state);
                     // The host and the tools can take a moment: not under the lock.
+                    if refresh {
+                        // The dashboard may be showing a session in its own view
+                        // and not refreshing: ask for fresh data.
+                        self.host.refresh();
+                    }
                     let polled = tools.poll();
+                    let looking = tools.set_viewing(viewing());
                     let state = self.lock();
+                    if let Some(note) = looking {
+                        Self::send_page(
+                            &state,
+                            json!({"type": "send", "event": call::thinking(&note)}),
+                        );
+                    }
                     for line in &polled.spoken {
                         Self::send_page(
                             &state,
@@ -471,7 +563,7 @@ impl Inner {
                 Action::Failed(message) => {
                     self.lock().notice = Some(message);
                 }
-                Action::Run(calls) => {
+                Action::Run { calls, stale } => {
                     let (tools, outgoing) = {
                         let state = self.lock();
                         let Some(active) = state.active.as_ref() else {
@@ -483,6 +575,7 @@ impl Inner {
                         )
                     };
                     let Some(outgoing) = outgoing else { return };
+                    let this = self.clone();
                     thread::spawn(move || {
                         let send = |event: Value| {
                             let _ =
@@ -491,10 +584,30 @@ impl Inner {
                         for call_ in &calls {
                             let args: Value =
                                 serde_json::from_str(&call_.arguments).unwrap_or(Value::Null);
-                            let result = tools.run(&call_.name, &args);
+                            let started = Instant::now();
+                            let result = if stale && Tools::is_read_only(&call_.name) {
+                                // Reading on for a request the developer has moved past.
+                                json!({"error": "the developer has asked something new: stop looking things up and answer in one short sentence"})
+                            } else {
+                                tools.run(&call_.name, &args)
+                            };
+                            log(
+                                "tool",
+                                json!({
+                                    "name": call_.name,
+                                    "args": args,
+                                    "ms": started.elapsed().as_millis() as u64,
+                                    "result": clip(&result.to_string(), 600),
+                                }),
+                            );
                             send(call::function_output(&call_.call_id, &result));
                         }
                         send(call::continue_response());
+                        if calls.iter().any(|call| call.name == "end_call") {
+                            // Long enough for the goodbye to be said.
+                            thread::sleep(Duration::from_secs(6));
+                            this.finish("Ended at your request.", true);
+                        }
                     });
                 }
             }
@@ -521,6 +634,32 @@ impl PageSink for Sink {
 
     fn message(&self, page: u64, message: Value) {
         let this = &self.0;
+        match message.get("type").and_then(Value::as_str) {
+            Some("event") => {
+                let event = &message["event"];
+                let kind = event
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let inner = event
+                    .pointer("/event/type")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let noisy = kind.ends_with("transcript.delta") || inner.ends_with(".delta");
+                if kind.ends_with("transcript.delta") {
+                    log("said", json!({"who": kind, "text": event["delta"]}));
+                } else if !noisy {
+                    log(
+                        "event",
+                        json!({"type": kind, "inner": inner, "error": event.get("error")}),
+                    );
+                }
+            }
+            other => log(
+                "page",
+                json!({"type": other, "message": clip(&message.to_string(), 200)}),
+            ),
+        }
         match message
             .get("type")
             .and_then(Value::as_str)
@@ -555,6 +694,22 @@ impl PageSink for Sink {
                     this.on_event(event);
                 }
             }
+            "mic" => {
+                let flat = message
+                    .get("flat_seconds")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(0.0);
+                let mut state = this.lock();
+                let silent = state
+                    .active
+                    .as_ref()
+                    .is_some_and(|active| active.stage == Stage::Live && !active.call.user_spoke);
+                if silent && flat >= DEAD_MIC_SECONDS {
+                    state.notice = Some(DEAD_MIC_NOTICE.into());
+                } else if flat < 1.0 && state.notice.as_deref() == Some(DEAD_MIC_NOTICE) {
+                    state.notice = None;
+                }
+            }
             "audio" => {
                 let mut state = this.lock();
                 let blocked = message.get("on").and_then(Value::as_bool) == Some(false);
@@ -584,6 +739,9 @@ impl PageSink for Sink {
 }
 
 const MIC_NOTICE: &str = "Allow the microphone in the Agent View voice tab.";
+/// A microphone that is exactly silent this long, with nothing heard yet, is not on.
+const DEAD_MIC_SECONDS: f64 = 20.0;
+const DEAD_MIC_NOTICE: &str = "No sound from the microphone. On a Mac, allow your terminal or the browser under System Settings, Privacy & Security, Microphone.";
 const CLICK_NOTICE: &str = "Click the Agent View voice tab once so the browser lets it play sound.";
 
 fn sentence(reason: &str) -> String {
@@ -593,6 +751,38 @@ fn sentence(reason: &str) -> String {
         .map(|c| c.to_uppercase().collect::<String>())
         .unwrap_or_default();
     format!("{first}{}.", chars.as_str().trim_end_matches('.'))
+}
+
+/// How a browser gets onto the page, from the settings.
+fn launcher(settings: &Settings) -> Launcher {
+    let mode = Mode::parse(&settings.browser);
+    let configured = settings.chrome_path.clone();
+    Box::new(move |url| {
+        if std::env::var_os("AGENTVIEW_VOICE_NO_BROWSER").is_some() {
+            return None;
+        }
+        match mode {
+            Mode::None => None,
+            Mode::Tab => {
+                open_in_browser(url);
+                None
+            }
+            Mode::Hidden => {
+                let started = browser::find_chrome(configured.as_deref()).and_then(|chrome| {
+                    let profile = config::browser_profile_dir()?;
+                    browser::stop_orphans(&profile);
+                    let extra = std::env::var("AGENTVIEW_VOICE_CHROME_ARGS").unwrap_or_default();
+                    browser::spawn_hidden(&chrome, &format!("{url}?hidden=1"), &profile, &extra)
+                        .ok()
+                });
+                if started.is_none() {
+                    // No Chromium-based browser to hide: use a tab instead.
+                    open_in_browser(url);
+                }
+                started
+            }
+        }
+    })
 }
 
 /// Opens `url` in the default browser.
@@ -748,6 +938,7 @@ mod tests {
             0,
             Box::new(move |_| {
                 counter.fetch_add(1, Ordering::SeqCst);
+                None
             }),
             Box::new(move || key.map(str::to_owned)),
             Box::new(move |key, body| {
@@ -885,7 +1076,7 @@ mod tests {
             host,
             Settings::default(),
             0,
-            Box::new(|_| {}),
+            Box::new(|_| None),
             Box::new(|| Some("sk-test".into())),
             Box::new(|_, _| bail!("OpenAI answered 401 bad key")),
         );
@@ -974,6 +1165,99 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("Merged."));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_hidden_browser_starts_with_the_call_and_stops_with_it() {
+        let started = Arc::new(AtomicUsize::new(0));
+        let counter = started.clone();
+        let host = FakeHost::with(Vec::new());
+        let service = VoiceService::with_parts(
+            host,
+            Settings::default(),
+            0,
+            Box::new(move |url| {
+                assert!(url.starts_with("http://127.0.0.1:"));
+                counter.fetch_add(1, Ordering::SeqCst);
+                std::process::Command::new("sleep").arg("30").spawn().ok()
+            }),
+            Box::new(|| Some("sk-test".into())),
+            Box::new(|_, _| bail!("unused")),
+        );
+        assert_eq!(service.toggle(), Toggle::Started);
+        assert_eq!(started.load(Ordering::SeqCst), 1);
+        let pid = service
+            .inner
+            .lock()
+            .active
+            .as_ref()
+            .unwrap()
+            .browser
+            .as_ref()
+            .unwrap()
+            .id();
+        assert_eq!(service.toggle(), Toggle::Ended);
+        until(|| unsafe { libc::kill(pid as libc::pid_t, 0) } != 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_hidden_browser_that_dies_ends_the_call() {
+        let host = FakeHost::with(Vec::new());
+        let service = VoiceService::with_parts(
+            host,
+            Settings::default(),
+            0,
+            Box::new(|_| std::process::Command::new("true").spawn().ok()),
+            Box::new(|| Some("sk-test".into())),
+            Box::new(|_, _| bail!("unused")),
+        );
+        assert_eq!(service.toggle(), Toggle::Started);
+        until(|| service.status().phase == Phase::Idle);
+        assert!(service
+            .status()
+            .notice
+            .unwrap()
+            .contains("voice browser closed"));
+    }
+
+    #[test]
+    fn a_microphone_that_stays_dead_is_reported_until_it_makes_a_sound() {
+        let rig = rig(Settings::default(), Some("sk-test"));
+        let (id, _inbox) = page(&rig);
+        say(&rig, id, json!({"type": "hello", "ready": true}));
+        rig.service.toggle();
+        say(&rig, id, json!({"type": "offer", "sdp": "x"}));
+        say(
+            &rig,
+            id,
+            json!({"type": "event", "event": {"type": "session.started", "session": {"id": "l"}}}),
+        );
+        until(|| rig.service.status().phase == Phase::Live);
+        say(
+            &rig,
+            id,
+            json!({"type": "mic", "rms": 0.0, "flat_seconds": 10.0}),
+        );
+        assert_eq!(rig.service.status().notice, None);
+        say(
+            &rig,
+            id,
+            json!({"type": "mic", "rms": 0.0, "flat_seconds": 20.0}),
+        );
+        assert!(rig
+            .service
+            .status()
+            .notice
+            .unwrap()
+            .contains("No sound from the microphone"));
+        say(
+            &rig,
+            id,
+            json!({"type": "mic", "rms": 0.02, "flat_seconds": 0.0}),
+        );
+        assert_eq!(rig.service.status().notice, None);
     }
 
     #[test]

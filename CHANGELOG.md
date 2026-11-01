@@ -19,6 +19,12 @@ and released versions are intended to follow Semantic Versioning.
   The first call asks for an OpenAI API key with GPT-Live access
   (`agentview voice --set-key` takes one on stdin). See `docs/voice.md`.
 
+- Voice Mode runs its browser hidden: agentview starts a headless Chromium-based
+  browser for the call and stops it afterwards, so no tab opens. Cmd+K works as
+  well as Ctrl+K, and inside a session's own view Ctrl+K (OpenCode), Cmd+K or
+  Ctrl+] start and end a call. The voice knows which session is selected or
+  open, and ends the call when you say goodbye.
+
 - An OpenCode session's age now follows its latest real message. A model or
   agent switch used to bump it, so several sessions could all read "6 hours".
 
