@@ -13,6 +13,7 @@ pub mod log;
 pub mod server;
 pub mod service;
 pub mod tools;
+pub mod xai;
 
 pub use call::{Line, Who};
 pub use service::{set_viewing, PanelStatus, Phase, Toggle, VoiceService};

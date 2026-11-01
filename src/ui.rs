@@ -762,7 +762,7 @@ fn render_composer(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let renaming = matches!(app.overlay, Overlay::Composer(ComposerMode::Rename { .. }));
     let naming_migration = matches!(
         app.overlay,
-        Overlay::Composer(ComposerMode::MigrationName { .. } | ComposerMode::VoiceKey)
+        Overlay::Composer(ComposerMode::MigrationName { .. } | ComposerMode::VoiceKey(_))
     );
     let mut block = Block::default()
         .borders(Borders::TOP | Borders::BOTTOM)
@@ -790,7 +790,7 @@ fn render_composer(frame: &mut Frame<'_>, app: &App, area: Rect) {
             }
         }
         block = block.title(Line::from(title));
-    } else if matches!(app.overlay, Overlay::Composer(ComposerMode::VoiceKey)) {
+    } else if matches!(app.overlay, Overlay::Composer(ComposerMode::VoiceKey(_))) {
         block = block.title(Span::styled(
             " voice mode · OpenAI API key ",
             Style::default()
@@ -838,7 +838,7 @@ fn render_composer(frame: &mut Frame<'_>, app: &App, area: Rect) {
             ("name ❯ ", app.input.as_str(), true)
         }
         Overlay::Composer(ComposerMode::Filter) => ("❯ filter ", app.input.as_str(), true),
-        Overlay::Composer(ComposerMode::VoiceKey) => ("key ❯ ", app.input.as_str(), true),
+        Overlay::Composer(ComposerMode::VoiceKey(_)) => ("key ❯ ", app.input.as_str(), true),
         _ => (
             "❯ ",
             if app.filter.is_empty() {
@@ -1128,10 +1128,10 @@ fn composer_draft_layout(app: &App, width: u16) -> Option<DraftLayout> {
             "name ❯ "
         }
         Overlay::Composer(ComposerMode::Filter) => "❯ filter ",
-        Overlay::Composer(ComposerMode::VoiceKey) => "key ❯ ",
+        Overlay::Composer(ComposerMode::VoiceKey(_)) => "key ❯ ",
         _ => return None,
     };
-    if matches!(app.overlay, Overlay::Composer(ComposerMode::VoiceKey)) {
+    if matches!(app.overlay, Overlay::Composer(ComposerMode::VoiceKey(_))) {
         // A key is shown as dots, one per character, so it cannot be read off the screen.
         let chars_before = |byte: usize| app.input[..byte.min(app.input.len())].chars().count();
         let masked = "*".repeat(app.input.chars().count());
@@ -1163,6 +1163,22 @@ fn render_help(frame: &mut Frame<'_>, app: &App, area: Rect) {
     );
 }
 
+/// Where the `−` and `+` speed buttons are in the call's footer line.
+pub fn voice_speed_buttons(app: &App) -> Option<(u16, u16)> {
+    let speed = app.voice.speed?;
+    if app.voice.phase != crate::voice::Phase::Live {
+        return None;
+    }
+    let before = format!(
+        "● voice live {}:{:02}  ",
+        app.voice.seconds / 60,
+        app.voice.seconds % 60
+    );
+    let minus = display_width(&before) as u16;
+    let plus = minus + display_width(&format!("−  {speed:.1}x  ")) as u16;
+    Some((minus, plus))
+}
+
 /// The one-line status of a Voice Mode call.
 fn voice_bar(app: &App, width: u16) -> String {
     use crate::voice::{Phase, Who};
@@ -1170,11 +1186,18 @@ fn voice_bar(app: &App, width: u16) -> String {
     let head = match voice.phase {
         Phase::Idle => return String::new(),
         Phase::Connecting => "● voice: connecting".to_owned(),
-        Phase::Live => format!(
-            "● voice live {}:{:02}",
-            voice.seconds / 60,
-            voice.seconds % 60
-        ),
+        Phase::Live => {
+            let time = format!(
+                "● voice live {}:{:02}",
+                voice.seconds / 60,
+                voice.seconds % 60
+            );
+            match voice.speed {
+                // Click − or + to change how fast Grok talks.
+                Some(speed) => format!("{time}  −  {speed:.1}x  +"),
+                None => time,
+            }
+        }
     };
     let tail = voice
         .notice
@@ -1487,7 +1510,7 @@ fn is_history_cap_warning(warning: &str) -> bool {
 fn contextual_footer(app: &App, width: u16) -> String {
     match &app.overlay {
         Overlay::Composer(ComposerMode::Filter) => "enter to apply · esc to cancel".into(),
-        Overlay::Composer(ComposerMode::VoiceKey) => {
+        Overlay::Composer(ComposerMode::VoiceKey(_)) => {
             "paste an OpenAI API key with GPT-Live access · enter saves it and starts · esc cancels".into()
         }
         Overlay::Composer(ComposerMode::Rename { .. }) if width >= 85 => {

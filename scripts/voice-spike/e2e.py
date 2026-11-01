@@ -19,10 +19,19 @@ questions = [a for a in args if not a.startswith("/") and not a.startswith("--")
 binary = next((a for a in args if a.startswith("/")), os.path.expanduser("~/Code/agentview/target/debug/agentview"))
 RUN = int(os.environ.get("E2E_SECONDS", "85"))
 here = os.path.dirname(os.path.abspath(__file__))
-key = os.environ.get("VOICE_E2E_KEY") or subprocess.run(
+key = os.environ.get("VOICE_E2E_KEY") or ("sk-skip" if os.environ.get("E2E_PROVIDER","").lower() in ("grok","xai") else "") or subprocess.run(
     ["op", "item", "get", os.environ.get("VOICE_E2E_OP_ITEM", "arca agentview voice agent"), "--fields", "api key", "--reveal"],
     capture_output=True, text=True).stdout.strip()
-assert key.startswith("sk-"), "no key"
+# E2E_PROVIDER=grok runs the call on xAI, with the key from the "x ai api key" item.
+grok = os.environ.get("E2E_PROVIDER", "").lower() in ("grok", "xai")
+xai_key = ""
+if grok:
+    xai_key = os.environ.get("VOICE_E2E_XAI_KEY") or subprocess.run(
+        ["op", "item", "get", os.environ.get("VOICE_E2E_XAI_ITEM", "x ai api key"), "--fields", "credential", "--reveal"],
+        capture_output=True, text=True).stdout.strip()
+    assert xai_key.startswith("xai-"), "no xAI key"
+else:
+    assert key.startswith("sk-"), "no key"
 
 tmp = tempfile.mkdtemp(prefix="voice-e2e-")
 inputs, filters, labels = [], [], []
@@ -43,6 +52,12 @@ _scratch = os.path.join(os.environ.get("TMPDIR", "/tmp"), "voice-e2e-state")
 os.makedirs(_scratch, exist_ok=True)
 env["AGENTVIEW_VOICE_STATE_DIR"] = _scratch
 env["AGENTVIEW_PERF_LOG"] = os.path.join(_scratch, "perf.log")
+if grok:
+    env["AGENTVIEW_XAI_API_KEY"] = xai_key
+    with open(os.path.join(_scratch, "settings.json"), "w") as settings:
+        settings.write('{"provider": "grok"}')
+elif os.path.exists(os.path.join(_scratch, "settings.json")):
+    os.remove(os.path.join(_scratch, "settings.json"))
 if use_driver:
     env["AGENTVIEW_VOICE_NO_BROWSER"] = "1"
 else:
@@ -76,7 +91,7 @@ def chrome_processes():
     out = subprocess.run(["ps", "-A", "-o", "pid=,command="], capture_output=True, text=True).stdout
     return [l for l in out.splitlines() if "voice/browser-profile" in l or "browser-profile" in l and "headless" in l]
 
-pump(10)
+pump(int(os.environ.get("E2E_WAIT", "10")))
 for _ in range(int(os.environ.get("E2E_SELECT_DOWN", "0"))):
     os.write(fd, b"\x1b[B")
     pump(0.3)

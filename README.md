@@ -102,9 +102,10 @@ own interface.
 - **Talk to your sessions** with `Ctrl+K` or `Cmd+K`, from the list or inside a
   session. Ask which ones need you, hear what one last said, tell it what to
   do, or start a new one, with your hands in the dishwasher. It knows which
-  session you are looking at. Voice runs on OpenAI's GPT-Live through a hidden
-  browser agentview starts for the call, about 5 cents a minute, for OpenCode
-  sessions. See [Voice Mode](docs/voice.md).
+  session you are looking at. Voice runs on OpenAI's GPT-Live or xAI's Grok
+  (`/voice grok` switches; Grok's speed has clickable `−`/`+`) through a hidden
+  browser agentview starts for the call, for OpenCode sessions. See
+  [Voice Mode](docs/voice.md).
 - **`Ctrl+X` twice** stops and hides or deletes a session, no dialog.
 
 ### Refresh time by harness

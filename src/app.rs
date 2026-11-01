@@ -114,7 +114,7 @@ pub enum ComposerMode {
     },
     Filter,
     /// An OpenAI API key for Voice Mode, shown masked.
-    VoiceKey,
+    VoiceKey(crate::voice::config::Provider),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -132,7 +132,12 @@ pub enum AppAction {
     /// Save the OpenAI key typed into the Voice Mode prompt, then start a call.
     SaveVoiceKey {
         key: String,
+        provider: crate::voice::config::Provider,
     },
+    /// `/voice grok` or `/voice openai`: whose voice calls use from now on.
+    VoiceProvider(crate::voice::config::Provider),
+    /// `/voice speed 1.2`, in tenths: how fast Grok talks.
+    VoiceSpeed(u32),
     SetCompletedVisibility {
         include_completed: bool,
     },
@@ -1509,13 +1514,17 @@ impl App {
         self.overlay = Overlay::Composer(ComposerMode::Rename { session_id });
     }
 
-    /// Ask for the OpenAI key Voice Mode needs.
-    pub fn start_voice_key(&mut self) {
+    /// Ask for the API key Voice Mode needs from this provider.
+    pub fn start_voice_key(&mut self, provider: crate::voice::config::Provider) {
+        use crate::voice::config::Provider as Voice;
         self.clear_input();
-        self.set_notice(
-            "Voice Mode needs an OpenAI API key with GPT-Live access: paste it, enter to save",
-        );
-        self.overlay = Overlay::Composer(ComposerMode::VoiceKey);
+        self.set_notice(match provider {
+            Voice::OpenAi => {
+                "Voice Mode needs an OpenAI API key with GPT-Live access: paste it, enter to save"
+            }
+            Voice::Xai => "Voice Mode with Grok needs an xAI API key: paste it, enter to save",
+        });
+        self.overlay = Overlay::Composer(ComposerMode::VoiceKey(provider));
     }
 
     /// Parent links between sessions, child to parent by provider session id.
@@ -2040,7 +2049,7 @@ impl App {
                     ComposerMode::Filter
                         | ComposerMode::Rename { .. }
                         | ComposerMode::MigrationName { .. }
-                        | ComposerMode::VoiceKey
+                        | ComposerMode::VoiceKey(_)
                 )
         )
     }
@@ -3085,7 +3094,10 @@ impl App {
                 self.set_filter(input);
                 AppAction::None
             }
-            ComposerMode::VoiceKey => AppAction::SaveVoiceKey { key: input },
+            ComposerMode::VoiceKey(provider) => AppAction::SaveVoiceKey {
+                key: input,
+                provider,
+            },
         }
     }
 
@@ -3130,7 +3142,8 @@ impl App {
             .unwrap_or((input.as_str(), ""));
         match command.to_ascii_lowercase().as_str() {
             "/help" => self.toggle_help(),
-            "/voice" => return AppAction::ToggleVoice,
+            "/voice" if argument.is_empty() => return AppAction::ToggleVoice,
+            "/voice" => return self.voice_setting(argument),
             "/harness" | "/provider" if argument.is_empty() => self.open_harness_picker(),
             "/harness" | "/provider" => self.select_launch_provider(argument),
             "/model" => return self.select_launch_model(argument),
@@ -3186,6 +3199,29 @@ impl App {
             }
         }
         AppAction::None
+    }
+
+    /// `/voice grok`, `/voice openai`, `/voice speed 1.2`.
+    fn voice_setting(&mut self, argument: &str) -> AppAction {
+        let mut words = argument.split_whitespace();
+        let first = words.next().unwrap_or_default();
+        if let Some(provider) = crate::voice::config::Provider::parse(first) {
+            return AppAction::VoiceProvider(provider);
+        }
+        let number = if first.eq_ignore_ascii_case("speed") {
+            words.next().unwrap_or_default()
+        } else {
+            first
+        };
+        match number.trim_end_matches('x').parse::<f64>() {
+            Ok(speed) => AppAction::VoiceSpeed(
+                (crate::voice::config::clamp_speed(speed) * 10.0).round() as u32,
+            ),
+            Err(_) => {
+                self.set_notice("use /voice, /voice grok, /voice openai or /voice speed 1.2");
+                AppAction::None
+            }
+        }
     }
 
     fn select_launch_directory(&mut self, argument: &str) {
@@ -4810,6 +4846,31 @@ mod tests {
         assert!(app.command_suggestions().is_empty());
         app.input = "fix /model".into();
         assert!(app.command_suggestions().is_empty());
+    }
+
+    #[test]
+    fn slash_voice_switches_provider_and_sets_speed() {
+        use crate::voice::config::Provider as Voice;
+        let mut app = app_with(vec![]);
+        app.start_new_session(None);
+        for (input, expected) in [
+            ("/voice", AppAction::ToggleVoice),
+            ("/voice grok", AppAction::VoiceProvider(Voice::Xai)),
+            ("/voice xai", AppAction::VoiceProvider(Voice::Xai)),
+            ("/voice openai", AppAction::VoiceProvider(Voice::OpenAi)),
+            ("/voice speed 1.25", AppAction::VoiceSpeed(13)),
+            ("/voice 1.5x", AppAction::VoiceSpeed(15)),
+            ("/voice speed 9", AppAction::VoiceSpeed(15)),
+            ("/voice speed 0.1", AppAction::VoiceSpeed(7)),
+        ] {
+            app.start_new_session(None);
+            app.input = input.into();
+            assert_eq!(app.activate(), expected, "{input}");
+        }
+        app.start_new_session(None);
+        app.input = "/voice louder".into();
+        assert_eq!(app.activate(), AppAction::None);
+        assert!(app.notice.as_deref().unwrap().contains("/voice grok"));
     }
 
     #[test]

@@ -79,9 +79,12 @@ enum Commands {
     Doctor,
     /// Voice Mode: talk to your sessions. Start a call with ctrl+k in the dashboard.
     Voice {
-        /// Read an OpenAI API key with GPT-Live access from stdin, check it, and keep it.
+        /// Read an API key from stdin, check it, and keep it (see --provider).
         #[arg(long)]
         set_key: bool,
+        /// Whose voice calls use: `openai` or `grok` (xAI). Saved. With --set-key, whose key it is.
+        #[arg(long)]
+        provider: Option<String>,
     },
     /// Create and control only containers owned by agentview.
     Docker {
@@ -508,17 +511,43 @@ fn main() -> Result<()> {
     if let Some(command) = cli.command.as_ref() {
         match command {
             Commands::Update => run_self_update()?,
-            Commands::Voice { set_key } => {
+            Commands::Voice { set_key, provider } => {
+                use agentview::voice::config::{key_for, save_key_for, save_setting, Provider};
+                let chosen = match provider {
+                    Some(name) => Some(Provider::parse(name).ok_or_else(|| {
+                        anyhow::anyhow!("unknown voice provider {name}; use openai or grok")
+                    })?),
+                    None => None,
+                };
                 if *set_key {
                     let mut key = String::new();
                     std::io::stdin().read_line(&mut key)?;
-                    agentview::voice::config::save_key(&key)?;
-                    println!("Saved. Press ctrl+k in agentview to start a call.");
-                } else {
-                    let have = agentview::voice::config::api_key().is_some();
+                    // A key says whose it is by its prefix when --provider is left out.
+                    let owner = chosen.unwrap_or(if key.trim().starts_with("xai-") {
+                        Provider::Xai
+                    } else {
+                        Provider::OpenAi
+                    });
+                    save_key_for(owner, &key)?;
+                    println!("Saved the {} key.", owner.label());
+                }
+                if let Some(chosen) = chosen {
+                    save_setting("provider", serde_json::json!(chosen.id()))?;
+                    println!("Voice calls use {} now.", chosen.label());
+                }
+                if !*set_key && chosen.is_none() {
+                    let state = |provider| {
+                        if key_for(provider).is_some() {
+                            "saved"
+                        } else {
+                            "missing; paste it on first use, or pipe it into `agentview voice --set-key`"
+                        }
+                    };
                     println!(
-                        "Voice Mode: press ctrl+k in agentview (or type /voice).\nOpenAI key: {}\nVoice page: http://127.0.0.1:{}/",
-                        if have { "saved" } else { "missing; paste it on first use, or pipe it into `agentview voice --set-key`" },
+                        "Voice Mode: press ctrl+k in agentview (or type /voice).\nUsing: {} (/voice grok or /voice openai to switch)\nOpenAI key: {}\nxAI key: {}\nVoice page: http://127.0.0.1:{}/",
+                        agentview::voice::config::Settings::load().chosen_provider().label(),
+                        state(Provider::OpenAi),
+                        state(Provider::Xai),
                         agentview::voice::config::DEFAULT_PORT,
                     );
                 }
