@@ -13,6 +13,8 @@ import pyte
 
 args = sys.argv[1:]
 use_driver = "--driver" in args
+# E2E_STALE_TAB=1: a visible tab left open from an earlier version is connected while agentview runs its own browser.
+stale_tab = bool(os.environ.get("E2E_STALE_TAB"))
 questions = [a for a in args if not a.startswith("/") and not a.startswith("--")] or ["Which of my sessions need my attention right now?"]
 binary = next((a for a in args if a.startswith("/")), os.path.expanduser("~/Code/agentview/target/debug/agentview"))
 RUN = int(os.environ.get("E2E_SECONDS", "85"))
@@ -40,7 +42,9 @@ if use_driver:
     env["AGENTVIEW_VOICE_NO_BROWSER"] = "1"
 else:
     env.pop("AGENTVIEW_VOICE_NO_BROWSER", None)
-    env["AGENTVIEW_VOICE_CHROME_ARGS"] = (
+    # E2E_REAL_MIC=1: no fake microphone, as on a real machine.
+    if not os.environ.get("E2E_REAL_MIC"):
+      env["AGENTVIEW_VOICE_CHROME_ARGS"] = (
         f"--no-sandbox --use-fake-device-for-media-stream --use-file-for-fake-audio-capture={tmp}/mic.wav%noloop --mute-audio")
 pid, fd = pty.fork()
 if pid == 0:
@@ -75,7 +79,7 @@ print("dashboard up; footer:", footer()[:120])
 before = len(chrome_processes())
 os.write(fd, b"\x0b")  # ctrl+k
 driver = None
-if use_driver:
+if use_driver or stale_tab:
     pump(2)
     driver = subprocess.Popen(
         ["python3", os.path.expanduser("~/.claude/scripts/heavy-job.py"), "--wait", "--", "node", f"{here}/page-driver.mjs", "47617", f"{tmp}/mic.wav", str(RUN - 8)],

@@ -1390,6 +1390,7 @@ fn install_voice_hook(voice: &crate::voice::VoiceService) {
     use crate::voice::{Phase, Toggle};
     let toggler = voice.clone();
     let poller = voice.clone();
+    let badger = voice.clone();
     let last = std::sync::Mutex::new((Phase::Idle, None::<String>));
     crate::native_session::set_voice_hook(crate::native_session::VoiceHook {
         toggle: Box::new(move || match toggler.toggle() {
@@ -1399,6 +1400,18 @@ fn install_voice_hook(voice: &crate::voice::VoiceService) {
                 "voice needs an OpenAI key: go back with shift+← and press ctrl+k once".to_owned()
             }
             Toggle::Failed(error) => error,
+        }),
+        badge: Box::new(move || {
+            let status = badger.status();
+            match status.phase {
+                Phase::Idle => None,
+                Phase::Connecting => Some("◌ voice connecting".to_owned()),
+                Phase::Live => Some(format!(
+                    "● voice {}:{:02}",
+                    status.seconds / 60,
+                    status.seconds % 60
+                )),
+            }
         }),
         poll: Box::new(move || {
             let status = poller.status();

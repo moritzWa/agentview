@@ -85,6 +85,8 @@ struct Page {
     id: u64,
     outgoing: Sender<String>,
     ready: bool,
+    /// Started by agentview itself (`?hidden`), not a tab somebody left open.
+    hidden: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -106,6 +108,8 @@ struct ActiveCall {
     last_heard: Instant,
     last_poll: Instant,
     polls: u32,
+    /// What the page last said it was doing, and since when.
+    page_stage: Option<(String, Instant)>,
     warned: bool,
     call: Call,
     tools: Arc<Tools>,
@@ -114,7 +118,10 @@ struct ActiveCall {
 #[derive(Default)]
 struct State {
     server: Option<std::result::Result<u16, String>>,
+    /// The page that holds the call's microphone.
     page: Option<Page>,
+    /// Pages that connected and have not said hello yet.
+    candidates: Vec<Page>,
     pages: u64,
     active: Option<ActiveCall>,
     notice: Option<String>,
@@ -305,11 +312,14 @@ impl Inner {
             last_heard: now,
             last_poll: now,
             polls: 0,
+            page_stage: None,
             warned: false,
             call: Call::default(),
             tools,
         });
         config::mark_hint_seen();
+        super::log::start_call();
+        log("start", json!({"browser": self.settings.browser}));
         // A hidden browser starts at once. A tab in your own browser is only
         // opened after a pinned one has had a moment to connect.
         if state.page.is_none() && Mode::parse(&self.settings.browser) == Mode::Hidden {
@@ -409,9 +419,26 @@ impl Inner {
                 }
             }
             Stage::Negotiating => {
-                if active.since.elapsed() >= START_TIMEOUT {
+                let waiting_for_mic = active
+                    .page_stage
+                    .as_ref()
+                    .filter(|(stage, _)| stage == "microphone")
+                    .map(|(_, since)| since.elapsed());
+                let timed_out = active.since.elapsed() >= START_TIMEOUT;
+                let no_stage = active.page_stage.is_none();
+                if waiting_for_mic.is_some_and(|waited| waited >= MIC_PROMPT_WAIT) {
+                    state.notice = Some(MIC_WAIT_NOTICE.into());
+                }
+                if timed_out {
+                    let reason = if waiting_for_mic.is_some() {
+                        "The microphone was never allowed. On a Mac, allow your terminal or the browser under System Settings, Privacy & Security, Microphone, then try again."
+                    } else if no_stage {
+                        "The voice page never started the call."
+                    } else {
+                        "OpenAI did not answer the call."
+                    };
                     drop(state);
-                    self.finish("The voice call did not connect.", true);
+                    self.finish(reason, true);
                 }
             }
             Stage::Live => {
@@ -623,11 +650,13 @@ impl PageSink for Sink {
         let mut state = self.0.lock();
         state.pages += 1;
         let id = state.pages;
-        // A newer page replaces the older: dropping its sender closes it.
-        state.page = Some(Page {
+        // It only counts once it says hello and what it is: a tab left open
+        // from an earlier version must not take over a call.
+        state.candidates.push(Page {
             id,
             outgoing,
             ready: false,
+            hidden: false,
         });
         id
     }
@@ -660,21 +689,45 @@ impl PageSink for Sink {
                 json!({"type": other, "message": clip(&message.to_string(), 200)}),
             ),
         }
-        match message
+        let kind = message
             .get("type")
             .and_then(Value::as_str)
-            .unwrap_or_default()
-        {
+            .unwrap_or_default();
+        // Only the page that holds the call is heard after hello.
+        if kind != "hello" && this.lock().page.as_ref().map(|p| p.id) != Some(page) {
+            return;
+        }
+        match kind {
             "hello" => {
                 let mut state = this.lock();
-                if state.page.as_ref().map(|p| p.id) != Some(page) {
-                    return;
-                }
+                let hidden = message
+                    .get("hidden")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
                 let ready = message
                     .get("ready")
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
-                if let Some(p) = state.page.as_mut() {
+                if let Some(index) = state.candidates.iter().position(|p| p.id == page) {
+                    let mut candidate = state.candidates.remove(index);
+                    candidate.hidden = hidden;
+                    candidate.ready = ready;
+                    if !hidden && Mode::parse(&this.settings.browser) == Mode::Hidden {
+                        // agentview runs its own browser now: a tab left open is told to go.
+                        let _ = candidate
+                            .outgoing
+                            .send(json!({"type": "retire"}).to_string());
+                        log(
+                            "page",
+                            json!({"type": "retired a visible page", "id": page}),
+                        );
+                        return;
+                    }
+                    // A newer page replaces the older: dropping its sender closes it.
+                    state.page = Some(candidate);
+                } else if state.page.as_ref().map(|p| p.id) != Some(page) {
+                    return;
+                } else if let Some(p) = state.page.as_mut() {
                     p.ready = ready;
                 }
                 if ready && state.notice.as_deref() == Some(MIC_NOTICE) {
@@ -692,6 +745,16 @@ impl PageSink for Sink {
             "event" => {
                 if let Some(event) = message.get("event") {
                     this.on_event(event);
+                }
+            }
+            "stage" => {
+                if let Some(active) = this.lock().active.as_mut() {
+                    let stage = message
+                        .get("stage")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned();
+                    active.page_stage = Some((stage, Instant::now()));
                 }
             }
             "mic" => {
@@ -732,12 +795,16 @@ impl PageSink for Sink {
 
     fn closed(&self, page: u64) {
         let mut state = self.0.lock();
+        state.candidates.retain(|p| p.id != page);
         if state.page.as_ref().map(|p| p.id) == Some(page) {
             state.page = None;
         }
     }
 }
 
+/// How long the page may wait for the microphone before the person is told why.
+const MIC_PROMPT_WAIT: Duration = Duration::from_secs(6);
+const MIC_WAIT_NOTICE: &str = "Waiting for the microphone: macOS asks once. Allow it for your terminal (or the browser) in the dialog or in System Settings, Privacy & Security, Microphone.";
 const MIC_NOTICE: &str = "Allow the microphone in the Agent View voice tab.";
 /// A microphone that is exactly silent this long, with nothing heard yet, is not on.
 const DEAD_MIC_SECONDS: f64 = 20.0;
@@ -998,7 +1065,11 @@ mod tests {
     fn a_call_runs_from_page_to_tools_to_the_end() {
         let rig = rig(Settings::default(), Some("sk-test"));
         let (id, inbox) = page(&rig);
-        say(&rig, id, json!({"type": "hello", "ready": true}));
+        say(
+            &rig,
+            id,
+            json!({"type": "hello", "ready": true, "hidden": true}),
+        );
         assert_eq!(rig.service.toggle(), Toggle::Started);
         assert_eq!(rig.service.status().phase, Phase::Connecting);
         // The page was already there, so it is asked to start at once.
@@ -1062,10 +1133,18 @@ mod tests {
         assert_eq!(rig.service.toggle(), Toggle::Started);
         until(|| rig.opened.load(Ordering::SeqCst) == 1);
         let (id, inbox) = page(&rig);
-        say(&rig, id, json!({"type": "hello", "ready": false}));
+        say(
+            &rig,
+            id,
+            json!({"type": "hello", "ready": false, "hidden": true}),
+        );
         assert_eq!(next(&inbox)["type"], "start");
         assert!(rig.service.status().notice.unwrap().contains("microphone"));
-        say(&rig, id, json!({"type": "hello", "ready": true}));
+        say(
+            &rig,
+            id,
+            json!({"type": "hello", "ready": true, "hidden": true}),
+        );
         assert_eq!(rig.service.status().notice, None);
     }
 
@@ -1083,7 +1162,7 @@ mod tests {
         let (outgoing, inbox) = mpsc::channel();
         let sink = Sink(service.inner.clone());
         let id = sink.connected(outgoing);
-        sink.message(id, json!({"type": "hello", "ready": true}));
+        sink.message(id, json!({"type": "hello", "ready": true, "hidden": true}));
         assert_eq!(service.toggle(), Toggle::Started);
         assert_eq!(next(&inbox)["type"], "start");
         sink.message(id, json!({"type": "offer", "sdp": "x"}));
@@ -1099,7 +1178,11 @@ mod tests {
         };
         let rig = rig(settings, Some("sk-test"));
         let (id, inbox) = page(&rig);
-        say(&rig, id, json!({"type": "hello", "ready": true}));
+        say(
+            &rig,
+            id,
+            json!({"type": "hello", "ready": true, "hidden": true}),
+        );
         rig.service.toggle();
         say(&rig, id, json!({"type": "offer", "sdp": "x"}));
         until(|| next_is(&inbox, "answer"));
@@ -1122,7 +1205,11 @@ mod tests {
     fn finishing_a_watched_session_is_said_aloud() {
         let rig = rig(Settings::default(), Some("sk-test"));
         let (id, inbox) = page(&rig);
-        say(&rig, id, json!({"type": "hello", "ready": true}));
+        say(
+            &rig,
+            id,
+            json!({"type": "hello", "ready": true, "hidden": true}),
+        );
         rig.service.toggle();
         say(&rig, id, json!({"type": "offer", "sdp": "x"}));
         say(
@@ -1226,7 +1313,11 @@ mod tests {
     fn a_microphone_that_stays_dead_is_reported_until_it_makes_a_sound() {
         let rig = rig(Settings::default(), Some("sk-test"));
         let (id, _inbox) = page(&rig);
-        say(&rig, id, json!({"type": "hello", "ready": true}));
+        say(
+            &rig,
+            id,
+            json!({"type": "hello", "ready": true, "hidden": true}),
+        );
         rig.service.toggle();
         say(&rig, id, json!({"type": "offer", "sdp": "x"}));
         say(
@@ -1261,10 +1352,80 @@ mod tests {
     }
 
     #[test]
+    fn a_tab_left_open_is_retired_and_cannot_take_over_a_hidden_call() {
+        let rig = rig(Settings::default(), Some("sk-test"));
+        let (tab, tab_inbox) = page(&rig);
+        say(&rig, tab, json!({"type": "hello", "ready": true}));
+        assert_eq!(next(&tab_inbox)["type"], "retire");
+        assert_eq!(rig.service.toggle(), Toggle::Started);
+        // Nothing is sent to the tab, and what it says is not heard.
+        say(&rig, tab, json!({"type": "offer", "sdp": "stale"}));
+        assert!(rig.requests.lock().unwrap().is_empty());
+        let (hidden, inbox) = page(&rig);
+        say(
+            &rig,
+            hidden,
+            json!({"type": "hello", "ready": true, "hidden": true}),
+        );
+        assert_eq!(next(&inbox)["type"], "start");
+    }
+
+    #[test]
+    fn in_tab_mode_a_visible_page_is_used() {
+        let settings = Settings {
+            browser: "tab".into(),
+            ..Settings::default()
+        };
+        let rig = rig(settings, Some("sk-test"));
+        let (tab, inbox) = page(&rig);
+        say(&rig, tab, json!({"type": "hello", "ready": true}));
+        assert_eq!(rig.service.toggle(), Toggle::Started);
+        assert_eq!(next(&inbox)["type"], "start");
+    }
+
+    #[test]
+    fn a_page_stuck_waiting_for_the_microphone_is_explained_and_then_given_up_on() {
+        let rig = rig(Settings::default(), Some("sk-test"));
+        let (id, _inbox) = page(&rig);
+        say(
+            &rig,
+            id,
+            json!({"type": "hello", "ready": true, "hidden": true}),
+        );
+        rig.service.toggle();
+        say(&rig, id, json!({"type": "stage", "stage": "microphone"}));
+        rig.service.inner.lock().active.as_mut().unwrap().page_stage =
+            Some(("microphone".into(), Instant::now() - Duration::from_secs(8)));
+        until(|| {
+            rig.service
+                .status()
+                .notice
+                .as_deref()
+                .is_some_and(|n| n.contains("Waiting for the microphone"))
+        });
+        {
+            let mut state = rig.service.inner.lock();
+            let active = state.active.as_mut().unwrap();
+            active.since = Instant::now() - START_TIMEOUT;
+        }
+        until(|| rig.service.status().phase == Phase::Idle);
+        assert!(rig
+            .service
+            .status()
+            .notice
+            .unwrap()
+            .contains("microphone was never allowed"));
+    }
+
+    #[test]
     fn a_browser_that_blocks_sound_is_reported_until_the_tab_is_clicked() {
         let rig = rig(Settings::default(), Some("sk-test"));
         let (id, _inbox) = page(&rig);
-        say(&rig, id, json!({"type": "hello", "ready": true}));
+        say(
+            &rig,
+            id,
+            json!({"type": "hello", "ready": true, "hidden": true}),
+        );
         rig.service.toggle();
         say(&rig, id, json!({"type": "audio", "on": false}));
         assert!(rig
@@ -1281,7 +1442,11 @@ mod tests {
     fn the_page_reporting_the_call_over_ends_it() {
         let rig = rig(Settings::default(), Some("sk-test"));
         let (id, _inbox) = page(&rig);
-        say(&rig, id, json!({"type": "hello", "ready": true}));
+        say(
+            &rig,
+            id,
+            json!({"type": "hello", "ready": true, "hidden": true}),
+        );
         rig.service.toggle();
         say(
             &rig,

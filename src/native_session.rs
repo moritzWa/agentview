@@ -53,6 +53,8 @@ pub struct VoiceHook {
     pub toggle: Box<dyn Fn() -> String + Send + Sync>,
     /// Returns a message when the call changed (it ended, or failed).
     pub poll: Box<dyn Fn() -> Option<String> + Send + Sync>,
+    /// What to show all the time while a call is on, such as `● voice 2:13`.
+    pub badge: Box<dyn Fn() -> Option<String> + Send + Sync>,
 }
 
 static VOICE_HOOK: OnceLock<VoiceHook> = OnceLock::new();
@@ -898,6 +900,7 @@ fn bridge_session(
     let mut return_gesture = ReturnGesture::for_session(session_key);
     let mut redraw_restore_at = None;
     let mut voice_line_until: Option<Instant> = None;
+    let mut voice_badge: Option<(u16, usize)> = None;
     let mut voice_poll_at = Instant::now();
     let mut hidden_queries = TerminalQueryScanner::default();
     let mut shown_queries = TerminalQueryScanner::default();
@@ -1061,6 +1064,17 @@ fn bridge_session(
         if let Some(hook) = VOICE_HOOK.get() {
             if voice_poll_at.elapsed() >= Duration::from_millis(500) {
                 voice_poll_at = Instant::now();
+                // While a call is on, a badge stays where the provider leaves room.
+                match (hook.badge)() {
+                    Some(text) => {
+                        voice_badge = draw_voice_badge(&mut stdout, &screen, &text, voice_badge)?;
+                    }
+                    None => {
+                        if let Some((row, _)) = voice_badge.take() {
+                            restore_row(&mut stdout, &screen, row)?;
+                        }
+                    }
+                }
                 if let Some(message) = (hook.poll)() {
                     write_status_line(&mut stdout, &screen, &message)?;
                     voice_line_until = Some(Instant::now() + VOICE_LINE_HOLD);
@@ -2316,6 +2330,81 @@ fn write_return_hint(
         rows.max(1),
         message
     )?;
+    output.flush()?;
+    Ok(())
+}
+
+/// Draws `text` as a badge in the blank stretch of the bottom row, left of what
+/// the provider shows at the right (OpenCode puts its token count there), or in
+/// the top right corner when the bottom row has no room. Returns where it went,
+/// so it can be taken away again.
+fn draw_voice_badge(
+    output: &mut impl Write,
+    screen: &vt100::Parser,
+    text: &str,
+    previous: Option<(u16, usize)>,
+) -> Result<Option<(u16, usize)>> {
+    let (rows, cols) = screen.screen().size();
+    let label = format!(" {text} ");
+    let width = label.chars().count();
+    if usize::from(cols) < width + 4 || rows < 2 {
+        return Ok(None);
+    }
+    let place = |row: u16| -> Option<usize> {
+        let line: Vec<char> = (0..cols)
+            .map(|column| {
+                screen
+                    .screen()
+                    .cell(row, column)
+                    .map_or(' ', |cell| cell.contents().chars().next().unwrap_or(' '))
+            })
+            .collect();
+        // The rightmost text starts after the last long blank gap.
+        let last_text = line.iter().rposition(|c| *c != ' ')?;
+        let mut start = last_text;
+        while start > 0 && !(line[start - 1] == ' ' && start >= 2 && line[start - 2] == ' ') {
+            start -= 1;
+        }
+        let gap_end = start.saturating_sub(1);
+        // How much blank there is to the left of that text.
+        let mut gap_start = gap_end;
+        while gap_start > 0 && line[gap_start - 1] == ' ' {
+            gap_start -= 1;
+        }
+        (gap_end.saturating_sub(gap_start) >= width + 2).then(|| gap_end.saturating_sub(width + 1))
+    };
+    let bottom = rows - 1;
+    let (row, column) = match place(bottom) {
+        Some(column) => (bottom, column),
+        None => (0, usize::from(cols) - width - 1),
+    };
+    if previous.is_some_and(|(old_row, _)| old_row != row) {
+        if let Some((old_row, _)) = previous {
+            restore_row(output, screen, old_row)?;
+        }
+    }
+    write!(
+        output,
+        "\x1b7\x1b[{};{}H\x1b[30;42m{}\x1b[0m\x1b8",
+        row + 1,
+        column + 1,
+        label
+    )?;
+    output.flush()?;
+    Ok(Some((row, column)))
+}
+
+/// Puts the provider's own text back on a row.
+fn restore_row(output: &mut impl Write, screen: &vt100::Parser, row: u16) -> Result<()> {
+    let (_, cols) = screen.screen().size();
+    let formatted = screen
+        .screen()
+        .rows_formatted(0, cols)
+        .nth(usize::from(row))
+        .unwrap_or_default();
+    write!(output, "\x1b7\x1b[{};1H\x1b[2K", row + 1)?;
+    output.write_all(&formatted)?;
+    output.write_all(b"\x1b8")?;
     output.flush()?;
     Ok(())
 }
