@@ -125,6 +125,10 @@ struct ActiveCall {
     tools: Arc<Tools>,
     provider: Provider,
     adapter: xai::Adapter,
+    /// Grok's token, being fetched while the browser starts.
+    token: Option<TokenSlot>,
+    /// When the key was pressed, to time how long until the voice is live.
+    pressed: Instant,
 }
 
 #[derive(Default)]
@@ -138,12 +142,16 @@ struct State {
     active: Option<ActiveCall>,
     notice: Option<String>,
     quiet: bool,
+    /// When the last call was ended, to time how fast the voice went quiet.
+    ended_at: Option<Instant>,
 }
 
 /// Gets a browser onto the voice page; a hidden one comes back to be stopped later.
 type Launcher = Box<dyn Fn(&str) -> Option<std::process::Child> + Send + Sync>;
 type KeySource = Box<dyn Fn(Provider) -> Option<String> + Send + Sync>;
 /// Trades an xAI key for a token the page may use.
+/// Where a token being fetched ends up: nothing yet, then the token or why not.
+type TokenSlot = Arc<Mutex<Option<std::result::Result<String, String>>>>;
 type Minter = Box<dyn Fn(&str) -> Result<String> + Send + Sync>;
 type Creator = Box<dyn Fn(&str, &Value) -> Result<Created> + Send + Sync>;
 
@@ -162,8 +170,17 @@ struct Live {
     speed: f64,
 }
 
+/// The hidden browser of a call that just ended, kept for the next one.
+#[derive(Default)]
+struct Warm {
+    child: Option<std::process::Child>,
+    /// Which parking this is, so an old timer does not stop a newer browser.
+    generation: u64,
+}
+
 struct Inner {
     host: Arc<dyn VoiceHost>,
+    warm: Arc<Mutex<Warm>>,
     settings: Settings,
     live: Mutex<Live>,
     port: u16,
@@ -182,6 +199,10 @@ pub struct VoiceService {
 impl VoiceService {
     pub fn new(host: Arc<dyn VoiceHost>) -> Self {
         let settings = Settings::load();
+        // A browser an earlier agentview left running (it was killed while one was kept) is stopped.
+        if let Some(profile) = config::browser_profile_dir() {
+            thread::spawn(move || browser::stop_orphans(&profile));
+        }
         let launch = launcher(&settings);
         Self::with_parts(
             host,
@@ -210,6 +231,7 @@ impl VoiceService {
         let service = Self {
             inner: Arc::new(Inner {
                 host,
+                warm: Arc::default(),
                 settings,
                 live: Mutex::new(live),
                 port,
@@ -337,6 +359,9 @@ impl VoiceService {
         if let Some(child) = browser {
             browser::stop(child);
         }
+        if let Some(child) = self.inner.warm.lock().unwrap().child.take() {
+            browser::stop(child);
+        }
     }
 }
 
@@ -427,6 +452,8 @@ impl Inner {
             tools,
             provider,
             adapter: xai::Adapter::default(),
+            token: None,
+            pressed: now,
         });
         config::mark_hint_seen();
         super::log::start_call();
@@ -434,9 +461,38 @@ impl Inner {
             "start",
             json!({"browser": self.settings.browser, "provider": provider.id()}),
         );
-        // A hidden browser starts at once. A tab in your own browser is only
+        if provider == Provider::Xai {
+            // The token is fetched while the browser starts, not after it.
+            let slot = Arc::new(Mutex::new(None));
+            if let Some(active) = state.active.as_mut() {
+                active.token = Some(slot.clone());
+            }
+            let this = self.clone();
+            thread::spawn(move || {
+                let token = (this.key)(Provider::Xai)
+                    .context("there is no xAI key")
+                    .and_then(|key| (this.mint)(&key))
+                    .map_err(|error| format!("{error:#}"));
+                *slot.lock().unwrap() = Some(token);
+            });
+        }
+        // The browser of the last call may still be up: use it. Otherwise a
+        // hidden browser starts at once. A tab in your own browser is only
         // opened after a pinned one has had a moment to connect.
-        if state.page.is_none() && Mode::parse(&self.settings.browser) == Mode::Hidden {
+        let warm = match self.take_warm() {
+            Some(child) if state.page.is_some() => Some(child),
+            Some(child) => {
+                browser::stop(child);
+                None
+            }
+            None => None,
+        };
+        if let Some(child) = warm {
+            if let Some(active) = state.active.as_mut() {
+                active.opened_browser = true;
+                active.browser = Some(child);
+            }
+        } else if state.page.is_none() && Mode::parse(&self.settings.browser) == Mode::Hidden {
             let url = format!("http://127.0.0.1:{}/", self.port);
             if let Some(active) = state.active.as_mut() {
                 active.opened_browser = true;
@@ -471,6 +527,42 @@ impl Inner {
     }
 
     /// Ends the call: tells OpenAI to close, then the page to hang up.
+    /// Keeps the hidden browser a little while: the next call finds it up, with
+    /// the microphone already allowed, and starts at once.
+    fn park(&self, child: std::process::Child) {
+        let keep = Duration::from_secs(self.settings.keep_warm_seconds);
+        let generation = {
+            let mut warm = self.warm.lock().unwrap();
+            if let Some(old) = warm.child.take() {
+                browser::stop(old);
+            }
+            warm.generation += 1;
+            warm.child = Some(child);
+            warm.generation
+        };
+        let warm = self.warm.clone();
+        thread::spawn(move || {
+            thread::sleep(keep);
+            let mut warm = warm.lock().unwrap();
+            if warm.generation == generation {
+                if let Some(child) = warm.child.take() {
+                    browser::stop(child);
+                }
+            }
+        });
+    }
+
+    /// The parked browser, when it is still running.
+    fn take_warm(&self) -> Option<std::process::Child> {
+        let mut warm = self.warm.lock().unwrap();
+        warm.generation += 1;
+        let mut child = warm.child.take()?;
+        match child.try_wait() {
+            Ok(None) => Some(child),
+            _ => None,
+        }
+    }
+
     /// An ordinary end the person asked for: it is noted, not announced.
     fn finish_quietly(&self, reason: &str, notify_page: bool) {
         self.finish(reason, notify_page);
@@ -482,27 +574,42 @@ impl Inner {
         let Some(mut active) = state.active.take() else {
             return;
         };
+        // First of all, the voice stops: nothing below waits before it.
+        if let Some(page) = &state.page {
+            let _ = page.outgoing.send(json!({"type": "silence"}).to_string());
+        }
         state.quiet = false;
+        state.ended_at = Some(Instant::now());
         state.notice = Some(reason.to_owned());
         log("end", json!({"reason": reason}));
         if let Some(child) = active.browser.take() {
-            // Give OpenAI's close a moment to go out before the browser stops.
-            let wait = if notify_page { 1500 } else { 0 };
-            thread::spawn(move || {
-                thread::sleep(Duration::from_millis(wait));
-                browser::stop(child);
-            });
+            if notify_page && self.settings.keep_warm_seconds > 0 && state.page.is_some() {
+                self.park(child);
+            } else {
+                // Give OpenAI's close a moment to go out before the browser stops.
+                let wait = if notify_page { 1500 } else { 0 };
+                thread::spawn(move || {
+                    thread::sleep(Duration::from_millis(wait));
+                    browser::stop(child);
+                });
+            }
         }
         let seconds = active.call.usage_seconds;
         if notify_page {
-            // Grok has no event for it: the page closing its websocket ends the call.
             if active.provider == Provider::OpenAi {
                 Self::send_page(&state, json!({"type": "send", "event": call::close()}));
             }
             if let Some(page) = &state.page {
                 let outgoing = page.outgoing.clone();
+                // Grok has no close event: closing its websocket ends the call.
+                // OpenAI is given a moment to receive its close first.
+                let wait = if active.provider == Provider::OpenAi {
+                    1200
+                } else {
+                    0
+                };
                 thread::spawn(move || {
-                    thread::sleep(Duration::from_millis(1200));
+                    thread::sleep(Duration::from_millis(wait));
                     let _ = outgoing.send(json!({"type": "end"}).to_string());
                 });
             }
@@ -658,7 +765,7 @@ impl Inner {
     }
 
     fn on_offer(self: &Arc<Self>, sdp: String) {
-        let (tools, provider) = {
+        let (tools, provider, token) = {
             let state = self.lock();
             let Some(active) = state
                 .active
@@ -667,13 +774,25 @@ impl Inner {
             else {
                 return;
             };
-            (active.tools.clone(), active.provider)
+            (active.tools.clone(), active.provider, active.token.clone())
         };
         let this = self.clone();
         thread::spawn(move || {
             let notes = tools.notes();
             let key = (this.key)(provider)
                 .with_context(|| format!("there is no {} key", provider.label()));
+            // Grok's token was asked for when the call started; give it a moment.
+            let prefetched = token.and_then(|slot| {
+                (0..250)
+                    .find_map(|_| {
+                        let ready = slot.lock().unwrap().take();
+                        if ready.is_none() {
+                            thread::sleep(Duration::from_millis(20));
+                        }
+                        ready
+                    })
+                    .map(|result| result.map_err(|error| anyhow::anyhow!(error)))
+            });
             match provider {
                 Provider::OpenAi => {
                     let result = key.and_then(|key| {
@@ -695,26 +814,28 @@ impl Inner {
                         }
                     }
                 }
-                Provider::Xai => match key.and_then(|key| (this.mint)(&key)) {
-                    Ok(token) => {
-                        let mut settings = this.settings.clone();
-                        settings.speed = this.live.lock().unwrap().speed;
-                        let state = this.lock();
-                        Self::send_page(
-                            &state,
-                            json!({
-                                "type": "answer",
-                                "provider": "xai",
-                                "url": xai::realtime_url(&settings),
-                                "token": token,
-                                "session": xai::session_update(&settings, &notes),
-                            }),
-                        );
+                Provider::Xai => {
+                    match prefetched.unwrap_or_else(|| key.and_then(|key| (this.mint)(&key))) {
+                        Ok(token) => {
+                            let mut settings = this.settings.clone();
+                            settings.speed = this.live.lock().unwrap().speed;
+                            let state = this.lock();
+                            Self::send_page(
+                                &state,
+                                json!({
+                                    "type": "answer",
+                                    "provider": "xai",
+                                    "url": xai::realtime_url(&settings),
+                                    "token": token,
+                                    "session": xai::session_update(&settings, &notes),
+                                }),
+                            );
+                        }
+                        Err(error) => {
+                            this.finish(&format!("Could not start the call: {error:#}"), true)
+                        }
                     }
-                    Err(error) => {
-                        this.finish(&format!("Could not start the call: {error:#}"), true)
-                    }
-                },
+                }
             }
         });
     }
@@ -746,6 +867,10 @@ impl Inner {
                     let mut state = self.lock();
                     if let Some(active) = state.active.as_mut() {
                         active.stage = Stage::Live;
+                        log(
+                            "live",
+                            json!({"ms": active.pressed.elapsed().as_millis() as u64}),
+                        );
                         active.live_since.get_or_insert_with(Instant::now);
                         active.last_heard = Instant::now();
                     }
@@ -929,6 +1054,13 @@ impl PageSink for Sink {
                 if let Some(event) = message.get("event") {
                     this.on_event(event);
                 }
+            }
+            "silenced" => {
+                let ms = this
+                    .lock()
+                    .ended_at
+                    .map(|at| at.elapsed().as_millis() as u64);
+                log("silenced", json!({"ms_after_the_key": ms}));
             }
             "stage" => {
                 if let Some(active) = this.lock().active.as_mut() {
@@ -1306,6 +1438,8 @@ mod tests {
         assert_eq!(rig.service.status().lines.len(), 1);
 
         assert_eq!(rig.service.toggle(), Toggle::Ended);
+        // The voice is cut first, before the close goes out and the call is torn down.
+        assert_eq!(next(&inbox)["type"], "silence");
         assert_eq!(next(&inbox)["event"]["type"], "session.close");
         assert_eq!(next(&inbox)["type"], "end");
         assert_eq!(rig.service.status().phase, Phase::Idle);
@@ -1485,6 +1619,94 @@ mod tests {
         assert_eq!(call.service.speed(), 1.5);
         let other = rig(Settings::default(), Some("sk-test"));
         assert_eq!(other.service.status().speed, None);
+    }
+
+    #[test]
+    fn ending_a_grok_call_silences_the_voice_and_closes_at_once() {
+        let call = rig(grok(), Some("xai-test"));
+        let (id, inbox) = page(&call);
+        say(
+            &call,
+            id,
+            json!({"type": "hello", "ready": true, "hidden": true}),
+        );
+        call.service.toggle();
+        let _ = next(&inbox);
+        let started = Instant::now();
+        assert_eq!(call.service.toggle(), Toggle::Ended);
+        assert_eq!(next(&inbox)["type"], "silence");
+        // Grok has no close event and nothing to wait for: the page ends right away.
+        assert_eq!(next(&inbox)["type"], "end");
+        assert!(started.elapsed() < Duration::from_millis(500));
+    }
+
+    #[test]
+    fn groks_token_is_fetched_while_the_browser_starts() {
+        let host = FakeHost::with(Vec::new());
+        let asked = Arc::new(AtomicUsize::new(0));
+        let counter = asked.clone();
+        let service = VoiceService::with_parts(
+            host,
+            grok(),
+            0,
+            Box::new(|_| None),
+            Box::new(|_| Some("xai-test".into())),
+            Box::new(|_, _| bail!("OpenAI is not used")),
+            Box::new(move |_| {
+                counter.fetch_add(1, Ordering::SeqCst);
+                Ok("early-token".into())
+            }),
+        );
+        assert_eq!(service.toggle(), Toggle::Started);
+        // No page has connected, and the token is already on its way.
+        until(|| asked.load(Ordering::SeqCst) == 1);
+        let (outgoing, inbox) = mpsc::channel();
+        let sink = Sink(service.inner.clone());
+        let id = sink.connected(outgoing);
+        sink.message(id, json!({"type": "hello", "ready": true, "hidden": true}));
+        assert_eq!(next(&inbox)["type"], "start");
+        sink.message(id, json!({"type": "offer", "provider": "xai"}));
+        assert_eq!(next(&inbox)["token"], "early-token");
+        assert_eq!(asked.load(Ordering::SeqCst), 1, "one token, not two");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_hidden_browser_is_kept_for_the_next_call() {
+        let host = FakeHost::with(Vec::new());
+        let launches = Arc::new(AtomicUsize::new(0));
+        let counter = launches.clone();
+        let service = VoiceService::with_parts(
+            host,
+            Settings::default(),
+            0,
+            Box::new(move |_| {
+                counter.fetch_add(1, Ordering::SeqCst);
+                std::process::Command::new("sleep").arg("30").spawn().ok()
+            }),
+            Box::new(|_| Some("sk-test".into())),
+            Box::new(|_, _| bail!("unused")),
+            Box::new(|_| Ok("unused".into())),
+        );
+        assert_eq!(service.toggle(), Toggle::Started);
+        until(|| launches.load(Ordering::SeqCst) == 1);
+        let (outgoing, inbox) = mpsc::channel();
+        let sink = Sink(service.inner.clone());
+        let id = sink.connected(outgoing);
+        sink.message(id, json!({"type": "hello", "ready": true, "hidden": true}));
+        assert_eq!(service.toggle(), Toggle::Ended);
+        // Not stopped: parked, with the page still connected.
+        assert!(service.inner.warm.lock().unwrap().child.is_some());
+        let _ = inbox.try_iter().count();
+        assert_eq!(service.toggle(), Toggle::Started);
+        assert_eq!(launches.load(Ordering::SeqCst), 1, "no second browser");
+        assert_eq!(
+            next(&inbox)["type"],
+            "start",
+            "the open page starts at once"
+        );
+        service.shutdown();
+        assert!(service.inner.warm.lock().unwrap().child.is_none());
     }
 
     #[test]

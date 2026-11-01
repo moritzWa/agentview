@@ -25,6 +25,11 @@ and released versions are intended to follow Semantic Versioning.
   Ctrl+] start and end a call. The voice knows which session is selected or
   open, and ends the call when you say goodbye.
 
+- Voice Mode goes quiet about 20 ms after the end key (it took over a second):
+  the page cuts the audio first. The hidden browser stays up two minutes after a
+  call, and Grok's token is fetched while it starts, so a Grok call is live in
+  about 1 second cold and 0.4 warm.
+
 - Voice Mode can run on xAI's Grok (`grok-voice-latest`, default voice `rex`,
   no reasoning so it stays fast) as well as OpenAI. Switch with `/voice grok` or
   `/voice openai`, or `agentview voice --provider grok`; each provider has its
