@@ -7,7 +7,7 @@ const { chromium } = require("playwright");
 const [port, wav, seconds] = [process.argv[2], process.argv[3], Number(process.argv[4] || 90)];
 const browser = await chromium.launch({ headless: true, args: [
   "--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream", `--use-file-for-fake-audio-capture=${wav}%noloop`,
-  "--autoplay-policy=no-user-gesture-required", "--mute-audio",
+  ...(process.env.STRICT_AUTOPLAY ? [] : ["--autoplay-policy=no-user-gesture-required"]), "--mute-audio",
 ] });
 const page = await browser.newPage();
 page.on("pageerror", (e) => console.log("PAGE ERROR", e.message));
@@ -19,6 +19,7 @@ while (Date.now() < end) {
   await new Promise((r) => setTimeout(r, 1000));
   const text = await page.locator("#log").innerText().catch(() => "");
   const state = await page.locator("#state").innerText().catch(() => "");
+  if (process.env.STRICT_AUTOPLAY && state.includes("click this page") && !globalThis.clicked) { globalThis.clicked = true; console.log("blocked, clicking"); await page.mouse.click(10, 10); }
   const shown = `[${state}] ${text.replace(/\n+/g, " | ")}`;
   if (shown !== last) { console.log(shown); last = shown; }
 }

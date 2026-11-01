@@ -45,6 +45,7 @@
 //                      {type:"offer", sdp}           SDP offer with ICE candidates gathered
 //                      {type:"event", event}         one JSON event received on the data channel
 //                      {type:"state", state}         peer connection state
+//                      {type:"audio", on}            whether the browser lets the voice play yet
 //                      {type:"ended", reason}        the call is over on this side
 const $ = (id) => document.getElementById(id);
 const stateEl = $("state"), log = $("log"), out = $("out");
@@ -74,6 +75,15 @@ $("enable").onclick = () => allowMic().catch((e) => setState("microphone blocked
 $("mute").onclick = () => { muted = !muted; applyMute(); post({ type: "muted", on: muted }); };
 $("end").onclick = () => end("you ended the call");
 
+// A fresh tab may not play sound until it has been clicked once; say so, and play on the click.
+function playOut() {
+  out.play().then(() => post({ type: "audio", on: true })).catch(() => {
+    setState("click this page once to hear the voice", "bad");
+    post({ type: "audio", on: false });
+  });
+}
+document.addEventListener("click", () => { if (out.srcObject) playOut(); });
+
 function applyMute() {
   stream?.getAudioTracks().forEach((t) => { t.enabled = !muted; });
   $("mute").textContent = muted ? "Unmute" : "Mute";
@@ -88,7 +98,7 @@ async function begin() {
   setState("connecting call", "busy");
   pc = new RTCPeerConnection();
   stream.getTracks().forEach((t) => pc.addTrack(t, stream));
-  pc.ontrack = (e) => { out.srcObject = e.streams[0]; out.play().catch(() => setState("click the page to hear audio", "bad")); };
+  pc.ontrack = (e) => { out.srcObject = e.streams[0]; playOut(); };
   dc = pc.createDataChannel("oai-events");
   dc.onmessage = (m) => {
     let event; try { event = JSON.parse(m.data); } catch { return; }

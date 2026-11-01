@@ -555,6 +555,15 @@ impl PageSink for Sink {
                     this.on_event(event);
                 }
             }
+            "audio" => {
+                let mut state = this.lock();
+                let blocked = message.get("on").and_then(Value::as_bool) == Some(false);
+                if blocked && state.active.is_some() {
+                    state.notice = Some(CLICK_NOTICE.into());
+                } else if state.notice.as_deref() == Some(CLICK_NOTICE) {
+                    state.notice = None;
+                }
+            }
             "ended" => {
                 let reason = message
                     .get("reason")
@@ -575,6 +584,7 @@ impl PageSink for Sink {
 }
 
 const MIC_NOTICE: &str = "Allow the microphone in the Agent View voice tab.";
+const CLICK_NOTICE: &str = "Click the Agent View voice tab once so the browser lets it play sound.";
 
 fn sentence(reason: &str) -> String {
     let mut chars = reason.chars();
@@ -964,6 +974,23 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("Merged."));
+    }
+
+    #[test]
+    fn a_browser_that_blocks_sound_is_reported_until_the_tab_is_clicked() {
+        let rig = rig(Settings::default(), Some("sk-test"));
+        let (id, _inbox) = page(&rig);
+        say(&rig, id, json!({"type": "hello", "ready": true}));
+        rig.service.toggle();
+        say(&rig, id, json!({"type": "audio", "on": false}));
+        assert!(rig
+            .service
+            .status()
+            .notice
+            .unwrap()
+            .contains("Click the Agent View voice tab"));
+        say(&rig, id, json!({"type": "audio", "on": true}));
+        assert_eq!(rig.service.status().notice, None);
     }
 
     #[test]
