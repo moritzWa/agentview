@@ -18,6 +18,16 @@ env["AGENTVIEW_VOICE_STATE_DIR"] = _scratch
 env["AGENTVIEW_PERF_LOG"] = os.path.join(_scratch, "perf.log")
 voice_key = os.environ.get("NATIVE_KEY", "\\x0b").encode().decode("unicode_escape").encode("latin-1")
 live = bool(os.environ.get("NATIVE_LIVE"))
+# NATIVE_PROVIDER=grok calls on xAI (key from 1Password). NATIVE_DASHBOARD=1 starts the call on the dashboard.
+if os.environ.get("NATIVE_PROVIDER", "").lower() in ("grok", "xai"):
+    env["AGENTVIEW_XAI_API_KEY"] = subprocess.run(
+        ["op", "item", "get", "x ai api key", "--fields", "credential", "--reveal"],
+        capture_output=True, text=True).stdout.strip()
+    with open(os.path.join(env["AGENTVIEW_VOICE_STATE_DIR"], "settings.json"), "w") as settings:
+        settings.write('{"provider": "grok"}')
+elif os.path.exists(os.path.join(env["AGENTVIEW_VOICE_STATE_DIR"], "settings.json")):
+    os.remove(os.path.join(env["AGENTVIEW_VOICE_STATE_DIR"], "settings.json"))
+dashboard = bool(os.environ.get("NATIVE_DASHBOARD"))
 if live:
     # A real hidden browser with a silent fake microphone: the call really connects.
     env["AGENTVIEW_VOICE_CHROME_ARGS"] = "--no-sandbox --use-fake-device-for-media-stream --mute-audio"
@@ -47,6 +57,21 @@ def check(label, ok, detail=""):
     print(("PASS " if ok else "FAIL ") + label + f"  [{(detail or row())[:100]}]")
 
 pump(12)
+if dashboard:
+    os.write(fd, voice_key); pump(18)
+    last = vt.display[-1]
+    check("the dashboard footer shows the speed buttons", "−" in last and "+" in last, last.strip()[:100])
+    def click(char):
+        col = vt.display[-1].find(char) + 1
+        os.write(fd, f"\x1b[<0;{col};{len(vt.display)}M\x1b[<0;{col};{len(vt.display)}m".encode()); pump(1.2)
+    click("+")
+    check("clicking + makes it 1.1x", "1.1x" in vt.display[-1], vt.display[-1].strip()[:100])
+    click("−"); click("−")
+    check("clicking − twice makes it 0.9x", "0.9x" in vt.display[-1], vt.display[-1].strip()[:100])
+    os.write(fd, voice_key); pump(2)
+    check("the key ends the call", "voice live" not in vt.display[-1], vt.display[-1].strip()[:100])
+    os.kill(pid, 9)
+    sys.exit(0)
 os.write(fd, b"\x06"); pump(0.5)           # ctrl+f: filter
 os.write(fd, title.encode()); pump(0.5)
 os.write(fd, b"\r"); pump(1.5)
@@ -71,6 +96,24 @@ where = [(n, line.strip()[:100]) for n, line in enumerate(vt.display) if "voice"
 check("a badge stays on screen while the call is on", bool(where), str(where))
 if live:
     check("the call is live, not stuck connecting", any("voice 0:" in line or "voice 1:" in line for line in vt.display), str(where))
+if live and os.environ.get("NATIVE_PROVIDER"):
+    def badge_row():
+        for n, line in enumerate(vt.display):
+            if "●" in line and "voice" in line and "x" in line:
+                return n, line
+        return None, ""
+    n, line = badge_row()
+    check("the badge has − speed +", n is not None and "−" in line and "+" in line, line.strip()[-60:])
+    def click(char):
+        n, line = badge_row()
+        col = line.rfind(char) + 1 if char == "+" else line.find(char) + 1
+        os.write(fd, f"\x1b[<0;{col};{n + 1}M\x1b[<0;{col};{n + 1}m".encode()); pump(1.5)
+    click("+")
+    n, line = badge_row()
+    check("clicking + makes the badge 1.1x", "1.1x" in line, line.strip()[-60:])
+    click("−"); click("−")
+    n, line = badge_row()
+    check("clicking − twice makes it 0.9x", "0.9x" in line, line.strip()[-60:])
 print("   bottom:", repr(row()[:140]))
 print("   last rows:", [vt.display[n].rstrip()[-110:] for n in (-3, -2, -1)])
 os.write(fd, voice_key); pump(1.5)

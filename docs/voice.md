@@ -67,6 +67,31 @@ last wrote to it, what it last said (the closing sentences, only when they
 changed since you heard them), and what keeps it busy: a background command your
 plugin reported, or running sub-agents.
 
+## OpenAI or Grok
+
+Two voices can run a call: OpenAI's GPT-Live and xAI's Grok Voice. Switch with
+`/voice grok` or `/voice openai` in the dashboard's composer (or
+`agentview voice --provider grok`). The choice is saved, applies from the next
+call, and the first call with a provider asks for its key. With no choice
+saved, agentview uses OpenAI, or Grok when only an xAI key exists.
+
+| | OpenAI GPT-Live | Grok (`grok-voice-latest`) |
+| --- | --- | --- |
+| Built as | a fast talker plus a slower text model that picks the tools | one speech model that calls the tools itself |
+| Price | about 5 cents a minute | about 8 cents a minute |
+| Speed control | none | 0.7x to 1.5x |
+| Default voice | `meridian` | `rex` (male) |
+| Thinking | `low` effort on the backend | off (`xai_reasoning`), so it answers fast |
+
+**Speed.** While a Grok call is live, the footer line shows `−  1.0x  +` and so
+does the badge in an OpenCode session's footer (`● voice 2:13  −  1.2x  +`).
+Click the `−` or `+` to change it in steps of 0.1x, like the controls of the
+read-aloud plugin. It changes while the voice is talking and is remembered.
+`/voice speed 1.2` sets it by typing. The dashboard only asks your terminal for
+clicks while such a call is live, so selecting text works as usual otherwise
+(Shift-drag still selects while it is). OpenAI has no speed setting, so its
+badge has no buttons.
+
 ## How it works
 
 ```text
@@ -79,7 +104,9 @@ you ── mic/speaker ── voice page (a pinned browser tab, 127.0.0.1:47617)
 
 A browser holds the microphone and speaker, because it brings echo
 cancellation and noise suppression with it. agentview starts the OpenAI session
-with `curl`, so the key never reaches the page. The page only relays events; the
+with `curl`, so the key never reaches the page. For Grok the page opens a
+websocket to xAI with a token agentview fetched with your key (good for five
+minutes); the key stays in agentview. The page only relays events; the
 tools run in agentview, against the same sessions the dashboard shows.
 
 By default agentview runs that browser itself, **hidden**: a Chromium-based
@@ -98,11 +125,12 @@ points at a particular browser.
 
 ## Setup and cost
 
-- Needs an OpenAI API key with access to GPT-Live. The first `Ctrl+K` asks for
-  it (masked), checks it, and saves it owner-only under
-  `~/.local/state/agentview/voice/`. `OPENAI_API_KEY` or
-  `AGENTVIEW_OPENAI_API_KEY` in the environment win. `agentview voice --set-key`
-  reads a key from stdin, so `op read ... | agentview voice --set-key` works.
+- Needs an OpenAI API key with access to GPT-Live, or an xAI API key for Grok.
+  The first `Ctrl+K` asks for the one the chosen provider needs (masked), checks
+  it, and saves it owner-only under `~/.local/state/agentview/voice/`.
+  `OPENAI_API_KEY` or `XAI_API_KEY` (or the `AGENTVIEW_` versions) in the
+  environment win. `agentview voice --set-key` reads a key from stdin, so
+  `op read ... | agentview voice --set-key --provider grok` works.
 - GPT-Live bills about 5 cents a minute while a call is open, silence included,
   plus the backend model's tokens (pennies). Starting a call bills 15 seconds up
   front, credited against the running time. A call ends itself after 10
@@ -120,6 +148,11 @@ points at a particular browser.
 
 ```json
 {
+  "provider": "grok",
+  "xai_voice": "rex",
+  "xai_model": "grok-voice-latest",
+  "xai_reasoning": "none",
+  "speed": 1.0,
   "voice": "meridian",
   "backend_model": "gpt-6-luna",
   "reasoning_effort": "low",
@@ -131,7 +164,10 @@ points at a particular browser.
 }
 ```
 
-`voice` is any GPT-Live voice name (`meridian` is a male, North American
+`provider` is `openai` or `grok` (what `/voice grok` writes); `xai_voice` is any
+Grok voice (`rex`, `leo`, `sal`, `orion` and `atlas` are male; `GET
+https://api.x.ai/v1/tts/voices` lists them all); `xai_reasoning` is `none` or
+`high`; `speed` is Grok's 0.7 to 1.5. `voice` is any GPT-Live voice name (`meridian` is a male, North American
 voice). On the backend, picking a tool takes about a second on every model
 tried, so a bigger model buys quality, not speed.
 

@@ -56,7 +56,10 @@ pub struct VoiceHook {
     /// microphone that is not allowed); ordinary starts and ends are silent.
     pub poll: Box<dyn Fn() -> Option<String> + Send + Sync>,
     /// What to show all the time while a call is on, such as `● voice 2:13`.
+    /// A `−` and a `+` in it are buttons: a click on one calls `nudge`.
     pub badge: Box<dyn Fn() -> Option<String> + Send + Sync>,
+    /// Makes the voice slower (-1) or faster (1).
+    pub nudge: Box<dyn Fn(i32) + Send + Sync>,
 }
 
 static VOICE_HOOK: OnceLock<VoiceHook> = OnceLock::new();
@@ -988,7 +991,20 @@ fn bridge_session(
                             crate::perf!("voicekey", "key={session_key} bytes={keys}");
                         }
                     }
-                    for action in parser.push(&input[..read as usize]) {
+                    let (typed, nudges) = match VOICE_HOOK.get() {
+                        Some(_) => take_badge_clicks(&input[..read as usize], voice_badge.as_ref()),
+                        None => (input[..read as usize].to_vec(), Vec::new()),
+                    };
+                    if let Some(hook) = VOICE_HOOK.get() {
+                        for direction in nudges {
+                            (hook.nudge)(direction);
+                            // Show the new speed at once, not at the next half second.
+                            voice_poll_at = Instant::now()
+                                .checked_sub(Duration::from_secs(1))
+                                .unwrap_or_else(Instant::now);
+                        }
+                    }
+                    for action in parser.push(&typed) {
                         match action {
                             InputAction::Forward(bytes) => {
                                 if echo_wait.is_none() && echo_samples < 5 {
@@ -2407,6 +2423,52 @@ struct VoiceBadge {
     row: u16,
     column: usize,
     width: usize,
+    /// Columns of the `−` and `+` buttons, when the badge has them.
+    minus: Option<usize>,
+    plus: Option<usize>,
+}
+
+/// Takes the left clicks on the badge's buttons out of what the person typed:
+/// the provider never sees them. Returns what is left and the nudges to make.
+fn take_badge_clicks(input: &[u8], badge: Option<&VoiceBadge>) -> (Vec<u8>, Vec<i32>) {
+    let Some(badge) = badge.filter(|badge| badge.minus.is_some() || badge.plus.is_some()) else {
+        return (input.to_vec(), Vec::new());
+    };
+    let mut kept = Vec::with_capacity(input.len());
+    let mut nudges = Vec::new();
+    let mut index = 0;
+    while index < input.len() {
+        let rest = &input[index..];
+        if rest.starts_with(b"\x1b[<") {
+            if let Some(end) = rest
+                .iter()
+                .take(32)
+                .position(|byte| matches!(byte, b'M' | b'm'))
+            {
+                let params = std::str::from_utf8(&rest[3..end]).unwrap_or_default();
+                let mut numbers = params.split(';').map(|part| part.parse::<usize>().ok());
+                if let (Some(Some(button)), Some(Some(x)), Some(Some(y))) =
+                    (numbers.next(), numbers.next(), numbers.next())
+                {
+                    let on = |column: Option<usize>| {
+                        column.is_some_and(|column| column + 1 == x)
+                            && usize::from(badge.row) + 1 == y
+                    };
+                    if button == 0 && (on(badge.minus) || on(badge.plus)) {
+                        // The press does the work; its release goes with it.
+                        if rest[end] == b'M' {
+                            nudges.push(if on(badge.plus) { 1 } else { -1 });
+                        }
+                        index += end + 1;
+                        continue;
+                    }
+                }
+            }
+        }
+        kept.push(input[index]);
+        index += 1;
+    }
+    (kept, nudges)
 }
 
 /// Draws `text` as a badge in the blank stretch of the provider's footer row,
@@ -2460,7 +2522,19 @@ fn draw_voice_badge(
         .rev()
         .find_map(|row| place(row).map(|column| (row, column)));
     let (row, column) = found.unwrap_or((0, usize::from(cols) - width - 1));
-    let badge = VoiceBadge { row, column, width };
+    let button = |symbol: char| {
+        label
+            .chars()
+            .position(|character| character == symbol)
+            .map(|offset| column + offset)
+    };
+    let badge = VoiceBadge {
+        row,
+        column,
+        width,
+        minus: button('−'),
+        plus: button('+'),
+    };
     if let Some(old) = previous.filter(|old| *old != badge) {
         restore_row(output, screen, old.row)?;
     }
@@ -2669,6 +2743,57 @@ mod tests {
             parser.push(b"\x0b"),
             vec![InputAction::Forward(b"\x0b".to_vec())]
         );
+    }
+
+    fn badge() -> VoiceBadge {
+        VoiceBadge {
+            row: 38,
+            column: 10,
+            width: 24,
+            minus: Some(16),
+            plus: Some(24),
+        }
+    }
+
+    #[test]
+    fn a_click_on_a_speed_button_is_taken_and_never_reaches_the_provider() {
+        let badge = badge();
+        // Columns are 1-based on the wire: button column 16 is x=17, row 38 is y=39.
+        let (kept, nudges) = take_badge_clicks(b"ab\x1b[<0;25;39Mcd\x1b[<0;25;39m", Some(&badge));
+        assert_eq!(kept, b"abcd");
+        assert_eq!(
+            nudges,
+            vec![1],
+            "the press counts once, its release goes with it"
+        );
+        let (kept, nudges) = take_badge_clicks(b"\x1b[<0;17;39M\x1b[<0;17;39m", Some(&badge));
+        assert!(kept.is_empty());
+        assert_eq!(nudges, vec![-1]);
+    }
+
+    #[test]
+    fn other_clicks_and_other_keys_go_through() {
+        let badge = badge();
+        for input in [
+            &b"\x1b[<0;40;39M"[..], // elsewhere on the row
+            b"\x1b[<0;25;12M",      // the button's column, another row
+            b"\x1b[<2;25;39M",      // a right click
+            b"\x1b[<64;25;39M",     // scrolling
+            b"hello",
+        ] {
+            let (kept, nudges) = take_badge_clicks(input, Some(&badge));
+            assert_eq!(kept, input);
+            assert!(nudges.is_empty());
+        }
+        // Without buttons (OpenAI) or without a badge, nothing is touched.
+        let plain = VoiceBadge {
+            minus: None,
+            plus: None,
+            ..badge
+        };
+        let click = b"\x1b[<0;25;39M";
+        assert_eq!(take_badge_clicks(click, Some(&plain)).0, click);
+        assert_eq!(take_badge_clicks(click, None).0, click);
     }
 
     #[test]

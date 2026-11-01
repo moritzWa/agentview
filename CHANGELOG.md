@@ -25,6 +25,12 @@ and released versions are intended to follow Semantic Versioning.
   Ctrl+] start and end a call. The voice knows which session is selected or
   open, and ends the call when you say goodbye.
 
+- Voice Mode can run on xAI's Grok (`grok-voice-latest`, default voice `rex`,
+  no reasoning so it stays fast) as well as OpenAI. Switch with `/voice grok` or
+  `/voice openai`, or `agentview voice --provider grok`; each provider has its
+  own key. Grok's speed (0.7x to 1.5x) has clickable `−` and `+` in the
+  dashboard's call line and in the OpenCode footer badge, and `/voice speed 1.2`.
+
 - Voice Mode in a session's own view: the badge is blue text without a
   background, and starting or ending a call no longer writes a status line on
   the bottom row (only failures and things to act on do).

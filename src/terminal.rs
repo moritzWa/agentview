@@ -8,9 +8,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
 use crossterm::event::{
-    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind,
-    KeyModifiers, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
-    PushKeyboardEnhancementFlags,
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags, MouseButton,
+    MouseEventKind, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -886,6 +886,8 @@ pub fn run_dashboard(
                 if status.phase != crate::voice::Phase::Idle {
                     app.voice_hint = false;
                 }
+                terminal
+                    .set_mouse(status.phase == crate::voice::Phase::Live && status.speed.is_some());
                 app.voice = status;
                 needs_draw = true;
             }
@@ -1035,9 +1037,50 @@ pub fn run_dashboard(
                                 }
                                 ActionEffect::default()
                             }
-                            AppAction::SaveVoiceKey { key } => {
-                                app.set_notice("checking the key with OpenAI…");
-                                match crate::voice::config::save_key(&key) {
+                            AppAction::VoiceProvider(provider) => {
+                                match &voice {
+                                    Some(voice) => match voice.set_provider(provider) {
+                                        Ok(()) => {
+                                            let key = if crate::voice::config::key_for(provider)
+                                                .is_some()
+                                            {
+                                                ""
+                                            } else {
+                                                " (it asks for a key on the first call)"
+                                            };
+                                            app.set_notice(format!(
+                                                "voice calls use {} now{key}",
+                                                provider.label()
+                                            ));
+                                        }
+                                        Err(error) => app.set_notice(format!("{error:#}")),
+                                    },
+                                    None => app
+                                        .set_notice("voice mode needs a live provider connection"),
+                                }
+                                ActionEffect::default()
+                            }
+                            AppAction::VoiceSpeed(tenths) => {
+                                match &voice {
+                                    Some(voice) if voice.provider().has_speed() => {
+                                        let speed = voice.set_speed(f64::from(tenths) / 10.0);
+                                        app.set_notice(format!("voice speed {speed:.1}x"));
+                                    }
+                                    Some(voice) => app.set_notice(format!(
+                                        "{} cannot change speed; /voice grok can",
+                                        voice.provider().label()
+                                    )),
+                                    None => app
+                                        .set_notice("voice mode needs a live provider connection"),
+                                }
+                                ActionEffect::default()
+                            }
+                            AppAction::SaveVoiceKey { key, provider } => {
+                                app.set_notice(format!(
+                                    "checking the key with {}…",
+                                    provider.label()
+                                ));
+                                match crate::voice::config::save_key_for(provider, &key) {
                                     Ok(()) => {
                                         if let (Some(host), Some(voice)) = (&voice_host, &voice) {
                                             host.publish(&app.snapshot.sessions);
@@ -1045,7 +1088,7 @@ pub fn run_dashboard(
                                         }
                                     }
                                     Err(error) => {
-                                        app.start_voice_key();
+                                        app.start_voice_key(provider);
                                         app.set_notice(format!("{error:#}"));
                                     }
                                 }
@@ -1331,6 +1374,28 @@ pub fn run_dashboard(
                             }
                         }
                     }
+                    Event::Mouse(mouse) => {
+                        // The only clicks asked for: the speed buttons in the call's footer line.
+                        let last_row = terminal
+                            .terminal
+                            .size()
+                            .map_or(0, |size| size.height)
+                            .saturating_sub(1);
+                        if let (MouseEventKind::Down(MouseButton::Left), Some(voice)) =
+                            (mouse.kind, &voice)
+                        {
+                            if let Some((minus, plus)) = ui::voice_speed_buttons(&app) {
+                                if mouse.row == last_row
+                                    && (mouse.column == minus || mouse.column == plus)
+                                {
+                                    let step = crate::voice::config::SPEED_STEP;
+                                    let step = if mouse.column == plus { step } else { -step };
+                                    voice.set_speed(voice.speed() + step);
+                                    needs_draw = true;
+                                }
+                            }
+                        }
+                    }
                     Event::Resize(_, height) => {
                         app.set_session_page_size(session_page_size_for_terminal(height));
                         app.set_hidden_picker_rows(hidden_picker_rows_for_height(height));
@@ -1395,13 +1460,15 @@ fn install_voice_hook(voice: &crate::voice::VoiceService) {
     let toggler = voice.clone();
     let poller = voice.clone();
     let badger = voice.clone();
+    let nudger = voice.clone();
     let last = std::sync::Mutex::new((Phase::Idle, None::<String>));
     crate::native_session::set_voice_hook(crate::native_session::VoiceHook {
         toggle: Box::new(move || match toggler.toggle() {
             Toggle::Started | Toggle::Ended => None,
-            Toggle::NeedKey => Some(
-                "voice needs an OpenAI key: go back with shift+← and press ctrl+k once".to_owned(),
-            ),
+            Toggle::NeedKey(provider) => Some(format!(
+                "voice needs a {} key: go back with shift+← and press ctrl+k once",
+                provider.label()
+            )),
             Toggle::Failed(error) => Some(error),
         }),
         badge: Box::new(move || {
@@ -1409,11 +1476,21 @@ fn install_voice_hook(voice: &crate::voice::VoiceService) {
             match status.phase {
                 Phase::Idle => None,
                 Phase::Connecting => Some("◌ voice connecting".to_owned()),
-                Phase::Live => Some(format!(
-                    "● voice {}:{:02}",
-                    status.seconds / 60,
-                    status.seconds % 60
-                )),
+                Phase::Live => {
+                    let time = format!("{}:{:02}", status.seconds / 60, status.seconds % 60);
+                    Some(match status.speed {
+                        // Like the read-aloud controls: slower, the speed, faster.
+                        Some(speed) => format!("● voice {time}  −  {speed:.1}x  +"),
+                        None => format!("● voice {time}"),
+                    })
+                }
+            }
+        }),
+        nudge: Box::new(move |direction| {
+            if nudger.provider().has_speed() {
+                nudger.set_speed(
+                    nudger.speed() + f64::from(direction) * crate::voice::config::SPEED_STEP,
+                );
             }
         }),
         poll: Box::new(move || {
@@ -1438,7 +1515,7 @@ fn toggle_voice(app: &mut App, voice: &crate::voice::VoiceService) {
     match voice.toggle() {
         Toggle::Started => app.set_notice("starting voice mode…"),
         Toggle::Ended => app.set_notice("voice call ended"),
-        Toggle::NeedKey => app.start_voice_key(),
+        Toggle::NeedKey(provider) => app.start_voice_key(provider),
         Toggle::Failed(error) => app.set_notice(error),
     }
 }
@@ -2720,7 +2797,9 @@ fn dispatch_action<T: DashboardTerminal, C: DashboardControl>(
         AppAction::SetPaused { .. }
         | AppAction::SetSortKeys { .. }
         | AppAction::ToggleVoice
-        | AppAction::SaveVoiceKey { .. } => ActionEffect::default(),
+        | AppAction::SaveVoiceKey { .. }
+        | AppAction::VoiceProvider(_)
+        | AppAction::VoiceSpeed(_) => ActionEffect::default(),
         AppAction::Hide { session_ids } => ActionEffect {
             hide_session_ids: session_ids,
             ..ActionEffect::default()
@@ -2833,6 +2912,8 @@ fn handle_action_legacy<T: DashboardTerminal, C: DashboardControl>(
         | AppAction::BrowseHidden
         | AppAction::ToggleVoice
         | AppAction::SaveVoiceKey { .. }
+        | AppAction::VoiceProvider(_)
+        | AppAction::VoiceSpeed(_)
         | AppAction::PasteImage
         | AppAction::Unhide { .. }
         | AppAction::Restore { .. } => false,
@@ -3038,6 +3119,9 @@ struct TerminalSession {
     keyboard_enhancement: bool,
     /// Last tab title written; native sessions overwrite it while they run.
     title: Option<String>,
+    /// Clicks are reported: only while a call with speed buttons is live, so
+    /// the terminal's own text selection works the rest of the time.
+    mouse: bool,
 }
 
 // XTWINOPS title stack: the shell's own tab title comes back on exit.
@@ -3080,7 +3164,23 @@ impl TerminalSession {
             active: true,
             keyboard_enhancement,
             title: None,
+            mouse: false,
         })
+    }
+
+    /// Starts or stops asking the terminal to report clicks.
+    fn set_mouse(&mut self, on: bool) {
+        if self.mouse == on {
+            return;
+        }
+        self.mouse = on;
+        if self.active {
+            let _ = if on {
+                execute!(self.terminal.backend_mut(), EnableMouseCapture)
+            } else {
+                execute!(self.terminal.backend_mut(), DisableMouseCapture)
+            };
+        }
     }
 
     fn set_title(&mut self, title: &str) {
@@ -3098,6 +3198,9 @@ impl TerminalSession {
             return Ok(());
         }
         disable_raw_mode()?;
+        if self.mouse {
+            execute!(self.terminal.backend_mut(), DisableMouseCapture)?;
+        }
         if self.keyboard_enhancement {
             execute!(
                 self.terminal.backend_mut(),
@@ -3131,6 +3234,9 @@ impl TerminalSession {
             )?;
         }
         execute!(self.terminal.backend_mut(), crossterm::cursor::Hide)?;
+        if self.mouse {
+            execute!(self.terminal.backend_mut(), EnableMouseCapture)?;
+        }
         self.terminal.clear()?;
         self.active = true;
         self.title = None;
@@ -3253,6 +3359,9 @@ impl Drop for TerminalSession {
             return;
         }
         let _ = disable_raw_mode();
+        if self.mouse {
+            let _ = execute!(self.terminal.backend_mut(), DisableMouseCapture);
+        }
         if self.keyboard_enhancement {
             let _ = execute!(
                 self.terminal.backend_mut(),

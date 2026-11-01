@@ -140,6 +140,10 @@ impl Call {
                 }
                 Vec::new()
             }
+            "session.speech_started" => {
+                self.heard = true;
+                Vec::new()
+            }
             "session.usage.updated" | "session.closed" => {
                 if let Some(seconds) = event.pointer("/usage/seconds").and_then(Value::as_u64) {
                     self.usage_seconds = self.usage_seconds.max(seconds);

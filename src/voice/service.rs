@@ -12,10 +12,11 @@ use serde_json::{json, Value};
 
 use super::browser::{self, Mode};
 use super::call::{self, Action, Call, Line};
-use super::config::{self, Settings};
+use super::config::{self, Provider, Settings};
 use super::log::{clip, log};
 use super::server::{self, PageSink};
 use super::tools::{Tools, VoiceHost};
+use super::xai;
 
 /// Time the voice page gets to connect by itself before a tab is opened.
 const PAGE_GRACE: Duration = if cfg!(test) {
@@ -47,7 +48,7 @@ fn viewing() -> Option<String> {
 }
 
 /// What the dashboard shows about the call.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PanelStatus {
     pub phase: Phase,
     pub seconds: u64,
@@ -56,6 +57,10 @@ pub struct PanelStatus {
     pub notice: Option<String>,
     /// The notice only says an ordinary end ("You ended the call"): nothing to act on.
     pub quiet: bool,
+    /// Whose voice a call uses (or would use).
+    pub provider: Provider,
+    /// How fast the voice talks, when the provider lets it change.
+    pub speed: Option<f64>,
 }
 
 impl PanelStatus {
@@ -66,6 +71,8 @@ impl PanelStatus {
             lines: Vec::new(),
             notice: None,
             quiet: false,
+            provider: Provider::OpenAi,
+            speed: None,
         }
     }
 }
@@ -74,7 +81,7 @@ impl PanelStatus {
 pub enum Toggle {
     Started,
     Ended,
-    NeedKey,
+    NeedKey(Provider),
     Failed(String),
 }
 
@@ -116,6 +123,8 @@ struct ActiveCall {
     warned: bool,
     call: Call,
     tools: Arc<Tools>,
+    provider: Provider,
+    adapter: xai::Adapter,
 }
 
 #[derive(Default)]
@@ -133,17 +142,36 @@ struct State {
 
 /// Gets a browser onto the voice page; a hidden one comes back to be stopped later.
 type Launcher = Box<dyn Fn(&str) -> Option<std::process::Child> + Send + Sync>;
-type KeySource = Box<dyn Fn() -> Option<String> + Send + Sync>;
+type KeySource = Box<dyn Fn(Provider) -> Option<String> + Send + Sync>;
+/// Trades an xAI key for a token the page may use.
+type Minter = Box<dyn Fn(&str) -> Result<String> + Send + Sync>;
 type Creator = Box<dyn Fn(&str, &Value) -> Result<Created> + Send + Sync>;
+
+/// Remembers a setting between runs. Tests leave the real file alone.
+fn persist(name: &str, value: Value) -> Result<()> {
+    if cfg!(test) {
+        return Ok(());
+    }
+    config::save_setting(name, value)
+}
+
+/// What a person can change while agentview runs.
+struct Live {
+    /// Chosen with `/voice grok`; empty means whichever provider has a key.
+    provider: Option<Provider>,
+    speed: f64,
+}
 
 struct Inner {
     host: Arc<dyn VoiceHost>,
     settings: Settings,
+    live: Mutex<Live>,
     port: u16,
     state: Mutex<State>,
     launch: Launcher,
     key: KeySource,
     create: Creator,
+    mint: Minter,
 }
 
 #[derive(Clone)]
@@ -160,8 +188,9 @@ impl VoiceService {
             settings,
             config::port(),
             launch,
-            Box::new(config::api_key),
+            Box::new(config::key_for),
             Box::new(create_session),
+            Box::new(xai::mint_token),
         )
     }
 
@@ -172,16 +201,23 @@ impl VoiceService {
         launch: Launcher,
         key: KeySource,
         create: Creator,
+        mint: Minter,
     ) -> Self {
+        let live = Live {
+            provider: Provider::parse(&settings.provider),
+            speed: config::clamp_speed(settings.speed),
+        };
         let service = Self {
             inner: Arc::new(Inner {
                 host,
                 settings,
+                live: Mutex::new(live),
                 port,
                 state: Mutex::default(),
                 launch,
                 key,
                 create,
+                mint,
             }),
         };
         let weak = Arc::downgrade(&service.inner);
@@ -195,8 +231,45 @@ impl VoiceService {
         service
     }
 
+    /// Whose voice the next call uses.
+    pub fn provider(&self) -> Provider {
+        self.inner.provider()
+    }
+
+    /// Chooses whose voice the next call uses, and remembers it.
+    pub fn set_provider(&self, provider: Provider) -> Result<()> {
+        self.inner.live.lock().unwrap().provider = Some(provider);
+        persist("provider", json!(provider.id()))
+    }
+
+    pub fn speed(&self) -> f64 {
+        self.inner.live.lock().unwrap().speed
+    }
+
+    /// Changes how fast Grok talks, now and in later calls. Returns the speed
+    /// that was set, which is kept inside what Grok accepts.
+    pub fn set_speed(&self, speed: f64) -> f64 {
+        let speed = config::clamp_speed(speed);
+        self.inner.live.lock().unwrap().speed = speed;
+        let _ = persist("speed", json!(speed));
+        let state = self.inner.lock();
+        if state
+            .active
+            .as_ref()
+            .is_some_and(|active| active.provider == Provider::Xai)
+        {
+            // Already Grok's own event: it is passed through as it is.
+            Inner::send_page(
+                &state,
+                json!({"type": "send", "event": xai::speed_update(speed)}),
+            );
+        }
+        speed
+    }
+
+    /// Whether the provider that would answer has a key.
     pub fn has_key(&self) -> bool {
-        (self.inner.key)().is_some()
+        (self.inner.key)(self.inner.provider()).is_some()
     }
 
     pub fn url(&self) -> String {
@@ -209,8 +282,9 @@ impl VoiceService {
             self.inner.finish_quietly("You ended the call.", true);
             return Toggle::Ended;
         }
-        if (self.inner.key)().is_none() {
-            return Toggle::NeedKey;
+        let provider = self.inner.provider();
+        if (self.inner.key)(provider).is_none() {
+            return Toggle::NeedKey(provider);
         }
         match self.inner.start() {
             Ok(()) => Toggle::Started,
@@ -219,11 +293,15 @@ impl VoiceService {
     }
 
     pub fn status(&self) -> PanelStatus {
+        let provider = self.inner.provider();
+        let speed = provider.has_speed().then(|| self.speed());
         let state = self.inner.lock();
         match &state.active {
             None => PanelStatus {
                 notice: state.notice.clone(),
                 quiet: state.quiet,
+                provider,
+                speed,
                 ..PanelStatus::idle()
             },
             Some(active) => PanelStatus {
@@ -238,6 +316,8 @@ impl VoiceService {
                 lines: active.call.lines(),
                 notice: state.notice.clone(),
                 quiet: state.quiet,
+                provider: active.provider,
+                speed: active.provider.has_speed().then_some(speed.unwrap_or(1.0)),
             },
         }
     }
@@ -261,6 +341,14 @@ impl VoiceService {
 }
 
 impl Inner {
+    fn provider(&self) -> Provider {
+        self.live
+            .lock()
+            .unwrap()
+            .provider
+            .unwrap_or_else(|| self.settings.chosen_provider())
+    }
+
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state
             .lock()
@@ -268,6 +356,19 @@ impl Inner {
     }
 
     fn send_page(state: &State, message: Value) {
+        let mut message = message;
+        // Grok has its own events: say what the call means in them.
+        if message["type"] == "send"
+            && state
+                .active
+                .as_ref()
+                .is_some_and(|active| active.provider == Provider::Xai)
+        {
+            match xai::outgoing(&message["event"]) {
+                Some(event) => message["event"] = event,
+                None => return,
+            }
+        }
         if message["type"] == "send" {
             let event = &message["event"];
             let kind = event["type"].as_str().unwrap_or_default();
@@ -304,6 +405,7 @@ impl Inner {
             state.server = None;
             bail!(error);
         }
+        let provider = self.provider();
         let tools = Arc::new(Tools::new(self.host.clone()));
         tools.set_viewing(viewing());
         tools.prime();
@@ -323,10 +425,15 @@ impl Inner {
             warned: false,
             call: Call::default(),
             tools,
+            provider,
+            adapter: xai::Adapter::default(),
         });
         config::mark_hint_seen();
         super::log::start_call();
-        log("start", json!({"browser": self.settings.browser}));
+        log(
+            "start",
+            json!({"browser": self.settings.browser, "provider": provider.id()}),
+        );
         // A hidden browser starts at once. A tab in your own browser is only
         // opened after a pinned one has had a moment to connect.
         if state.page.is_none() && Mode::parse(&self.settings.browser) == Mode::Hidden {
@@ -356,7 +463,11 @@ impl Inner {
         } else {
             return;
         }
-        Self::send_page(state, json!({"type": "start"}));
+        let provider = state
+            .active
+            .as_ref()
+            .map_or(Provider::OpenAi, |active| active.provider);
+        Self::send_page(state, json!({"type": "start", "provider": provider.id()}));
     }
 
     /// Ends the call: tells OpenAI to close, then the page to hang up.
@@ -384,7 +495,10 @@ impl Inner {
         }
         let seconds = active.call.usage_seconds;
         if notify_page {
-            Self::send_page(&state, json!({"type": "send", "event": call::close()}));
+            // Grok has no event for it: the page closing its websocket ends the call.
+            if active.provider == Provider::OpenAi {
+                Self::send_page(&state, json!({"type": "send", "event": call::close()}));
+            }
             if let Some(page) = &state.page {
                 let outgoing = page.outgoing.clone();
                 thread::spawn(move || {
@@ -544,7 +658,7 @@ impl Inner {
     }
 
     fn on_offer(self: &Arc<Self>, sdp: String) {
-        let tools = {
+        let (tools, provider) = {
             let state = self.lock();
             let Some(active) = state
                 .active
@@ -553,25 +667,54 @@ impl Inner {
             else {
                 return;
             };
-            active.tools.clone()
+            (active.tools.clone(), active.provider)
         };
         let this = self.clone();
         thread::spawn(move || {
             let notes = tools.notes();
-            let result = (this.key)()
-                .context("there is no OpenAI key")
-                .and_then(|key| {
-                    (this.create)(&key, &call::session_request(&this.settings, &notes, &sdp))
-                });
-            match result {
-                Ok(created) => {
-                    let mut state = this.lock();
-                    if let Some(active) = state.active.as_mut() {
-                        active.call.session_id = Some(created.session_id);
-                        Self::send_page(&state, json!({"type": "answer", "sdp": created.sdp}));
+            let key = (this.key)(provider)
+                .with_context(|| format!("there is no {} key", provider.label()));
+            match provider {
+                Provider::OpenAi => {
+                    let result = key.and_then(|key| {
+                        (this.create)(&key, &call::session_request(&this.settings, &notes, &sdp))
+                    });
+                    match result {
+                        Ok(created) => {
+                            let mut state = this.lock();
+                            if let Some(active) = state.active.as_mut() {
+                                active.call.session_id = Some(created.session_id);
+                                Self::send_page(
+                                    &state,
+                                    json!({"type": "answer", "sdp": created.sdp}),
+                                );
+                            }
+                        }
+                        Err(error) => {
+                            this.finish(&format!("Could not start the call: {error:#}"), true)
+                        }
                     }
                 }
-                Err(error) => this.finish(&format!("Could not start the call: {error:#}"), true),
+                Provider::Xai => match key.and_then(|key| (this.mint)(&key)) {
+                    Ok(token) => {
+                        let mut settings = this.settings.clone();
+                        settings.speed = this.live.lock().unwrap().speed;
+                        let state = this.lock();
+                        Self::send_page(
+                            &state,
+                            json!({
+                                "type": "answer",
+                                "provider": "xai",
+                                "url": xai::realtime_url(&settings),
+                                "token": token,
+                                "session": xai::session_update(&settings, &notes),
+                            }),
+                        );
+                    }
+                    Err(error) => {
+                        this.finish(&format!("Could not start the call: {error:#}"), true)
+                    }
+                },
             }
         });
     }
@@ -582,7 +725,15 @@ impl Inner {
             let Some(active) = state.active.as_mut() else {
                 return;
             };
-            let actions = active.call.on_event(event);
+            let events = if active.provider == Provider::Xai {
+                active.adapter.incoming(event)
+            } else {
+                vec![event.clone()]
+            };
+            let actions: Vec<Action> = events
+                .iter()
+                .flat_map(|event| active.call.on_event(event))
+                .collect();
             if active.call.heard {
                 active.call.heard = false;
                 active.last_heard = Instant::now();
@@ -605,7 +756,7 @@ impl Inner {
                     self.lock().notice = Some(message);
                 }
                 Action::Run { calls, stale } => {
-                    let (tools, outgoing) = {
+                    let (tools, outgoing, provider) = {
                         let state = self.lock();
                         let Some(active) = state.active.as_ref() else {
                             return;
@@ -613,12 +764,21 @@ impl Inner {
                         (
                             active.tools.clone(),
                             state.page.as_ref().map(|page| page.outgoing.clone()),
+                            active.provider,
                         )
                     };
                     let Some(outgoing) = outgoing else { return };
                     let this = self.clone();
                     thread::spawn(move || {
                         let send = |event: Value| {
+                            let event = if provider == Provider::Xai {
+                                match xai::outgoing(&event) {
+                                    Some(event) => event,
+                                    None => return,
+                                }
+                            } else {
+                                event
+                            };
                             let _ =
                                 outgoing.send(json!({"type": "send", "event": event}).to_string());
                         };
@@ -689,6 +849,12 @@ impl PageSink for Sink {
                     .and_then(Value::as_str)
                     .unwrap_or_default();
                 let noisy = kind.ends_with("transcript.delta") || inner.ends_with(".delta");
+                if kind == "conversation.item.input_audio_transcription.completed" {
+                    log(
+                        "said",
+                        json!({"who": kind, "text": event["transcript"], "status": event["status"]}),
+                    );
+                }
                 if kind.ends_with("transcript.delta") {
                     log("said", json!({"who": kind, "text": event["delta"]}));
                 } else if !noisy {
@@ -752,7 +918,10 @@ impl PageSink for Sink {
                 Inner::begin_negotiation(&mut state);
             }
             "offer" => {
-                if let Some(sdp) = message.get("sdp").and_then(Value::as_str) {
+                // Grok's page has no SDP: it connects itself with a token.
+                let sdp = message.get("sdp").and_then(Value::as_str);
+                let grok = message.get("provider").and_then(Value::as_str) == Some("xai");
+                if let Some(sdp) = sdp.or(grok.then_some("")) {
                     this.on_offer(sdp.to_owned());
                 }
             }
@@ -1021,7 +1190,7 @@ mod tests {
                 counter.fetch_add(1, Ordering::SeqCst);
                 None
             }),
-            Box::new(move || key.map(str::to_owned)),
+            Box::new(move |_| key.map(str::to_owned)),
             Box::new(move |key, body| {
                 assert_eq!(key, "sk-test");
                 seen.lock().unwrap().push(body.clone());
@@ -1030,6 +1199,7 @@ mod tests {
                     sdp: "v=0 answer".into(),
                 })
             }),
+            Box::new(|_| Ok("grok-token".into())),
         );
         Rig {
             service,
@@ -1071,7 +1241,7 @@ mod tests {
     #[test]
     fn without_a_key_the_first_press_asks_for_one() {
         let rig = rig(Settings::default(), None);
-        assert_eq!(rig.service.toggle(), Toggle::NeedKey);
+        assert_eq!(rig.service.toggle(), Toggle::NeedKey(Provider::OpenAi));
         assert_eq!(rig.service.status().phase, Phase::Idle);
     }
 
@@ -1170,8 +1340,9 @@ mod tests {
             Settings::default(),
             0,
             Box::new(|_| None),
-            Box::new(|| Some("sk-test".into())),
+            Box::new(|_| Some("sk-test".into())),
             Box::new(|_, _| bail!("OpenAI answered 401 bad key")),
+            Box::new(|_| Ok("grok-token".into())),
         );
         let (outgoing, inbox) = mpsc::channel();
         let sink = Sink(service.inner.clone());
@@ -1213,6 +1384,107 @@ mod tests {
         inbox.try_iter().any(|message| {
             serde_json::from_str::<Value>(&message).is_ok_and(|value| value["type"] == kind)
         })
+    }
+
+    fn grok() -> Settings {
+        Settings {
+            provider: "grok".into(),
+            ..Settings::default()
+        }
+    }
+
+    #[test]
+    fn a_grok_call_starts_with_its_provider_and_is_answered_with_a_token_and_a_session() {
+        let rig = rig(grok(), Some("xai-test"));
+        let (id, inbox) = page(&rig);
+        say(
+            &rig,
+            id,
+            json!({"type": "hello", "ready": true, "hidden": true}),
+        );
+        assert_eq!(rig.service.toggle(), Toggle::Started);
+        let start = next(&inbox);
+        assert_eq!(
+            (start["type"].as_str(), start["provider"].as_str()),
+            (Some("start"), Some("xai"))
+        );
+        // Grok's page has no SDP to offer; the answer is a token and the session settings.
+        say(&rig, id, json!({"type": "offer", "provider": "xai"}));
+        let answer = next(&inbox);
+        assert_eq!(answer["type"], "answer");
+        assert_eq!(answer["provider"], "xai");
+        assert_eq!(answer["token"], "grok-token");
+        assert!(answer["url"]
+            .as_str()
+            .unwrap()
+            .contains("grok-voice-latest"));
+        assert_eq!(answer["session"]["session"]["voice"], "rex");
+        assert!(
+            rig.requests.lock().unwrap().is_empty(),
+            "OpenAI is not asked"
+        );
+        assert_eq!(rig.service.status().provider, Provider::Xai);
+        assert_eq!(rig.service.status().speed, Some(1.0));
+    }
+
+    #[test]
+    fn grok_tool_calls_run_and_come_back_in_groks_events() {
+        let rig = rig(grok(), Some("xai-test"));
+        let (id, inbox) = page(&rig);
+        say(
+            &rig,
+            id,
+            json!({"type": "hello", "ready": true, "hidden": true}),
+        );
+        rig.service.toggle();
+        say(&rig, id, json!({"type": "offer", "provider": "xai"}));
+        for event in [
+            json!({"type": "session.updated"}),
+            json!({"type": "response.created"}),
+            json!({"type": "response.function_call_arguments.done", "call_id": "c1", "name": "list_sessions", "arguments": "{}"}),
+            json!({"type": "response.done"}),
+        ] {
+            say(&rig, id, json!({"type": "event", "event": event}));
+        }
+        let mut seen = Vec::new();
+        until(|| {
+            seen.extend(
+                inbox
+                    .try_iter()
+                    .filter_map(|m| serde_json::from_str::<Value>(&m).ok()),
+            );
+            seen.iter().any(|m| m["event"]["type"] == "response.create")
+        });
+        let output = seen
+            .iter()
+            .find(|m| m["event"]["type"] == "conversation.item.create")
+            .expect("the tool result goes back");
+        assert_eq!(output["event"]["item"]["type"], "function_call_output");
+        assert_eq!(output["event"]["item"]["call_id"], "c1");
+        assert!(output["event"]["item"]["output"]
+            .as_str()
+            .unwrap()
+            .contains("semantic search"));
+    }
+
+    #[test]
+    fn changing_the_speed_in_a_grok_call_tells_grok_and_openai_has_no_speed() {
+        let call = rig(grok(), Some("xai-test"));
+        let (id, inbox) = page(&call);
+        say(
+            &call,
+            id,
+            json!({"type": "hello", "ready": true, "hidden": true}),
+        );
+        call.service.toggle();
+        let _ = next(&inbox);
+        assert_eq!(call.service.set_speed(9.0), 1.5);
+        let update = next(&inbox);
+        assert_eq!(update["event"]["type"], "session.update");
+        assert_eq!(update["event"]["session"]["audio"]["output"]["speed"], 1.5);
+        assert_eq!(call.service.speed(), 1.5);
+        let other = rig(Settings::default(), Some("sk-test"));
+        assert_eq!(other.service.status().speed, None);
     }
 
     #[test]
@@ -1283,8 +1555,9 @@ mod tests {
                 counter.fetch_add(1, Ordering::SeqCst);
                 std::process::Command::new("sleep").arg("30").spawn().ok()
             }),
-            Box::new(|| Some("sk-test".into())),
+            Box::new(|_| Some("sk-test".into())),
             Box::new(|_, _| bail!("unused")),
+            Box::new(|_| Ok("grok-token".into())),
         );
         assert_eq!(service.toggle(), Toggle::Started);
         assert_eq!(started.load(Ordering::SeqCst), 1);
@@ -1311,8 +1584,9 @@ mod tests {
             Settings::default(),
             0,
             Box::new(|_| std::process::Command::new("true").spawn().ok()),
-            Box::new(|| Some("sk-test".into())),
+            Box::new(|_| Some("sk-test".into())),
             Box::new(|_, _| bail!("unused")),
+            Box::new(|_| Ok("grok-token".into())),
         );
         assert_eq!(service.toggle(), Toggle::Started);
         until(|| service.status().phase == Phase::Idle);

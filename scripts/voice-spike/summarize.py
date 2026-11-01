@@ -14,6 +14,8 @@ def flush():
 for entry in lines:
     kind, data, t = entry["kind"], entry["d"], entry["t"]
     if kind == "said":
+        if data.get("status") not in (None, "completed"):
+            continue  # Grok repeats a transcript while it is still listening
         who = "YOU  " if "input" in data["who"] else "VOICE"
         if who != speaker:
             flush()
