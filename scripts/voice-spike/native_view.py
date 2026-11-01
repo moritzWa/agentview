@@ -11,6 +11,11 @@ key = os.environ.get("VOICE_E2E_KEY") or subprocess.run(
     ["op", "item", "get", os.environ.get("VOICE_E2E_OP_ITEM", "arca agentview voice agent"), "--fields", "api key", "--reveal"],
     capture_output=True, text=True).stdout.strip()
 env = dict(os.environ, AGENTVIEW_OPENAI_API_KEY=key, AGENTVIEW_VOICE_PORT="47698", TERM=os.environ.get("NATIVE_TERM", "xterm-256color"), TERM_PROGRAM=os.environ.get("NATIVE_TERM_PROGRAM", "xterm"))
+# Keep the call logs and perf trace of a test out of the real ones.
+_scratch = os.path.join(os.environ.get("TMPDIR", "/tmp"), "voice-e2e-state")
+os.makedirs(_scratch, exist_ok=True)
+env["AGENTVIEW_VOICE_STATE_DIR"] = _scratch
+env["AGENTVIEW_PERF_LOG"] = os.path.join(_scratch, "perf.log")
 voice_key = os.environ.get("NATIVE_KEY", "\\x0b").encode().decode("unicode_escape").encode("latin-1")
 live = bool(os.environ.get("NATIVE_LIVE"))
 if live:

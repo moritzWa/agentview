@@ -10,18 +10,40 @@ use serde_json::{json, Value};
 use super::digest::{self, Handles, Info, Known, Seen};
 use crate::domain::SessionState;
 
-/// One message of a session, as the voice reads it.
+/// One exchange of a session, as the voice reads it: what the developer
+/// asked and how the agent ended its turn. Tool calls and scripts are left out.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Message {
-    pub role: String,
-    pub text: String,
+pub struct Turn {
+    pub you: String,
+    pub it: String,
+}
+
+/// A session found by searching everything OpenCode remembers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HistoryHit {
+    pub id: String,
+    pub title: String,
+    pub cwd: PathBuf,
+    pub updated_ms: u64,
+    /// Where the words matched, when they matched inside the conversation.
+    pub snippet: String,
 }
 
 /// What Voice Mode needs from the dashboard. The real one wraps the control
 /// hub and the latest session snapshot; tests use a fake.
 pub trait VoiceHost: Send + Sync {
     fn infos(&self) -> Vec<Info>;
-    fn recent_messages(&self, id: &str, count: usize) -> Result<Vec<Message>>;
+    fn recent_turns(&self, id: &str, turns: usize) -> Result<Vec<Turn>>;
+    /// Sessions of the whole history matching `query`, best first, and a note
+    /// when the answer may be incomplete.
+    fn search_history(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<(Vec<HistoryHit>, Option<String>)>;
+    /// Stops what the session is doing and removes it from Agent View. Its
+    /// history stays and `search_history` still finds it.
+    fn close(&self, id: &str) -> Result<String>;
     fn send(&self, id: &str, text: &str) -> Result<()>;
     /// Asks for fresh session data; the dashboard may be busy elsewhere.
     fn refresh(&self) {}
@@ -68,6 +90,50 @@ pub struct Tools {
     touched: Mutex<std::collections::HashMap<String, u64>>,
     /// Folders whose children a spoken name may refer to, such as `~/Code`.
     roots: Vec<PathBuf>,
+    /// What the developer last said, as transcribed.
+    heard: Mutex<String>,
+}
+
+/// Text cut to `max` characters, keeping the start.
+fn clip_start(text: &str, max: usize) -> String {
+    let text = text.trim();
+    if text.chars().count() <= max {
+        return text.to_owned();
+    }
+    let head: String = text.chars().take(max).collect();
+    format!("{head}…")
+}
+
+/// Text cut to `max` characters, keeping the end, where a turn's result or
+/// question is.
+fn clip_end(text: &str, max: usize) -> String {
+    let text = text.trim();
+    let count = text.chars().count();
+    if count <= max {
+        return text.to_owned();
+    }
+    let tail: String = text.chars().skip(count - max).collect();
+    format!("…{tail}")
+}
+
+/// Whether what was said is just a short answer ("go", "sure", "continue")
+/// with no word that asks for something new.
+pub fn is_only_a_reply(heard: &str) -> bool {
+    let lowered = heard.to_lowercase().replace('\u{2019}', "'");
+    let words: Vec<&str> = lowered
+        .split(|c: char| !c.is_alphanumeric() && c != '\'')
+        .filter(|word| !word.is_empty())
+        .collect();
+    if words.is_empty() || words.len() > 5 {
+        return false;
+    }
+    const ASKS_FOR_NEW: [&str; 11] = [
+        "new", "start", "create", "open", "launch", "kick", "spin", "another", "separate", "fresh",
+        "session",
+    ];
+    !words
+        .iter()
+        .any(|word| ASKS_FOR_NEW.iter().any(|ask| word.starts_with(ask)))
 }
 
 pub fn now_ms() -> u64 {
@@ -79,10 +145,15 @@ pub fn now_ms() -> u64 {
 /// Sessions read in a row before the backend is told to answer from what it has.
 const READS_PER_WINDOW: usize = 5;
 const READ_WINDOW_MS: u64 = 30_000;
-const READ_DEFAULT: usize = 6;
-const READ_MAX: usize = 20;
-const READ_MESSAGE_CHARS: usize = 1200;
-const READ_TOTAL_CHARS: usize = 6000;
+const READ_DEFAULT: usize = 3;
+const READ_MAX: usize = 10;
+/// What the developer asked: the start says what it was.
+const READ_YOU_CHARS: usize = 700;
+/// How a turn ended: the end holds the result or the question.
+const READ_IT_CHARS: usize = 1800;
+const READ_TOTAL_CHARS: usize = 7000;
+const SEARCH_LIMIT: usize = 8;
+const MATCH_CHARS: usize = 240;
 
 impl Tools {
     pub fn new(host: Arc<dyn VoiceHost>) -> Self {
@@ -107,7 +178,13 @@ impl Tools {
             reads: Mutex::default(),
             touched: Mutex::default(),
             roots: Vec::new(),
+            heard: Mutex::default(),
         }
+    }
+
+    /// What the developer said last, for checks that need their own words.
+    pub fn hear(&self, text: &str) {
+        *self.heard.lock().unwrap() = text.to_owned();
     }
 
     /// Runs one tool. Whatever happens, the answer is JSON the model can read.
@@ -119,6 +196,8 @@ impl Tools {
             "interrupt_session" => self.interrupt(args),
             "edit_last_message" => self.edit_last(args),
             "start_session" => self.start(args),
+            "search_history" => self.search(args),
+            "close_session" => self.close(args),
             "watch_session" => self.watch(args),
             "end_call" => Ok(
                 json!({"ok": true, "note": "the call ends in a few seconds: say a short goodbye"}),
@@ -249,25 +328,80 @@ impl Tools {
         }
         let id = self.resolve(args)?;
         let count = args
-            .get("last_n")
+            .get("turns")
+            .or_else(|| args.get("last_n"))
             .and_then(Value::as_u64)
             .map_or(READ_DEFAULT, |n| (n as usize).clamp(1, READ_MAX));
-        let messages = self.host.recent_messages(&id, count)?;
-        let mut total = 0;
+        let turns = self.host.recent_turns(&id, count)?;
+        // The newest turns matter most: when the total is too long, the oldest go.
         let mut kept: Vec<Value> = Vec::new();
-        for message in &messages {
-            let text: String = message.text.chars().take(READ_MESSAGE_CHARS).collect();
-            total += text.len();
-            if total > READ_TOTAL_CHARS {
+        let mut total = 0;
+        for turn in turns.iter().rev() {
+            let you = clip_start(&turn.you, READ_YOU_CHARS);
+            let it = clip_end(&turn.it, READ_IT_CHARS);
+            total += you.len() + it.len();
+            if total > READ_TOTAL_CHARS && !kept.is_empty() {
                 break;
             }
-            kept.push(json!({"role": message.role, "text": text}));
+            kept.push(json!({"you": you, "it": it}));
         }
-        let messages = kept;
-        if let Some(info) = self.host.infos().iter().find(|info| info.id == id) {
+        kept.reverse();
+        let infos = self.host.infos();
+        let info = infos.iter().find(|info| info.id == id);
+        if let Some(info) = info {
             self.seen.lock().unwrap().told(&id, &info.tail);
         }
-        Ok(json!({ "messages": messages }))
+        let mut out = json!({ "turns": kept });
+        if let Some(info) = info {
+            out["title"] = json!(info.title);
+            if info.busy() {
+                out["still_working"] =
+                    json!("the last turn is not finished: its \"it\" is only what it said so far");
+            }
+        }
+        if kept.is_empty() {
+            out["note"] = json!("nothing has been said in this session yet");
+        }
+        Ok(out)
+    }
+
+    fn search(&self, args: &Value) -> Result<Value> {
+        let query = Self::text(args, "query")?;
+        let (hits, note) = self.host.search_history(&query, SEARCH_LIMIT)?;
+        let now = (self.clock)();
+        let mut handles = self.handles.lock().unwrap();
+        let results: Vec<Value> = hits
+            .iter()
+            .map(|hit| {
+                let mut row = json!({
+                    "id": handles.handle(&hit.id),
+                    "title": hit.title,
+                    "folder": hit.cwd.file_name().map(|name| name.to_string_lossy().into_owned()),
+                    "last_active": digest::ago(now, hit.updated_ms),
+                });
+                if !hit.snippet.trim().is_empty() {
+                    row["matched"] = json!(clip_start(
+                        &hit.snippet.split_whitespace().collect::<Vec<_>>().join(" "),
+                        MATCH_CHARS
+                    ));
+                }
+                row
+            })
+            .collect();
+        let mut out = json!({ "sessions": results });
+        if let Some(note) = note {
+            out["note"] = json!(note);
+        } else if hits.is_empty() {
+            out["note"] = json!("nothing in the history matches; try other words from the conversation or its title");
+        }
+        Ok(out)
+    }
+
+    fn close(&self, args: &Value) -> Result<Value> {
+        let id = self.resolve(args)?;
+        let done = self.host.close(&id)?;
+        self.watches.lock().unwrap().retain(|watch| watch.id != id);
+        Ok(json!({"ok": true, "note": done}))
     }
 
     fn send(&self, args: &Value) -> Result<Value> {
@@ -293,6 +427,10 @@ impl Tools {
     }
 
     fn start(&self, args: &Value) -> Result<Value> {
+        let heard = self.heard.lock().unwrap().clone();
+        if is_only_a_reply(&heard) {
+            bail!("the developer only said \"{}\": that answers the session being discussed, it is not a request for a new one. Send those words to that session with send_message, and do not start anything", heard.trim());
+        }
         let folder = Self::text(args, "folder")?;
         let task = Self::text(args, "task")?;
         let cwd = self.resolve_folder(&folder)?;
@@ -500,7 +638,7 @@ impl Tools {
 
     /// Whether a tool only looks and never changes anything.
     pub fn is_read_only(name: &str) -> bool {
-        matches!(name, "list_sessions" | "read_session")
+        matches!(name, "list_sessions" | "read_session" | "search_history")
     }
 
     /// Whether anything is being watched, which keeps a quiet call open.
@@ -579,6 +717,7 @@ pub(crate) mod fake {
         pub infos: Mutex<Vec<Info>>,
         pub log: Mutex<Vec<String>>,
         pub fail: Mutex<Option<String>>,
+        pub hits: Mutex<Vec<HistoryHit>>,
     }
 
     impl FakeHost {
@@ -602,18 +741,30 @@ pub(crate) mod fake {
         fn infos(&self) -> Vec<Info> {
             self.infos.lock().unwrap().clone()
         }
-        fn recent_messages(&self, id: &str, count: usize) -> Result<Vec<Message>> {
-            self.record(format!("read {id} {count}"))?;
+        fn recent_turns(&self, id: &str, turns: usize) -> Result<Vec<Turn>> {
+            self.record(format!("read {id} {turns}"))?;
             Ok(vec![
-                Message {
-                    role: "user".into(),
-                    text: "Run the benchmark.".into(),
+                Turn {
+                    you: "Run the benchmark.".into(),
+                    it: "x".repeat(3000),
                 },
-                Message {
-                    role: "assistant".into(),
-                    text: "x".repeat(3000),
+                Turn {
+                    you: "y".repeat(2000),
+                    it: "Done. Want me to merge it?".into(),
                 },
             ])
+        }
+        fn search_history(
+            &self,
+            query: &str,
+            limit: usize,
+        ) -> Result<(Vec<HistoryHit>, Option<String>)> {
+            self.record(format!("search {query} {limit}"))?;
+            Ok((self.hits.lock().unwrap().clone(), None))
+        }
+        fn close(&self, id: &str) -> Result<String> {
+            self.record(format!("close {id}"))?;
+            Ok("stopped it and removed it from Agent View".into())
         }
         fn send(&self, id: &str, text: &str) -> Result<()> {
             self.record(format!("send {id} {text}"))
@@ -755,21 +906,106 @@ mod tests {
     }
 
     #[test]
-    fn reading_trims_long_messages_and_defaults_to_six() {
+    fn reading_gives_what_was_asked_and_how_each_turn_ended() {
         let (host, tools) = tools(two());
         tools.run("list_sessions", &json!({}));
         let read = tools.run("read_session", &json!({"id": "s1"}));
-        assert_eq!(host.log.lock().unwrap()[0], "read opencode:host:a 6");
+        assert_eq!(host.log.lock().unwrap()[0], "read opencode:host:a 3");
+        // The request keeps its start, a long ending keeps its end.
+        let first = &read["turns"][0];
+        assert_eq!(first["you"], "Run the benchmark.");
+        let it = first["it"].as_str().unwrap();
+        assert_eq!(it.chars().count(), READ_IT_CHARS + 1);
+        assert!(it.starts_with('…'));
+        let second = &read["turns"][1];
         assert_eq!(
-            read["messages"][1]["text"]
-                .as_str()
-                .unwrap()
-                .chars()
-                .count(),
-            1200
+            second["you"].as_str().unwrap().chars().count(),
+            READ_YOU_CHARS + 1
         );
-        tools.run("read_session", &json!({"id": "s1", "last_n": 500}));
-        assert_eq!(host.log.lock().unwrap()[1], "read opencode:host:a 20");
+        assert_eq!(second["it"], "Done. Want me to merge it?");
+        assert!(read.get("messages").is_none());
+        tools.run("read_session", &json!({"id": "s1", "turns": 500}));
+        assert_eq!(host.log.lock().unwrap()[1], "read opencode:host:a 10");
+        tools.run("read_session", &json!({"id": "s1", "turns": 0}));
+        assert_eq!(host.log.lock().unwrap()[2], "read opencode:host:a 1");
+    }
+
+    #[test]
+    fn a_session_still_working_says_its_last_turn_is_unfinished() {
+        let (_, tools) = tools(two());
+        tools.run("list_sessions", &json!({}));
+        let working = tools.run("read_session", &json!({"id": "s2"}));
+        assert!(working["still_working"].is_string());
+        let waiting = tools.run("read_session", &json!({"id": "s1"}));
+        assert!(waiting.get("still_working").is_none());
+    }
+
+    #[test]
+    fn searching_the_history_hands_out_ids_the_other_tools_accept() {
+        let (host, tools) = tools(two());
+        host.hits.lock().unwrap().push(HistoryHit {
+            id: "opencode:host:ses_old".into(),
+            title: "library digitization pilot".into(),
+            cwd: PathBuf::from("/work/digitalization"),
+            updated_ms: 1_000_000,
+            snippet: "the  pilot\nwith tokens".into(),
+        });
+        let found = tools.run("search_history", &json!({"query": "digitization pilot"}));
+        assert_eq!(host.log.lock().unwrap()[0], "search digitization pilot 8");
+        let row = &found["sessions"][0];
+        assert_eq!(row["title"], "library digitization pilot");
+        assert_eq!(row["folder"], "digitalization");
+        assert_eq!(row["matched"], "the pilot with tokens");
+        let handle = row["id"].as_str().unwrap();
+        tools.run("send_message", &json!({"id": handle, "text": "continue"}));
+        assert_eq!(
+            host.log.lock().unwrap()[1],
+            "send opencode:host:ses_old continue"
+        );
+        host.hits.lock().unwrap().clear();
+        let none = tools.run("search_history", &json!({"query": "zebra"}));
+        assert!(none["note"].as_str().unwrap().contains("nothing"));
+        assert!(tools.run("search_history", &json!({}))["error"].is_string());
+    }
+
+    #[test]
+    fn closing_a_session_stops_it_and_drops_its_watch() {
+        let (host, tools) = tools(two());
+        tools.run("list_sessions", &json!({}));
+        tools.run("watch_session", &json!({"id": "s2"}));
+        assert!(tools.watching());
+        let closed = tools.run("close_session", &json!({"id": "s2"}));
+        assert_eq!(closed["ok"], true);
+        assert_eq!(
+            host.log.lock().unwrap().last().unwrap(),
+            "close opencode:host:b"
+        );
+        assert!(!tools.watching());
+    }
+
+    #[test]
+    fn a_short_answer_never_starts_a_session() {
+        let (host, tools) = tools(two());
+        for said in ["go", "Continue.", "sure", "yes, go ahead", "ok do it"] {
+            tools.hear(said);
+            let refused = tools.run("start_session", &json!({"folder": "same", "task": "do it"}));
+            assert!(
+                refused["error"].as_str().unwrap().contains("send_message"),
+                "{said}: {refused}"
+            );
+        }
+        assert!(host.log.lock().unwrap().is_empty());
+        // Asking for one still works, short or long.
+        for said in [
+            "start a new session",
+            "open another one in arca",
+            "Please kick off a session in this folder that researches pricing",
+            "run the benchmark in a new session",
+        ] {
+            tools.hear(said);
+            let started = tools.run("start_session", &json!({"folder": "same", "task": "x"}));
+            assert_eq!(started["ok"], true, "{said}: {started}");
+        }
     }
 
     #[test]
@@ -779,7 +1015,7 @@ mod tests {
         for _ in 0..READS_PER_WINDOW {
             assert!(tools
                 .run("read_session", &json!({"id": "s1"}))
-                .get("messages")
+                .get("turns")
                 .is_some());
         }
         let refused = tools.run("read_session", &json!({"id": "s2"}));

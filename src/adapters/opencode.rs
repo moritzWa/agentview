@@ -445,6 +445,21 @@ impl ProviderController for OpenCodeController {
             .recent_messages(&owned.id, count)
     }
 
+    fn force_interrupt(&self, session: &AgentSession) -> Result<()> {
+        self.supervisor
+            .as_ref()
+            .context("managed OpenCode control is not configured")?
+            .abort_any(&session.provider_session_id, &session.cwd)
+    }
+
+    fn recent_turns(
+        &self,
+        session: &AgentSession,
+        turns: usize,
+    ) -> Result<Vec<super::opencode_db::SessionTurn>> {
+        super::opencode_db::recent_turns(&self.executable, &session.provider_session_id, turns)
+    }
+
     fn edit_last_message(&self, session: &AgentSession, text: &str) -> Result<ControlOutcome> {
         let owned = self.require_owned(session)?;
         self.supervisor

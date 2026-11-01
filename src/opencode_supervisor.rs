@@ -711,6 +711,17 @@ impl OpenCodeSupervisor {
         self.request_empty(&record, "POST", &path, Some(&json!({})))
     }
 
+    /// Stops the turn of any session the live server runs, one this dashboard
+    /// started or not. Never starts a server.
+    pub fn abort_any(&self, session_id: &str, cwd: &Path) -> Result<()> {
+        let record = self.required_live_record()?;
+        let path = with_directory_query(
+            &format!("/session/{}/abort", url_path_segment(session_id)),
+            cwd,
+        );
+        self.request_empty(&record, "POST", &path, Some(&json!({})))
+    }
+
     /// The last `count` user and assistant messages that have text, oldest first.
     pub fn recent_messages(&self, session_id: &str, count: usize) -> Result<Vec<SessionMessage>> {
         let record = self.required_live_record()?;

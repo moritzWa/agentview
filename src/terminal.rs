@@ -214,9 +214,13 @@ pub fn run_dashboard(
     let (migration_tx, migration_rx) = mpsc::channel::<MigrationWorkerResult>();
     let (restorable_tx, restorable_rx) = mpsc::channel::<(Vec<RestorableSession>, Vec<String>)>();
     let (history_worker, history_index_rx) = crate::history_index::Worker::start(control.clone());
-    let voice_host = control
-        .provider_io_enabled()
-        .then(|| crate::voice::host::DashboardHost::new(control.clone(), paused_sessions.clone()));
+    let voice_host = control.provider_io_enabled().then(|| {
+        crate::voice::host::DashboardHost::new(
+            control.clone(),
+            paused_sessions.clone(),
+            hidden_sessions.clone(),
+        )
+    });
     if let Some(host) = &voice_host {
         host.set_refresher(
             refresh_tx.clone(),

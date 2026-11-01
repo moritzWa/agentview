@@ -24,17 +24,17 @@
   {
     "type": "function",
     "name": "read_session",
-    "description": "Read the last messages of one session.",
+    "description": "Read the last few exchanges of one session: for each, what the developer asked and how the agent ended its turn (its final reply). Tool calls, scripts and the narration in between are left out. Works for any session, old ones too.",
     "parameters": {
       "type": "object",
       "properties": {
         "id": {
           "type": "string",
-          "description": "A session id from list_sessions or start_session, \"this\" for the session on screen, \"it\" for the one just discussed, or part of its title."
+          "description": "A session id from list_sessions, search_history or start_session, \"this\" for the session on screen, \"it\" for the one just discussed, or part of its title."
         },
-        "last_n": {
+        "turns": {
           "type": "integer",
-          "description": "How many messages, default 6."
+          "description": "How many exchanges, 1 to 10, default 3. Two or three is usually enough."
         }
       },
       "required": [
@@ -46,13 +46,13 @@
   {
     "type": "function",
     "name": "send_message",
-    "description": "Add a message to a session, as if the developer had typed it. A busy session queues it behind what it is doing; this does not stop or change the work in progress (use interrupt_session to stop it, edit_last_message to change what it was just asked). This is also how to retry or continue a session whose last turn failed: send \"continue\".",
+    "description": "Add a message to a session, as if the developer had typed it. A busy session queues it behind what it is doing; this does not stop or change the work in progress (use interrupt_session to stop it, edit_last_message to change what it was just asked). This is also how to answer a session: when the developer says \"go\", \"sure\", \"continue\", \"yes\" or \"do it\", send exactly those words to the session that last asked or proposed something. Sessions found by search_history can be messaged too.",
     "parameters": {
       "type": "object",
       "properties": {
         "id": {
           "type": "string",
-          "description": "A session id from list_sessions or start_session, \"this\" for the session on screen, \"it\" for the one just discussed, or part of its title."
+          "description": "A session id from list_sessions, search_history or start_session, \"this\" for the session on screen, \"it\" for the one just discussed, or part of its title."
         },
         "text": {
           "type": "string"
@@ -74,7 +74,7 @@
       "properties": {
         "id": {
           "type": "string",
-          "description": "A session id from list_sessions or start_session, \"this\" for the session on screen, \"it\" for the one just discussed, or part of its title."
+          "description": "A session id from list_sessions, search_history or start_session, \"this\" for the session on screen, \"it\" for the one just discussed, or part of its title."
         }
       },
       "required": [
@@ -92,7 +92,7 @@
       "properties": {
         "id": {
           "type": "string",
-          "description": "A session id from list_sessions or start_session, \"this\" for the session on screen, \"it\" for the one just discussed, or part of its title."
+          "description": "A session id from list_sessions, search_history or start_session, \"this\" for the session on screen, \"it\" for the one just discussed, or part of its title."
         },
         "text": {
           "type": "string"
@@ -108,7 +108,7 @@
   {
     "type": "function",
     "name": "start_session",
-    "description": "Start a brand new session in a folder with a first task. Never use it to retry, restart, recover or continue an existing session: use send_message for that. folder is a path, a folder name the developer has used, or \"same\" for the folder of the session being discussed.",
+    "description": "Start a brand new session in a folder with a first task. Only when the developer asks for a new or separate session. Never use it to answer, continue or carry out what an existing session proposed (\"go\", \"sure\", \"continue\", \"yes\" go to that session with send_message), and never to retry, restart or recover a session. folder is a path, a folder name the developer has used, or \"same\" for the folder of the session being discussed.",
     "parameters": {
       "type": "object",
       "properties": {
@@ -128,6 +128,42 @@
   },
   {
     "type": "function",
+    "name": "search_history",
+    "description": "Find a session anywhere in the history, including old ones that are no longer in list_sessions and what was said inside them (like Cmd+G in OpenCode). Use ordinary words from its title or conversation. Returns up to 8 sessions, best match first, with an id that read_session, send_message and close_session accept.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "Words to look for, such as \"library digitization pilot\" or \"semantic search benchmark\"."
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "close_session",
+    "description": "Close a session: stop what it is doing and remove it from Agent View, the developer's list of sessions in focus. Its history is kept and search_history can still find it. Use when the developer says close, kill, remove, get rid of, clean up or dismiss a session.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "A session id from list_sessions, search_history or start_session, \"this\" for the session on screen, \"it\" for the one just discussed, or part of its title."
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
     "name": "watch_session",
     "description": "Tell the developer when a session finishes or needs them.",
     "parameters": {
@@ -135,7 +171,7 @@
       "properties": {
         "id": {
           "type": "string",
-          "description": "A session id from list_sessions or start_session, \"this\" for the session on screen, \"it\" for the one just discussed, or part of its title."
+          "description": "A session id from list_sessions, search_history or start_session, \"this\" for the session on screen, \"it\" for the one just discussed, or part of its title."
         },
         "until": {
           "type": "string",

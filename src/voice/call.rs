@@ -486,6 +486,8 @@ mod tests {
                 "interrupt_session",
                 "edit_last_message",
                 "start_session",
+                "search_history",
+                "close_session",
                 "watch_session",
                 "end_call"
             ]
