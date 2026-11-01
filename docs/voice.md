@@ -24,10 +24,23 @@ refreshing then.
 
 - "Which sessions need me?" The voice already knows the state of the sessions
   you are working in, so it answers at once.
-- "What did the semantic search one last say?" It reads the last messages of
-  that session and tells you the gist.
+- "What did the semantic search one last say?" It reads the last few exchanges
+  of that session: for each, what you asked and how the agent ended its turn
+  (its final reply). Tool calls, scripts and the narration between them are
+  left out. Two or three exchanges by default, up to ten when you ask for more.
+- "Find the session where we talked about library digitization." It searches
+  the whole history, old sessions and what was said inside them, like Cmd+G in
+  OpenCode, and can then read, message or close what it finds.
 - "Tell it to go with option two." It sends your words to that session, as if
   you had typed them. A busy session queues the message.
+- "Go", "continue", "sure", "yes". A short answer goes, word for word, to the
+  session that last asked or proposed something. It never starts new sessions to
+  carry out what a session proposed: that session does the work once it hears
+  "go". The voice also refuses to start a session when all you said was a short
+  answer.
+- "Close the naming session." It stops the session if it is running and removes
+  it from Agent View, your list of sessions in focus. The history is kept, and
+  Ctrl+G restores it.
 - "Stop that one." Same as pressing Escape in OpenCode.
 - "Tell it to continue." A session whose last turn failed takes a message to
   retry. The voice never starts a new session to recover another.
@@ -125,9 +138,11 @@ tried, so a bigger model buys quality, not speed.
 
 ## When something goes wrong
 
-Every call leaves `~/.local/state/agentview/voice/last-call.log`: the events,
-tool names and timings of the last call, with no words in it. If a call did not
-connect, it says how far it got.
+Every call leaves `~/.local/state/agentview/voice/last-call.log` (owner-only):
+how far it connected, every line either side said, and each tool call with its
+arguments, result and time. The ten calls before it are kept in `calls/`. It is
+the first place to look when the voice misunderstood you: it shows what was
+transcribed and which tool it picked.
 
 A voice tab left open from an earlier version is told to close (it shows "not
 needed") and cannot take over a call. While a call is on inside a session's own

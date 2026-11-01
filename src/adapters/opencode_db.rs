@@ -244,6 +244,127 @@ fn has_table(db: &Connection, name: &str) -> Result<bool> {
     )?)
 }
 
+/// One exchange of a session: what the person wrote and how the agent ended
+/// its turn. Tool calls, scripts and the narration between them are left out.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SessionTurn {
+    pub you: String,
+    pub it: String,
+}
+
+/// The last `turns` exchanges of a session, oldest first, read straight from
+/// OpenCode's database: any session, owned or not, with its full history.
+pub(crate) fn recent_turns(
+    executable: &str,
+    session_id: &str,
+    turns: usize,
+) -> Result<Vec<SessionTurn>> {
+    let (db, _) = open_read_only(executable)?;
+    db.busy_timeout(Duration::from_secs(2))?;
+    let mut limit = 240_i64;
+    loop {
+        let (rows, raw) = text_rows(&db, session_id, limit)?;
+        let found = turns_from_rows(&rows);
+        let exhausted = raw < limit || limit >= 4_000;
+        // One more than asked for: the oldest may have lost its question.
+        if found.len() > turns || exhausted {
+            let skip = found.len().saturating_sub(turns);
+            return Ok(found.into_iter().skip(skip).collect());
+        }
+        limit *= 4;
+    }
+}
+
+struct TextRow {
+    role: String,
+    text: String,
+}
+
+/// Text of the newest `limit` messages, one row per message, oldest first,
+/// and how many messages that was. Reads the tables themselves: the
+/// compatibility views are too slow to plan for a lookup in one session.
+fn text_rows(db: &Connection, session_id: &str, limit: i64) -> Result<(Vec<TextRow>, i64)> {
+    let in_v2 = has_table(db, "session_v2")?
+        && db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM main.session_v2 WHERE id = ?1)",
+            [session_id],
+            |row| row.get::<_, bool>(0),
+        )?;
+    let mut rows: Vec<TextRow> = Vec::new();
+    if in_v2 {
+        let mut statement = db.prepare(
+            "SELECT type,
+                    CASE type WHEN 'user' THEN json_extract(data, '$.text')
+                    ELSE (SELECT group_concat(json_extract(c.value, '$.text'), char(10))
+                          FROM json_each(data, '$.content') c
+                          WHERE json_extract(c.value, '$.type') = 'text') END
+             FROM main.session_message
+             WHERE session_id = ?1 AND type IN ('user', 'assistant')
+             ORDER BY seq DESC LIMIT ?2",
+        )?;
+        let mut query = statement.query(rusqlite::params![session_id, limit])?;
+        while let Some(row) = query.next()? {
+            rows.push(TextRow {
+                role: row.get(0)?,
+                text: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+            });
+        }
+    } else if has_table(db, "message")? && has_table(db, "part")? {
+        let mut messages = db.prepare(
+            "SELECT id, json_extract(data, '$.role') FROM main.message
+             WHERE session_id = ?1 ORDER BY time_created DESC, id DESC LIMIT ?2",
+        )?;
+        let mut parts = db.prepare(
+            "SELECT json_extract(data, '$.text') FROM main.part
+             WHERE message_id = ?1 AND json_extract(data, '$.type') = 'text'
+               AND COALESCE(json_extract(data, '$.synthetic'), 0) = 0
+             ORDER BY id",
+        )?;
+        let mut query = messages.query(rusqlite::params![session_id, limit])?;
+        while let Some(row) = query.next()? {
+            let id: String = row.get(0)?;
+            let role: Option<String> = row.get(1)?;
+            let text = parts
+                .query_map([&id], |part| part.get::<_, Option<String>>(0))?
+                .filter_map(|part| part.ok().flatten())
+                .map(|text| text.trim().to_owned())
+                .filter(|text| !text.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n");
+            rows.push(TextRow {
+                role: role.unwrap_or_default(),
+                text,
+            });
+        }
+    }
+    let raw = rows.len() as i64;
+    rows.reverse();
+    Ok((rows, raw))
+}
+
+fn turns_from_rows(rows: &[TextRow]) -> Vec<SessionTurn> {
+    let mut turns: Vec<SessionTurn> = Vec::new();
+    for row in rows {
+        let text = row.text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        match row.role.as_str() {
+            "user" => turns.push(SessionTurn {
+                you: text.to_owned(),
+                it: String::new(),
+            }),
+            "assistant" => {
+                if let Some(turn) = turns.last_mut() {
+                    turn.it = text.to_owned();
+                }
+            }
+            _ => {}
+        }
+    }
+    turns
+}
+
 /// Shared local read path for callers that previously spawned `opencode db`.
 /// The boolean identifies V2-capable stores; the returned connection already
 /// has the V1/V2 projections installed. No server is started and the connection
@@ -950,6 +1071,85 @@ mod tests {
         assert_eq!(value["messages"][1]["parts"][0]["text"], "answer");
         assert_eq!(value["messages"][1]["parts"].as_array().unwrap().len(), 1);
         assert_eq!(inner.requests.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn turns_pair_what_was_asked_with_how_the_agent_ended_without_tool_noise() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = Connection::open(dir.path().join("t.db")).unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE session_v2(id TEXT PRIMARY KEY, title TEXT, project_id TEXT,
+                directory TEXT, parent_id TEXT, fork_session_id TEXT,
+                time_created INTEGER, time_updated INTEGER, time_archived INTEGER);
+            CREATE TABLE session_message(id TEXT PRIMARY KEY, session_id TEXT, type TEXT,
+                seq INTEGER, time_created INTEGER, time_updated INTEGER, data TEXT);
+            INSERT INTO session_v2 VALUES ('s', 'T', 'p', '/work', NULL, NULL, 1, 2, NULL);
+            INSERT INTO session_message VALUES
+              ('u1', 's', 'user', 1, 1, 1, '{"text":"first ask"}'),
+              ('a1', 's', 'assistant', 2, 2, 2,
+               '{"content":[{"type":"text","text":"narration one"},{"type":"tool","name":"read","state":{"status":"completed"}}]}'),
+              ('a2', 's', 'assistant', 3, 3, 3,
+               '{"content":[{"type":"reasoning","text":"private"},{"type":"tool","name":"shell","state":{"status":"completed"}}]}'),
+              ('a3', 's', 'assistant', 4, 4, 4,
+               '{"content":[{"type":"text","text":"first result"}]}'),
+              ('sy', 's', 'synthetic', 5, 5, 5, '{"text":"[background shell] exited"}'),
+              ('u2', 's', 'user', 6, 6, 6, '{"text":"go"}'),
+              ('b1', 's', 'assistant', 7, 7, 7,
+               '{"content":[{"type":"text","text":"part A"},{"type":"tool","name":"x","state":{}},{"type":"text","text":"part B"}]}');
+            "#,
+        )
+        .unwrap();
+        install_compatibility_views(&conn).unwrap();
+        let (rows, raw) = text_rows(&conn, "s", 100).unwrap();
+        assert_eq!(raw, 6);
+        let turns = turns_from_rows(&rows);
+        assert_eq!(
+            turns,
+            vec![
+                SessionTurn {
+                    you: "first ask".into(),
+                    it: "first result".into()
+                },
+                SessionTurn {
+                    you: "go".into(),
+                    it: "part A\npart B".into()
+                },
+            ]
+        );
+        // A window that starts mid-turn does not invent a question.
+        let (rows, raw) = text_rows(&conn, "s", 3).unwrap();
+        assert_eq!(raw, 3);
+        let turns = turns_from_rows(&rows);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].you, "go");
+    }
+
+    #[test]
+    fn turns_are_read_from_a_v1_store_too() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE message(id TEXT, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);
+            CREATE TABLE part(id TEXT, message_id TEXT, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);
+            INSERT INTO message VALUES ('m1','s',1,1,'{"role":"user"}'),('m2','s',2,2,'{"role":"assistant"}'),
+                                       ('m3','s',3,3,'{"role":"assistant"}'),('x','other',4,4,'{"role":"user"}');
+            INSERT INTO part VALUES ('p1','m1','s',1,1,'{"type":"text","text":"ask"}'),
+                ('p2','m2','s',2,2,'{"type":"tool","tool":"read"}'),
+                ('p3','m3','s',3,3,'{"type":"text","text":"result"}'),
+                ('p4','x','other',4,4,'{"type":"text","text":"not mine"}');
+            "#,
+        )
+        .unwrap();
+        let (rows, raw) = text_rows(&conn, "s", 50).unwrap();
+        assert_eq!(raw, 3);
+        assert_eq!(
+            turns_from_rows(&rows),
+            vec![SessionTurn {
+                you: "ask".into(),
+                it: "result".into()
+            }]
+        );
     }
 
     #[test]

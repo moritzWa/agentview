@@ -38,6 +38,11 @@ subprocess.run(["ffmpeg", "-y", "-loglevel", "error", *inputs, "-filter_complex"
                 "-ar", "48000", "-ac", "1", "-sample_fmt", "s16", f"{tmp}/mic.wav"], check=True)
 
 env = dict(os.environ, AGENTVIEW_OPENAI_API_KEY=key, TERM="xterm-256color")
+# Keep the call logs and perf trace of a test out of the real ones.
+_scratch = os.path.join(os.environ.get("TMPDIR", "/tmp"), "voice-e2e-state")
+os.makedirs(_scratch, exist_ok=True)
+env["AGENTVIEW_VOICE_STATE_DIR"] = _scratch
+env["AGENTVIEW_PERF_LOG"] = os.path.join(_scratch, "perf.log")
 if use_driver:
     env["AGENTVIEW_VOICE_NO_BROWSER"] = "1"
 else:

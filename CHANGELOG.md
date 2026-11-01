@@ -25,6 +25,14 @@ and released versions are intended to follow Semantic Versioning.
   Ctrl+] start and end a call. The voice knows which session is selected or
   open, and ends the call when you say goodbye.
 
+- Voice Mode: a short answer ("go", "continue", "sure") now goes to the session
+  that asked, word for word, instead of being turned into a plan the voice
+  carries out itself (it once started four sessions for one "go"). Reading a
+  session gives what you asked and how each turn ended, without tool calls.
+  New: searching the whole history (`search_history`) and closing sessions
+  (`close_session`: stops them, removes them from Agent View). Every call now
+  leaves a full log with the words, the last ten kept.
+
 - The voice key now works in a session's own view when the terminal reports it
   with lock keys on (Caps Lock, Num Lock) or as a kitty key event with extra
   fields, and Ctrl+K in the kitty encoding counts in OpenCode. Control keys that

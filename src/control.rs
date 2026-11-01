@@ -226,6 +226,25 @@ pub trait ProviderController: Send + Sync {
         bail!("{} message reading is unavailable", self.provider().label())
     }
 
+    /// Stops a session's running turn even when this dashboard did not start
+    /// the session.
+    fn force_interrupt(&self, _session: &AgentSession) -> Result<()> {
+        bail!(
+            "{} cannot stop sessions it did not start",
+            self.provider().label()
+        )
+    }
+
+    /// The last `turns` exchanges of a session: what was asked and how the
+    /// agent ended its turn, without the tool calls between.
+    fn recent_turns(
+        &self,
+        _session: &AgentSession,
+        _turns: usize,
+    ) -> Result<Vec<crate::adapters::opencode_db::SessionTurn>> {
+        bail!("{} history reading is unavailable", self.provider().label())
+    }
+
     /// Stop the running turn, rewind to before the last message sent, and send
     /// `text` in its place.
     fn edit_last_message(&self, _session: &AgentSession, _text: &str) -> Result<ControlOutcome> {
@@ -742,6 +761,23 @@ impl ControlHub {
         }
         self.controller(&session.provider)?
             .recent_messages(session, count)
+    }
+
+    pub fn force_interrupt(&self, session: &AgentSession) -> Result<()> {
+        self.ensure_provider_io()?;
+        self.controller(&session.provider)?.force_interrupt(session)
+    }
+
+    /// Reads the session's stored history, so it works for any session, owned
+    /// by this dashboard or not.
+    pub fn recent_turns(
+        &self,
+        session: &AgentSession,
+        turns: usize,
+    ) -> Result<Vec<crate::adapters::opencode_db::SessionTurn>> {
+        self.ensure_provider_io()?;
+        self.controller(&session.provider)?
+            .recent_turns(session, turns)
     }
 
     pub fn edit_last_message(&self, session: &AgentSession, text: &str) -> Result<ControlOutcome> {

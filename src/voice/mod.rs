@@ -16,4 +16,4 @@ pub mod tools;
 
 pub use call::{Line, Who};
 pub use service::{set_viewing, PanelStatus, Phase, Toggle, VoiceService};
-pub use tools::{Message, VoiceHost};
+pub use tools::{HistoryHit, Turn, VoiceHost};
