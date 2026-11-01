@@ -2186,7 +2186,7 @@ fn render_directory_picker(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Span::styled(" search  ", Style::default().fg(palette().dim)),
         if app.directory_filter.is_empty() {
             Span::styled(
-                "type part of a folder name, or a path like ~/Code/app",
+                "type part of a folder name, or a path like ~/Code/app (new folders are created)",
                 Style::default().fg(palette().dim),
             )
         } else {
@@ -2212,7 +2212,13 @@ fn render_directory_picker(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 .map(|(index, path)| {
                     let selected = index == app.directory_selection;
                     let label = sanitize_inline(&display_directory(path, home.as_deref()));
-                    let label = truncate(&label, inner_width.saturating_sub(3).max(1));
+                    let suffix = if path.exists() { "" } else { "  (new folder)" };
+                    let label = truncate(
+                        &label,
+                        inner_width
+                            .saturating_sub(3 + suffix.chars().count())
+                            .max(1),
+                    ) + suffix;
                     Line::from(format!(" {} {label}", if selected { "›" } else { " " })).style(
                         if selected {
                             Style::default()

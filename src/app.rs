@@ -3238,11 +3238,14 @@ impl App {
 
     /// Candidates matching the search. A typed absolute or `~` path that
     /// names an existing folder is offered first even when it is not a known
-    /// candidate.
+    /// candidate. One that names a missing folder inside an existing one is
+    /// offered first too, and confirming it creates the folder.
     pub fn directory_choices(&self) -> Vec<PathBuf> {
         let filter = self.directory_filter.trim();
         let home = std::env::var_os("HOME").map(PathBuf::from);
-        let typed = expand_typed_directory(filter, home.as_deref()).filter(|path| path.is_dir());
+        let typed = expand_typed_directory(filter, home.as_deref()).filter(|path| {
+            path.is_dir() || (!path.exists() && path.parent().is_some_and(|parent| parent.is_dir()))
+        });
         let terms = filter
             .to_lowercase()
             .split_whitespace()
@@ -3289,6 +3292,12 @@ impl App {
         else {
             return AppAction::None;
         };
+        if !directory.exists() {
+            if let Err(error) = std::fs::create_dir(&directory) {
+                self.set_notice(format!("cannot create {}: {error}", directory.display()));
+                return AppAction::None;
+            }
+        }
         let directory = directory.canonicalize().unwrap_or(directory);
         if let Some(session_id) = self.moving_session.clone() {
             return self.confirm_move(session_id, directory);
@@ -5441,6 +5450,42 @@ mod tests {
         app.activate();
         assert_eq!(app.overlay, Overlay::Composer(ComposerMode::NewSession));
         assert_eq!(app.launch_directory(), Some(typed));
+    }
+
+    #[test]
+    fn directory_picker_creates_a_typed_folder_that_does_not_exist() {
+        let root = crate::test_support::tempfile::tempdir().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        let created = root.join("digitalization");
+        let mut app = app_with(vec![session("one", SessionState::Working)]);
+
+        app.start_new_session(None);
+        app.open_directory_picker();
+        for character in created.display().to_string().chars() {
+            app.push_input(character);
+        }
+        assert_eq!(app.directory_choices().first(), Some(&created));
+        assert!(!created.exists());
+        app.activate();
+
+        assert!(created.is_dir());
+        assert_eq!(app.launch_directory(), Some(created));
+    }
+
+    #[test]
+    fn directory_picker_does_not_offer_a_folder_under_a_missing_parent() {
+        let root = crate::test_support::tempfile::tempdir().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        let typo = root.join("missing").join("digitalization");
+        let mut app = app_with(vec![session("one", SessionState::Working)]);
+
+        app.open_directory_picker();
+        for character in typo.display().to_string().chars() {
+            app.push_input(character);
+        }
+        assert!(app.directory_choices().is_empty());
+        assert_eq!(app.activate(), AppAction::None);
+        assert!(!typo.exists());
     }
 
     #[test]
