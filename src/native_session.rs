@@ -981,6 +981,11 @@ fn bridge_session(
                 }
                 std::cmp::Ordering::Equal => {}
                 std::cmp::Ordering::Greater => {
+                    if VOICE_HOOK.get().is_some() {
+                        if let Some(keys) = key_trace(&input[..read as usize]) {
+                            crate::perf!("voicekey", "key={session_key} bytes={keys}");
+                        }
+                    }
                     for action in parser.push(&input[..read as usize]) {
                         match action {
                             InputAction::Forward(bytes) => {
@@ -2000,7 +2005,9 @@ struct DetachParser {
     voice: bool,
 }
 
-/// Cmd+K as a terminal with the kitty keyboard protocol reports it.
+/// The voice key as a terminal with the kitty keyboard protocol reports it:
+/// Cmd+K, and where `ctrl_too` (a provider that leaves Ctrl+K free) Ctrl+K.
+/// Lock keys, key release and the extra fields some terminals add are allowed.
 enum CmdK {
     Press(usize),
     Release(usize),
@@ -2008,8 +2015,9 @@ enum CmdK {
     No,
 }
 
-fn cmd_k(input: &[u8]) -> CmdK {
-    const HEAD: &[u8] = b"\x1b[107;9";
+fn cmd_k(input: &[u8], ctrl_too: bool) -> CmdK {
+    const HEAD: &[u8] = b"\x1b[107";
+    const LONGEST: usize = 32;
     if input.len() < HEAD.len() {
         return if HEAD.starts_with(input) {
             CmdK::Partial
@@ -2020,19 +2028,43 @@ fn cmd_k(input: &[u8]) -> CmdK {
     if !input.starts_with(HEAD) {
         return CmdK::No;
     }
-    let tail = &input[HEAD.len()..];
-    let event = |bytes: &[u8]| bytes.iter().all(|b| matches!(b, b':' | b'0'..=b'9'));
-    match tail.iter().position(|byte| *byte == b'u') {
-        Some(end) if event(&tail[..end]) => {
-            let length = HEAD.len() + end + 1;
-            if &tail[..end] == b":3" {
-                CmdK::Release(length)
-            } else {
-                CmdK::Press(length)
-            }
-        }
-        None if tail.len() < 6 && event(tail) => CmdK::Partial,
-        _ => CmdK::No,
+    let rest = &input[HEAD.len()..];
+    let Some(end) = rest.iter().position(|byte| *byte == b'u') else {
+        let all_params = rest.iter().all(|b| matches!(b, b':' | b';' | b'0'..=b'9'));
+        return if all_params && rest.len() < LONGEST {
+            CmdK::Partial
+        } else {
+            CmdK::No
+        };
+    };
+    let Ok(params) = std::str::from_utf8(&rest[..end]) else {
+        return CmdK::No;
+    };
+    let length = HEAD.len() + end + 1;
+    let mut fields = params.split(';');
+    // What follows `107` is only alternate-key subfields (`:75`), not more digits.
+    let key = fields.next().unwrap_or_default();
+    if !(key.is_empty() || key.starts_with(':')) {
+        return CmdK::No;
+    }
+    let Some(modifiers) = fields.next() else {
+        return CmdK::No;
+    };
+    let mut parts = modifiers.split(':');
+    let Some(mask) = parts.next().and_then(|m| m.parse::<u32>().ok()) else {
+        return CmdK::No;
+    };
+    let event = parts.next().and_then(|e| e.parse::<u32>().ok());
+    let held = mask.saturating_sub(1);
+    let (shift, alt, ctrl, sup) = (held & 1 != 0, held & 2 != 0, held & 4 != 0, held & 8 != 0);
+    let wanted = !alt && !shift && ((sup && !ctrl) || (ctrl_too && ctrl && !sup));
+    if !wanted {
+        return CmdK::No;
+    }
+    if event == Some(3) {
+        CmdK::Release(length)
+    } else {
+        CmdK::Press(length)
     }
 }
 
@@ -2059,49 +2091,53 @@ impl DetachParser {
         let mut index = 0;
         while index < bytes.len() {
             let remaining = &bytes[index..];
-            let recognized =
-                if remaining.starts_with(SHIFT_LEFT) || remaining.starts_with(SHIFT_RIGHT) {
-                    Some((InputAction::Detach, SHIFT_LEFT.len()))
-                } else if remaining.starts_with(LEFT) {
-                    Some((InputAction::Arrow(ArrowDirection::Left, LEFT), LEFT.len()))
-                } else if remaining.starts_with(APPLICATION_LEFT) {
-                    Some((
-                        InputAction::Arrow(ArrowDirection::Left, APPLICATION_LEFT),
-                        APPLICATION_LEFT.len(),
-                    ))
-                } else if remaining.starts_with(RIGHT) {
-                    Some((
-                        InputAction::Arrow(ArrowDirection::Right, RIGHT),
-                        RIGHT.len(),
-                    ))
-                } else if remaining.starts_with(APPLICATION_RIGHT) {
-                    Some((
-                        InputAction::Arrow(ArrowDirection::Right, APPLICATION_RIGHT),
-                        APPLICATION_RIGHT.len(),
-                    ))
-                } else if self.redraws && remaining[0] == CTRL_K {
-                    // With Voice Mode, Ctrl+K starts a call and a repaint moves to Ctrl+\.
-                    Some((
-                        if self.voice {
-                            InputAction::Voice
-                        } else {
-                            InputAction::Redraw
-                        },
-                        1,
-                    ))
-                } else if self.redraws && self.voice && remaining[0] == CTRL_BACKSLASH {
-                    Some((InputAction::Redraw, 1))
-                } else if self.voice && remaining[0] == CTRL_RIGHT_BRACKET {
-                    Some((InputAction::Voice, 1))
-                } else if let (true, CmdK::Press(length)) = (self.voice, cmd_k(remaining)) {
-                    Some((InputAction::Voice, length))
-                } else if let (true, CmdK::Release(length)) = (self.voice, cmd_k(remaining)) {
-                    // Only the press counts; the release of the same key is dropped.
-                    index += length;
-                    continue;
-                } else {
-                    None
-                };
+            let recognized = if remaining.starts_with(SHIFT_LEFT)
+                || remaining.starts_with(SHIFT_RIGHT)
+            {
+                Some((InputAction::Detach, SHIFT_LEFT.len()))
+            } else if remaining.starts_with(LEFT) {
+                Some((InputAction::Arrow(ArrowDirection::Left, LEFT), LEFT.len()))
+            } else if remaining.starts_with(APPLICATION_LEFT) {
+                Some((
+                    InputAction::Arrow(ArrowDirection::Left, APPLICATION_LEFT),
+                    APPLICATION_LEFT.len(),
+                ))
+            } else if remaining.starts_with(RIGHT) {
+                Some((
+                    InputAction::Arrow(ArrowDirection::Right, RIGHT),
+                    RIGHT.len(),
+                ))
+            } else if remaining.starts_with(APPLICATION_RIGHT) {
+                Some((
+                    InputAction::Arrow(ArrowDirection::Right, APPLICATION_RIGHT),
+                    APPLICATION_RIGHT.len(),
+                ))
+            } else if self.redraws && remaining[0] == CTRL_K {
+                // With Voice Mode, Ctrl+K starts a call and a repaint moves to Ctrl+\.
+                Some((
+                    if self.voice {
+                        InputAction::Voice
+                    } else {
+                        InputAction::Redraw
+                    },
+                    1,
+                ))
+            } else if self.redraws && self.voice && remaining[0] == CTRL_BACKSLASH {
+                Some((InputAction::Redraw, 1))
+            } else if self.voice && remaining[0] == CTRL_RIGHT_BRACKET {
+                Some((InputAction::Voice, 1))
+            } else if let (true, CmdK::Press(length)) = (self.voice, cmd_k(remaining, self.redraws))
+            {
+                Some((InputAction::Voice, length))
+            } else if let (true, CmdK::Release(length)) =
+                (self.voice, cmd_k(remaining, self.redraws))
+            {
+                // Only the press counts; the release of the same key is dropped.
+                index += length;
+                continue;
+            } else {
+                None
+            };
             if let Some((action, consumed)) = recognized {
                 if !forward.is_empty() {
                     actions.push(InputAction::Forward(std::mem::take(&mut forward)));
@@ -2115,7 +2151,7 @@ impl DetachParser {
                 && (RECOGNIZED_ARROWS
                     .iter()
                     .any(|sequence| sequence.starts_with(remaining))
-                    || (self.voice && matches!(cmd_k(remaining), CmdK::Partial)))
+                    || (self.voice && matches!(cmd_k(remaining, self.redraws), CmdK::Partial)))
             {
                 self.pending.extend_from_slice(&bytes[index..]);
                 self.pending_since = Some(Instant::now());
@@ -2332,6 +2368,34 @@ fn write_return_hint(
     )?;
     output.flush()?;
     Ok(())
+}
+
+/// Control keys and escape sequences in typed input, for `perf.log`, so a key
+/// that never starts a call can be told from one that never arrived. Typed
+/// text is left out: a plain character shows as `_`.
+fn key_trace(input: &[u8]) -> Option<String> {
+    let mut out = String::new();
+    let mut in_sequence = false;
+    let mut interesting = false;
+    for (index, byte) in input.iter().enumerate() {
+        if *byte == 0x1b {
+            in_sequence = true;
+            interesting = true;
+            out.push_str("ESC ");
+        } else if in_sequence {
+            out.push(*byte as char);
+            if index > 0 && input[index - 1] != 0x1b && (0x40..=0x7e).contains(byte) {
+                in_sequence = false;
+                out.push(' ');
+            }
+        } else if *byte < 0x20 || *byte == 0x7f {
+            interesting = true;
+            out.push_str(&format!("{byte:02x} "));
+        } else {
+            out.push('_');
+        }
+    }
+    interesting.then_some(out)
 }
 
 /// Where the call badge was drawn.
@@ -2602,6 +2666,50 @@ mod tests {
             parser.push(b"\x0b"),
             vec![InputAction::Forward(b"\x0b".to_vec())]
         );
+    }
+
+    #[test]
+    fn cmd_k_is_recognized_with_lock_keys_and_extra_fields() {
+        let mut parser = voice_parser("claude:worker");
+        // Caps lock (64) and num lock (128) ride along in the modifier field.
+        for press in [
+            &b"\x1b[107;73u"[..],
+            b"\x1b[107;137u",
+            b"\x1b[107:75;9u",
+            b"\x1b[107;9;107u",
+            b"\x1b[107;9:2u",
+        ] {
+            assert_eq!(parser.push(press), vec![InputAction::Voice], "{press:?}");
+        }
+        // Shift+Cmd+K and Cmd+Alt+K are other keys.
+        assert_eq!(
+            parser.push(b"\x1b[107;10u"),
+            vec![InputAction::Forward(b"\x1b[107;10u".to_vec())]
+        );
+        // A different key whose number starts with 107.
+        assert_eq!(
+            parser.push(b"\x1b[1070;9u"),
+            vec![InputAction::Forward(b"\x1b[1070;9u".to_vec())]
+        );
+    }
+
+    #[test]
+    fn ctrl_k_in_the_kitty_encoding_is_voice_in_opencode_only() {
+        let mut opencode = voice_parser("opencode:ses_1");
+        assert_eq!(opencode.push(b"\x1b[107;5u"), vec![InputAction::Voice]);
+        assert_eq!(opencode.push(b"\x1b[107;5:3u"), Vec::<InputAction>::new());
+        let mut claude = voice_parser("claude:worker");
+        assert_eq!(
+            claude.push(b"\x1b[107;5u"),
+            vec![InputAction::Forward(b"\x1b[107;5u".to_vec())]
+        );
+    }
+
+    #[test]
+    fn the_key_trace_shows_control_keys_and_never_typed_text() {
+        assert_eq!(key_trace(b"hello"), None);
+        assert_eq!(key_trace(b"ab\x0b").as_deref(), Some("__0b "));
+        assert_eq!(key_trace(b"\x1b[107;9u").as_deref(), Some("ESC [107;9u "));
     }
 
     #[test]
