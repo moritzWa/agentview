@@ -25,6 +25,12 @@ and released versions are intended to follow Semantic Versioning.
   Ctrl+] start and end a call. The voice knows which session is selected or
   open, and ends the call when you say goodbye.
 
+- The voice key now works in a session's own view when the terminal reports it
+  with lock keys on (Caps Lock, Num Lock) or as a kitty key event with extra
+  fields, and Ctrl+K in the kitty encoding counts in OpenCode. Control keys that
+  arrive in a session's view are traced in `perf.log` (`voicekey`, never typed
+  text), so a key that does nothing can be told from one that never arrived.
+
 - Voice Mode no longer lets a tab left open from an earlier version take over a
   call (it made calls hang on a microphone prompt nobody could see). A call
   that waits for the microphone says so and how to allow it, a call that does
