@@ -25,6 +25,13 @@ and released versions are intended to follow Semantic Versioning.
   Ctrl+] start and end a call. The voice knows which session is selected or
   open, and ends the call when you say goodbye.
 
+- Voice Mode: ending a call pauses it for 30 minutes and the next `Cmd+K`
+  continues it (`/voice new` starts fresh); `Cmd+S` in an OpenCode session
+  pauses a live call and still starts your read-aloud plugin; pressing `Cmd+K`
+  with a draft in the OpenCode input box lets the voice help you think it
+  through and send the final message (`send_draft`), clearing the box; Grok
+  hears you from the first moment of a call.
+
 - Voice Mode goes quiet about 20 ms after the end key (it took over a second):
   the page cuts the audio first. The hidden browser stays up two minutes after a
   call, and Grok's token is fetched while it starts, so a Grok call is live in

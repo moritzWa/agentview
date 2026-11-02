@@ -1060,6 +1060,17 @@ pub fn run_dashboard(
                                 }
                                 ActionEffect::default()
                             }
+                            AppAction::VoiceForget => {
+                                match &voice {
+                                    Some(voice) => {
+                                        voice.forget();
+                                        app.set_notice("the next voice call starts fresh");
+                                    }
+                                    None => app
+                                        .set_notice("voice mode needs a live provider connection"),
+                                }
+                                ActionEffect::default()
+                            }
                             AppAction::VoiceSpeed(tenths) => {
                                 match &voice {
                                     Some(voice) if voice.provider().has_speed() => {
@@ -1461,20 +1472,26 @@ fn install_voice_hook(voice: &crate::voice::VoiceService) {
     let poller = voice.clone();
     let badger = voice.clone();
     let nudger = voice.clone();
+    let hushed = voice.clone();
+    let living = voice.clone();
     let last = std::sync::Mutex::new((Phase::Idle, None::<String>));
     crate::native_session::set_voice_hook(crate::native_session::VoiceHook {
-        toggle: Box::new(move || match toggler.toggle() {
-            Toggle::Started | Toggle::Ended => None,
-            Toggle::NeedKey(provider) => Some(format!(
-                "voice needs a {} key: go back with shift+← and press ctrl+k once",
-                provider.label()
-            )),
-            Toggle::Failed(error) => Some(error),
+        toggle: Box::new(move |draft| {
+            match toggler.toggle_with(draft.map(|text| crate::voice::Draft { text })) {
+                Toggle::Started | Toggle::Ended => None,
+                Toggle::NeedKey(provider) => Some(format!(
+                    "voice needs a {} key: go back with shift+← and press ctrl+k once",
+                    provider.label()
+                )),
+                Toggle::Failed(error) => Some(error),
+            }
         }),
         badge: Box::new(move || {
             let status = badger.status();
             match status.phase {
-                Phase::Idle => None,
+                Phase::Idle => status
+                    .paused_for
+                    .map(|seconds| format!("⏸ voice paused {}m · cmd+k continues", seconds / 60)),
                 Phase::Connecting => Some("◌ voice connecting".to_owned()),
                 Phase::Live => {
                     let time = format!("{}:{:02}", status.seconds / 60, status.seconds % 60);
@@ -1485,6 +1502,10 @@ fn install_voice_hook(voice: &crate::voice::VoiceService) {
                     })
                 }
             }
+        }),
+        live: Box::new(move || living.is_live()),
+        hush: Box::new(move || {
+            hushed.pause();
         }),
         nudge: Box::new(move |direction| {
             if nudger.provider().has_speed() {
@@ -2799,6 +2820,7 @@ fn dispatch_action<T: DashboardTerminal, C: DashboardControl>(
         | AppAction::ToggleVoice
         | AppAction::SaveVoiceKey { .. }
         | AppAction::VoiceProvider(_)
+        | AppAction::VoiceForget
         | AppAction::VoiceSpeed(_) => ActionEffect::default(),
         AppAction::Hide { session_ids } => ActionEffect {
             hide_session_ids: session_ids,
@@ -2913,6 +2935,7 @@ fn handle_action_legacy<T: DashboardTerminal, C: DashboardControl>(
         | AppAction::ToggleVoice
         | AppAction::SaveVoiceKey { .. }
         | AppAction::VoiceProvider(_)
+        | AppAction::VoiceForget
         | AppAction::VoiceSpeed(_)
         | AppAction::PasteImage
         | AppAction::Unhide { .. }

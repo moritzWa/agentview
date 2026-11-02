@@ -536,7 +536,7 @@ label.
 | Inspect peek | type, `enter` | Send an owned provider reply/steer or the current structured answer. |
 | Inspect peek | `y` / `n` | Allow once / deny only when the exact capability is advertised. |
 | Inspect peek | `enter` with no text | Open the provider-native interface when that managed/live boundary allows a second client. |
-| Session list or new-task composer | `ctrl+k` or `cmd+k` | Start a [Voice Mode](voice.md) call, or end the one running (inside a session's own view: `ctrl+k` in OpenCode, `cmd+k` or `ctrl+]`). `/voice` does the same; `/voice grok`, `/voice openai` and `/voice speed 1.2` change whose voice answers and how fast Grok talks. The first time it asks for the provider's API key. |
+| Session list or new-task composer | `ctrl+k` or `cmd+k` | Start a [Voice Mode](voice.md) call, or end the one running (inside a session's own view: `ctrl+k` in OpenCode, `cmd+k` or `ctrl+]`). `/voice` does the same; `/voice new` starts fresh instead of continuing a paused call; `/voice grok`, `/voice openai` and `/voice speed 1.2` change whose voice answers and how fast Grok talks. The first time it asks for the provider's API key. |
 | Session list | `ctrl+s` | Toggle status and working-directory grouping. |
 | Session list | `ctrl+f` | Edit the case-insensitive name/summary/path/provider filter. |
 | Session list | `ctrl+l` | Request an immediate provider refresh. |

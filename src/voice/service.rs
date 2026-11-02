@@ -61,6 +61,8 @@ pub struct PanelStatus {
     pub provider: Provider,
     /// How fast the voice talks, when the provider lets it change.
     pub speed: Option<f64>,
+    /// Seconds since a call was paused, while it can still be picked up.
+    pub paused_for: Option<u64>,
 }
 
 impl PanelStatus {
@@ -73,6 +75,7 @@ impl PanelStatus {
             quiet: false,
             provider: Provider::OpenAi,
             speed: None,
+            paused_for: None,
         }
     }
 }
@@ -129,6 +132,17 @@ struct ActiveCall {
     token: Option<TokenSlot>,
     /// When the key was pressed, to time how long until the voice is live.
     pressed: Instant,
+    /// Grok's conversation id, once it has said it.
+    conversation: Option<String>,
+    /// This call picks up a parked one.
+    resume: Option<Resume>,
+}
+
+/// What a resumed call carries over.
+struct Resume {
+    conversation: Option<String>,
+    recap: String,
+    minutes_ago: u64,
 }
 
 #[derive(Default)]
@@ -163,11 +177,43 @@ fn persist(name: &str, value: Value) -> Result<()> {
     config::save_setting(name, value)
 }
 
+/// The last things said in a call, for a provider that cannot replay them.
+fn recap(lines: &[Line]) -> String {
+    let mut text = String::new();
+    for line in lines {
+        let who = if line.who == call::Who::You {
+            "Developer"
+        } else {
+            "You"
+        };
+        text.push_str(&format!("{who}: {}\n", line.text.trim()));
+    }
+    clip(text.trim(), 1200)
+}
+
 /// What a person can change while agentview runs.
 struct Live {
     /// Chosen with `/voice grok`; empty means whichever provider has a key.
     provider: Option<Provider>,
     speed: f64,
+}
+
+/// What was typed in a session's input box when the call started.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Draft {
+    pub text: String,
+}
+
+/// A call that was ended on purpose, kept for a while so the next press of the
+/// key picks it up where it was.
+struct Parked {
+    tools: Arc<Tools>,
+    provider: Provider,
+    /// Grok's id for the conversation, which xAI replays for 30 minutes.
+    conversation: Option<String>,
+    /// The last things said, for a provider that cannot replay.
+    recap: String,
+    at: Instant,
 }
 
 /// The hidden browser of a call that just ended, kept for the next one.
@@ -181,6 +227,7 @@ struct Warm {
 struct Inner {
     host: Arc<dyn VoiceHost>,
     warm: Arc<Mutex<Warm>>,
+    parked: Mutex<Option<Parked>>,
     settings: Settings,
     live: Mutex<Live>,
     port: u16,
@@ -232,6 +279,7 @@ impl VoiceService {
             inner: Arc::new(Inner {
                 host,
                 warm: Arc::default(),
+                parked: Mutex::new(None),
                 settings,
                 live: Mutex::new(live),
                 port,
@@ -251,6 +299,26 @@ impl VoiceService {
             }
         });
         service
+    }
+
+    /// Pauses the call: the voice stops at once and the call is kept, so the
+    /// next press of the key continues it. Returns whether a call was on.
+    pub fn pause(&self) -> bool {
+        if self.inner.lock().active.is_none() {
+            return false;
+        }
+        self.inner.finish_quietly("Paused.", true);
+        true
+    }
+
+    /// Lets go of a paused call: the next one starts fresh.
+    pub fn forget(&self) {
+        *self.inner.parked.lock().unwrap() = None;
+    }
+
+    /// Whether a call is on right now.
+    pub fn is_live(&self) -> bool {
+        self.inner.lock().active.is_some()
     }
 
     /// Whose voice the next call uses.
@@ -300,6 +368,12 @@ impl VoiceService {
 
     /// Starts a call, or ends the one in progress.
     pub fn toggle(&self) -> Toggle {
+        self.toggle_with(None)
+    }
+
+    /// The same, with what the person had typed into a session's input box:
+    /// the call starts knowing about it.
+    pub fn toggle_with(&self, draft: Option<Draft>) -> Toggle {
         if self.inner.lock().active.is_some() {
             self.inner.finish_quietly("You ended the call.", true);
             return Toggle::Ended;
@@ -308,7 +382,7 @@ impl VoiceService {
         if (self.inner.key)(provider).is_none() {
             return Toggle::NeedKey(provider);
         }
-        match self.inner.start() {
+        match self.inner.start(draft) {
             Ok(()) => Toggle::Started,
             Err(error) => Toggle::Failed(format!("{error:#}")),
         }
@@ -317,6 +391,7 @@ impl VoiceService {
     pub fn status(&self) -> PanelStatus {
         let provider = self.inner.provider();
         let speed = provider.has_speed().then(|| self.speed());
+        let paused_for = self.inner.paused_for();
         let state = self.inner.lock();
         match &state.active {
             None => PanelStatus {
@@ -324,6 +399,7 @@ impl VoiceService {
                 quiet: state.quiet,
                 provider,
                 speed,
+                paused_for,
                 ..PanelStatus::idle()
             },
             Some(active) => PanelStatus {
@@ -340,6 +416,7 @@ impl VoiceService {
                 quiet: state.quiet,
                 provider: active.provider,
                 speed: active.provider.has_speed().then_some(speed.unwrap_or(1.0)),
+                paused_for: None,
             },
         }
     }
@@ -366,6 +443,17 @@ impl VoiceService {
 }
 
 impl Inner {
+    /// How long the paused call has been paused, while it can still be picked up.
+    fn paused_for(&self) -> Option<u64> {
+        let parked = self.parked.lock().unwrap();
+        let at = parked.as_ref()?.at.elapsed();
+        (at < self.resume_window()).then_some(at.as_secs())
+    }
+
+    fn resume_window(&self) -> Duration {
+        Duration::from_secs(self.settings.resume_minutes * 60)
+    }
+
     fn provider(&self) -> Provider {
         self.live
             .lock()
@@ -410,7 +498,7 @@ impl Inner {
         }
     }
 
-    fn start(self: &Arc<Self>) -> Result<()> {
+    fn start(self: &Arc<Self>, draft: Option<Draft>) -> Result<()> {
         let mut state = self.lock();
         if state.server.is_none() {
             let sink: Arc<dyn PageSink> = Arc::new(Sink(self.clone()));
@@ -431,9 +519,30 @@ impl Inner {
             bail!(error);
         }
         let provider = self.provider();
-        let tools = Arc::new(Tools::new(self.host.clone()));
+        // A call paused a little while ago continues: same provider, not too long ago.
+        let parked = self.parked.lock().unwrap().take().filter(|parked| {
+            parked.provider == provider && parked.at.elapsed() < self.resume_window()
+        });
+        let resume = parked.as_ref().map(|parked| Resume {
+            conversation: parked.conversation.clone(),
+            recap: parked.recap.clone(),
+            minutes_ago: parked.at.elapsed().as_secs() / 60,
+        });
+        let resumed = resume.is_some();
+        let tools = match parked {
+            Some(parked) => parked.tools,
+            None => {
+                let tools = Arc::new(Tools::new(self.host.clone()));
+                tools.prime();
+                tools
+            }
+        };
         tools.set_viewing(viewing());
-        tools.prime();
+        let has_draft = draft.is_some();
+        tools.set_draft(draft.map(|draft| draft.text));
+        if has_draft {
+            log("draft", json!({"notes": tools.notes()}));
+        }
         let now = Instant::now();
         state.notice = None;
         state.quiet = false;
@@ -454,12 +563,14 @@ impl Inner {
             adapter: xai::Adapter::default(),
             token: None,
             pressed: now,
+            conversation: None,
+            resume,
         });
         config::mark_hint_seen();
         super::log::start_call();
         log(
             "start",
-            json!({"browser": self.settings.browser, "provider": provider.id()}),
+            json!({"browser": self.settings.browser, "provider": provider.id(), "resumed": resumed}),
         );
         if provider == Provider::Xai {
             // The token is fetched while the browser starts, not after it.
@@ -565,15 +676,29 @@ impl Inner {
 
     /// An ordinary end the person asked for: it is noted, not announced.
     fn finish_quietly(&self, reason: &str, notify_page: bool) {
-        self.finish(reason, notify_page);
+        self.finish_with(reason, notify_page, true);
         self.lock().quiet = true;
     }
 
     fn finish(&self, reason: &str, notify_page: bool) {
+        self.finish_with(reason, notify_page, false);
+    }
+
+    /// `park`: the call was ended on purpose, and it is kept for a while.
+    fn finish_with(&self, reason: &str, notify_page: bool, park: bool) {
         let mut state = self.lock();
         let Some(mut active) = state.active.take() else {
             return;
         };
+        if park && active.stage == Stage::Live {
+            *self.parked.lock().unwrap() = Some(Parked {
+                tools: active.tools.clone(),
+                provider: active.provider,
+                conversation: active.conversation.clone(),
+                recap: recap(&active.call.lines()),
+                at: Instant::now(),
+            });
+        }
         // First of all, the voice stops: nothing below waits before it.
         if let Some(page) = &state.page {
             let _ = page.outgoing.send(json!({"type": "silence"}).to_string());
@@ -765,7 +890,7 @@ impl Inner {
     }
 
     fn on_offer(self: &Arc<Self>, sdp: String) {
-        let (tools, provider, token) = {
+        let (tools, provider, token, resume) = {
             let state = self.lock();
             let Some(active) = state
                 .active
@@ -774,11 +899,33 @@ impl Inner {
             else {
                 return;
             };
-            (active.tools.clone(), active.provider, active.token.clone())
+            let resume = active
+                .resume
+                .as_ref()
+                .map(|r| (r.conversation.clone(), r.recap.clone(), r.minutes_ago));
+            (
+                active.tools.clone(),
+                active.provider,
+                active.token.clone(),
+                resume,
+            )
         };
         let this = self.clone();
         thread::spawn(move || {
-            let notes = tools.notes();
+            let mut notes = tools.notes();
+            let conversation = resume.as_ref().and_then(|(id, _, _)| id.clone());
+            if let Some((_, recap, minutes)) = &resume {
+                // Grok replays the call itself; the other provider is told the end of it.
+                if provider == Provider::OpenAi || conversation.is_none() {
+                    notes.push_str(&format!(
+                        "\n\nThis call continues one the developer paused {minutes} min ago. The last things said:\n{recap}"
+                    ));
+                } else {
+                    notes.push_str(&format!(
+                        "\n\nThis call continues one the developer paused {minutes} min ago."
+                    ));
+                }
+            }
             let key = (this.key)(provider)
                 .with_context(|| format!("there is no {} key", provider.label()));
             // Grok's token was asked for when the call started; give it a moment.
@@ -825,7 +972,7 @@ impl Inner {
                                 json!({
                                     "type": "answer",
                                     "provider": "xai",
-                                    "url": xai::realtime_url(&settings),
+                                    "url": xai::realtime_url(&settings, conversation.as_deref()),
                                     "token": token,
                                     "session": xai::session_update(&settings, &notes),
                                 }),
@@ -846,6 +993,11 @@ impl Inner {
             let Some(active) = state.active.as_mut() else {
                 return;
             };
+            if event.get("type").and_then(Value::as_str) == Some("conversation.created") {
+                if let Some(id) = event.pointer("/conversation/id").and_then(Value::as_str) {
+                    active.conversation = Some(id.to_owned());
+                }
+            }
             let events = if active.provider == Provider::Xai {
                 active.adapter.incoming(event)
             } else {
@@ -865,6 +1017,26 @@ impl Inner {
             match action {
                 Action::Started => {
                     let mut state = self.lock();
+                    // Back from a pause: say what happened in the sessions meanwhile.
+                    let tools = state
+                        .active
+                        .as_ref()
+                        .filter(|active| active.resume.is_some())
+                        .map(|active| active.tools.clone());
+                    if let Some(tools) = tools {
+                        let polled = tools.poll();
+                        let news: Vec<String> =
+                            polled.spoken.into_iter().chain(polled.quiet).collect();
+                        if !news.is_empty() {
+                            Self::send_page(
+                                &state,
+                                json!({"type": "send", "event": call::commentary(&format!(
+                                    "Welcome the developer back in one short sentence, then say what changed while they were away: {}",
+                                    news.join(" ")
+                                ))}),
+                            );
+                        }
+                    }
                     if let Some(active) = state.active.as_mut() {
                         active.stage = Stage::Live;
                         log(
@@ -1514,6 +1686,16 @@ mod tests {
         assert!(rig.service.status().notice.unwrap().contains("of silence"));
     }
 
+    /// The next message of a kind, skipping others.
+    fn next_of(inbox: &Receiver<String>, kind: &str) -> Value {
+        loop {
+            let message = next(inbox);
+            if message["type"] == kind {
+                return message;
+            }
+        }
+    }
+
     fn next_is(inbox: &Receiver<String>, kind: &str) -> bool {
         inbox.try_iter().any(|message| {
             serde_json::from_str::<Value>(&message).is_ok_and(|value| value["type"] == kind)
@@ -1707,6 +1889,187 @@ mod tests {
         );
         service.shutdown();
         assert!(service.inner.warm.lock().unwrap().child.is_none());
+    }
+
+    /// A call that is live: the page said hello, offered, and Grok said it was ready.
+    fn live_grok_call(call: &Rig) -> (u64, Receiver<String>) {
+        let (id, inbox) = page(call);
+        say(
+            call,
+            id,
+            json!({"type": "hello", "ready": true, "hidden": true}),
+        );
+        call.service.toggle();
+        say(call, id, json!({"type": "offer", "provider": "xai"}));
+        say(
+            call,
+            id,
+            json!({"type": "event", "event": {"type": "conversation.created", "conversation": {"id": "conv-1"}}}),
+        );
+        say(
+            call,
+            id,
+            json!({"type": "event", "event": {"type": "session.updated"}}),
+        );
+        until(|| call.service.status().phase == Phase::Live);
+        let _ = inbox.try_iter().count();
+        (id, inbox)
+    }
+
+    #[test]
+    fn a_call_that_was_ended_is_kept_and_the_next_one_continues_it() {
+        let call = rig(grok(), Some("xai-test"));
+        let (id, inbox) = live_grok_call(&call);
+        say(
+            &call,
+            id,
+            json!({"type": "event", "event": {"type": "session.input_transcript.delta", "delta": "check the auth one"}}),
+        );
+        assert!(call.service.pause());
+        assert_eq!(next(&inbox)["type"], "silence");
+        let status = call.service.status();
+        assert_eq!(status.phase, Phase::Idle);
+        assert_eq!(status.paused_for, Some(0));
+        // The next press continues it: same conversation id goes back to Grok.
+        assert_eq!(call.service.toggle(), Toggle::Started);
+        let _ = inbox.try_iter().count();
+        say(&call, id, json!({"type": "offer", "provider": "xai"}));
+        let answer = loop {
+            let message = next(&inbox);
+            if message["type"] == "answer" {
+                break message;
+            }
+        };
+        assert!(answer["url"]
+            .as_str()
+            .unwrap()
+            .ends_with("&conversation_id=conv-1"));
+        assert_eq!(answer["session"]["session"]["resumption"]["enabled"], true);
+        assert_eq!(
+            call.service.status().paused_for,
+            None,
+            "continuing uses it up"
+        );
+    }
+
+    #[test]
+    fn a_forgotten_or_old_call_is_not_continued() {
+        let call = rig(grok(), Some("xai-test"));
+        let (_, inbox) = live_grok_call(&call);
+        assert!(call.service.pause());
+        call.service.forget();
+        assert_eq!(call.service.status().paused_for, None);
+        assert_eq!(call.service.toggle(), Toggle::Started);
+        assert_eq!(next_of(&inbox, "start")["provider"], "xai");
+        assert!(call
+            .service
+            .inner
+            .lock()
+            .active
+            .as_ref()
+            .unwrap()
+            .resume
+            .is_none());
+        // One paused too long ago starts fresh as well.
+        call.service.toggle();
+        let (_, _inbox) = live_grok_call(&call);
+        call.service.pause();
+        call.service
+            .inner
+            .parked
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .at = Instant::now() - Duration::from_secs(31 * 60);
+        assert_eq!(call.service.status().paused_for, None);
+        call.service.toggle();
+        assert!(call
+            .service
+            .inner
+            .lock()
+            .active
+            .as_ref()
+            .unwrap()
+            .resume
+            .is_none());
+    }
+
+    #[test]
+    fn an_openai_call_continues_with_a_recap_of_the_end_of_the_last_one() {
+        let call = rig(Settings::default(), Some("sk-test"));
+        let (id, inbox) = page(&call);
+        say(
+            &call,
+            id,
+            json!({"type": "hello", "ready": true, "hidden": true}),
+        );
+        call.service.toggle();
+        say(&call, id, json!({"type": "offer", "sdp": "x"}));
+        say(
+            &call,
+            id,
+            json!({"type": "event", "event": {"type": "session.started", "session": {"id": "l"}}}),
+        );
+        say(
+            &call,
+            id,
+            json!({"type": "event", "event": {"type": "session.input_transcript.delta", "delta": "the migration is on the billing branch"}}),
+        );
+        until(|| call.service.status().phase == Phase::Live);
+        assert!(call.service.pause());
+        let _ = inbox.try_iter().count();
+        call.service.toggle();
+        say(&call, id, json!({"type": "offer", "sdp": "y"}));
+        until(|| call.requests.lock().unwrap().len() == 2);
+        let body = call.requests.lock().unwrap()[1].to_string();
+        assert!(
+            body.contains("paused 0 min ago") && body.contains("billing branch"),
+            "{body}"
+        );
+    }
+
+    #[test]
+    fn a_typed_draft_is_in_the_notes_and_send_draft_sends_the_final_text() {
+        let call = rig(Settings::default(), Some("sk-test"));
+        let (id, _inbox) = page(&call);
+        say(
+            &call,
+            id,
+            json!({"type": "hello", "ready": true, "hidden": true}),
+        );
+        crate::voice::set_viewing(Some("opencode:host:a".into()));
+        assert_eq!(
+            call.service.toggle_with(Some(Draft {
+                text: "rename the settings".into()
+            })),
+            Toggle::Started
+        );
+        let tools = call
+            .service
+            .inner
+            .lock()
+            .active
+            .as_ref()
+            .unwrap()
+            .tools
+            .clone();
+        let notes = tools.notes();
+        assert!(
+            notes.contains("rename the settings") && notes.contains("send_draft"),
+            "{notes}"
+        );
+        let sent = tools.run(
+            "send_draft",
+            &json!({"text": "rename the settings\n\nKeep old names."}),
+        );
+        assert_eq!(sent["ok"], true, "{sent}");
+        assert!(call.host.log.lock().unwrap().contains(
+            &"send_draft opencode:host:a rename the settings\n\nKeep old names.".to_owned()
+        ));
+        // Sent once: there is no draft left to send.
+        assert!(tools.run("send_draft", &json!({"text": "again"}))["error"].is_string());
+        crate::voice::set_viewing(None);
     }
 
     #[test]

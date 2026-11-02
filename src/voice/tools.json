@@ -164,6 +164,24 @@
   },
   {
     "type": "function",
+    "name": "send_draft",
+    "description": "Send the final message of the draft the developer had started typing into the session on screen before the call, and empty its input box. Use it when they approve what you worked out together; text is the whole message: their draft plus what you agreed, in their words. Only when the notes say they had a draft.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string",
+          "description": "The complete message to send."
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
     "name": "watch_session",
     "description": "Tell the developer when a session finishes or needs them.",
     "parameters": {

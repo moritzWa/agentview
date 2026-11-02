@@ -49,9 +49,14 @@ const VOICE_LINE_HOLD: Duration = Duration::from_millis(3000);
 /// What Voice Mode gives a provider's own view: a key that starts or ends a
 /// call, and a way to hear that something about the call changed.
 pub struct VoiceHook {
-    /// Called on the key; returns something to show on the bottom row only
-    /// when there is something to act on (no key, a failure).
-    pub toggle: Box<dyn Fn() -> Option<String> + Send + Sync>,
+    /// Called on the key with what is typed in the provider's input box (if
+    /// anything); returns something to show on the bottom row only when there
+    /// is something to act on (no key, a failure).
+    pub toggle: Box<dyn Fn(Option<String>) -> Option<String> + Send + Sync>,
+    /// Whether a call is on right now.
+    pub live: Box<dyn Fn() -> bool + Send + Sync>,
+    /// Pauses the call: the voice stops, the call is kept for a while.
+    pub hush: Box<dyn Fn() + Send + Sync>,
     /// Returns a message when something needs attention (a failure, a
     /// microphone that is not allowed); ordinary starts and ends are silent.
     pub poll: Box<dyn Fn() -> Option<String> + Send + Sync>,
@@ -67,6 +72,90 @@ static VOICE_HOOK: OnceLock<VoiceHook> = OnceLock::new();
 /// Registered once by the dashboard when Voice Mode is available.
 pub fn set_voice_hook(hook: VoiceHook) {
     let _ = VOICE_HOOK.set(hook);
+}
+
+/// OpenCode's key for "clear input field" (its default).
+const CLEAR_INPUT: &[u8] = b"\x03";
+
+/// Keeps the request channel registered while a view is in front.
+struct RequestSlot;
+
+impl RequestSlot {
+    fn fill(sender: Option<std::sync::mpsc::Sender<InputRequest>>) -> Self {
+        if let Ok(mut slot) = VIEW_REQUESTS.lock() {
+            *slot = sender;
+        }
+        Self
+    }
+}
+
+impl Drop for RequestSlot {
+    fn drop(&mut self) {
+        if let Ok(mut slot) = VIEW_REQUESTS.lock() {
+            *slot = None;
+        }
+    }
+}
+
+/// What a voice call asks the view in front to do with its input box.
+#[derive(Debug, PartialEq, Eq)]
+pub enum InputRequest {
+    /// Empty the input box, if it still shows text.
+    ClearDraft,
+}
+
+static VIEW_REQUESTS: Mutex<Option<std::sync::mpsc::Sender<InputRequest>>> = Mutex::new(None);
+
+/// Asks the provider view that is in front to do something with its input
+/// box. Returns false when no view is in front.
+pub fn request_input(request: InputRequest) -> bool {
+    VIEW_REQUESTS
+        .lock()
+        .ok()
+        .and_then(|slot| slot.as_ref().map(|sender| sender.send(request).is_ok()))
+        .unwrap_or(false)
+}
+
+/// Whether what was typed holds Ctrl+S: Cmd+S in this terminal setup, and the
+/// key the read-aloud plugin answers.
+fn has_ctrl_s(input: &[u8]) -> bool {
+    input.contains(&0x13) || input.windows(8).any(|window| window == b"\x1b[115;5u")
+}
+
+/// What is typed in OpenCode's input box, read off the screen: the rows of
+/// the box (they start with `┃`) above its bottom edge (`╹▀▀▀`), without the
+/// last one, which names the agent and model.
+fn prompt_draft(screen: &vt100::Parser) -> Option<String> {
+    let (rows, cols) = screen.screen().size();
+    let row_text = |row: u16| -> String {
+        (0..cols)
+            .map(|column| {
+                screen
+                    .screen()
+                    .cell(row, column)
+                    .map_or(' ', |cell| cell.contents().chars().next().unwrap_or(' '))
+            })
+            .collect()
+    };
+    let edge = (0..rows)
+        .rev()
+        .find(|row| row_text(*row).trim_start().starts_with('╹'))?;
+    let mut lines: Vec<String> = Vec::new();
+    let mut row = edge;
+    while row > 0 {
+        row -= 1;
+        let text = row_text(row);
+        let Some(inside) = text.trim_start().strip_prefix('┃') else {
+            break;
+        };
+        lines.push(inside.trim_end().trim_start_matches(' ').to_owned());
+    }
+    // Collected bottom to top; the first is the agent and model line.
+    lines.reverse();
+    lines.pop()?;
+    let joined = lines.join("\n");
+    let draft = joined.trim();
+    (!draft.is_empty()).then(|| draft.to_owned())
 }
 const RETURN_HINT_REFRESH: Duration = Duration::from_millis(100);
 const EMPTY_PROMPT_MAX_COLUMN: u16 = 4;
@@ -921,7 +1010,23 @@ fn bridge_session(
     crate::perf!("bridge-start", "key={session_key} fresh={fresh}");
     let mut echo_wait: Option<Instant> = None;
     let mut echo_samples = 0_u8;
+    // A voice call may ask this view to empty its input box: only OpenCode's.
+    let (request_sender, requests) = std::sync::mpsc::channel();
+    let _registered = RequestSlot::fill(
+        session_key
+            .starts_with("opencode:")
+            .then_some(request_sender),
+    );
     loop {
+        while let Ok(request) = requests.try_recv() {
+            match request {
+                InputRequest::ClearDraft => {
+                    if prompt_draft(&screen).is_some() {
+                        pending_input.write_all(CLEAR_INPUT)?;
+                    }
+                }
+            }
+        }
         let mut descriptors = [
             libc::pollfd {
                 fd: master.as_raw_fd(),
@@ -996,6 +1101,14 @@ fn bridge_session(
                         None => (input[..read as usize].to_vec(), Vec::new()),
                     };
                     if let Some(hook) = VOICE_HOOK.get() {
+                        // Ctrl+S reads the answer aloud (OpenCode's plugin); a call that is
+                        // talking stops first, and the key still goes through to the plugin.
+                        if session_key.starts_with("opencode:")
+                            && has_ctrl_s(&typed)
+                            && (hook.live)()
+                        {
+                            (hook.hush)();
+                        }
                         for direction in nudges {
                             (hook.nudge)(direction);
                             // Show the new speed at once, not at the next half second.
@@ -1046,7 +1159,11 @@ fn bridge_session(
                             }
                             InputAction::Voice => {
                                 if let Some(hook) = VOICE_HOOK.get() {
-                                    if let Some(message) = (hook.toggle)() {
+                                    let draft = session_key
+                                        .starts_with("opencode:")
+                                        .then(|| prompt_draft(&screen))
+                                        .flatten();
+                                    if let Some(message) = (hook.toggle)(draft) {
                                         write_status_line(&mut stdout, &screen, &message)?;
                                         voice_line_until = Some(Instant::now() + VOICE_LINE_HOLD);
                                     }
@@ -2794,6 +2911,53 @@ mod tests {
         let click = b"\x1b[<0;25;39M";
         assert_eq!(take_badge_clicks(click, Some(&plain)).0, click);
         assert_eq!(take_badge_clicks(click, None).0, click);
+    }
+
+    #[test]
+    fn ctrl_s_is_found_in_what_was_typed_in_both_encodings() {
+        assert!(has_ctrl_s(b"\x13"));
+        assert!(has_ctrl_s(b"ab\x13cd"));
+        assert!(has_ctrl_s(b"\x1b[115;5u"));
+        assert!(!has_ctrl_s(b"\x0b"));
+        assert!(!has_ctrl_s(b"plain s and S"));
+    }
+
+    fn screen_with(lines: &[&str]) -> vt100::Parser {
+        let mut screen = vt100::Parser::new(12, 60, 0);
+        screen.process(lines.join("\r\n").as_bytes());
+        screen
+    }
+
+    #[test]
+    fn the_draft_is_read_off_opencodes_input_box() {
+        let screen = screen_with(&[
+            "     Build · done",
+            "",
+            "  ┃",
+            "  ┃  first line of my draft",
+            "  ┃  second line",
+            "  ┃",
+            "  ┃  Build · Claude Opus 5.5 Anthropic          some session",
+            "  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀",
+            "  ~/Code/agentview                    41% · $0.00",
+        ]);
+        assert_eq!(
+            prompt_draft(&screen).as_deref(),
+            Some("first line of my draft\nsecond line")
+        );
+    }
+
+    #[test]
+    fn an_empty_input_box_or_another_screen_has_no_draft() {
+        let empty = screen_with(&[
+            "  ┃",
+            "  ┃",
+            "  ┃  Build · Claude Opus 5.5 Anthropic          some session",
+            "  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀",
+        ]);
+        assert_eq!(prompt_draft(&empty), None);
+        let elsewhere = screen_with(&["just some output", "and more"]);
+        assert_eq!(prompt_draft(&elsewhere), None);
     }
 
     #[test]

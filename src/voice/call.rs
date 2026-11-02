@@ -492,6 +492,7 @@ mod tests {
                 "start_session",
                 "search_history",
                 "close_session",
+                "send_draft",
                 "watch_session",
                 "end_call"
             ]
