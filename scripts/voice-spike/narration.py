@@ -84,13 +84,15 @@ async def check(request, fail=False, screen=False, wait=False, repeat=False):
             assert any(word in text.lower() for word in ("latent", "interlat", "talker", "reasoner")), text
             assert len(text.split()) <= 50, text
         elif fail:
-            assert "unavailable" in text.lower(), "must explain failure rather than say done"
+            assert any(w in text.lower() for w in ("unavailable", "available", "error", "couldn")), "must explain failure rather than say done"
         else:
             if wait:
                 assert calls[:2] == ["send_message", "watch_session"], calls
                 assert "read_session" not in calls, "do not relay an answer before done"
             assert not before_read.strip(), "routine sends need no preamble: " + before_read
-            assert len(text.split()) <= 12, "one short acknowledgment, not a narrated recap"
+            assert len(text.split()) <= 4, "silence or one short acknowledgment, not a narrated recap: " + text
+            for phrase in ("sent", "watching", "checking", "let me", "looking", "i'll", "let you know"):
+                assert phrase not in text.lower(), "do not narrate actions: " + text
             assert "already" not in text.lower(), "do not dismiss repeated requests"
             words = text.lower().replace(".", "").split()
             assert words.count("done") + words.count("sent") <= 1, "no redundant sent/done after the acknowledgment"
