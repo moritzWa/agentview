@@ -692,6 +692,17 @@ mod tests {
             "-T",
             "/usr/bin/security",
         ]);
+        run(&[
+            "set-generic-password-partition-list",
+            "-s",
+            "agentview-disposable",
+            "-a",
+            "test",
+            "-S",
+            "apple-tool:,teamid:Q6L2SF6YDW",
+            "-k",
+            "disposable-test-only",
+        ]);
         let acl = || {
             let dump = String::from_utf8(run(&["dump-keychain", "-a"]).stdout).unwrap();
             dump.split_once("access:")

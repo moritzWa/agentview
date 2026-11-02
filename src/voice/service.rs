@@ -1901,6 +1901,7 @@ mod tests {
         );
         call.service.toggle();
         say(call, id, json!({"type": "offer", "provider": "xai"}));
+        while next(&inbox)["type"] != "answer" {}
         say(
             call,
             id,
