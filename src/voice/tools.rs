@@ -27,6 +27,7 @@ pub struct HistoryHit {
     pub updated_ms: u64,
     /// Where the words matched, when they matched inside the conversation.
     pub snippet: String,
+    pub message: Option<crate::history_index::MessageMatch>,
 }
 
 /// What Voice Mode needs from the dashboard. The real one wraps the control
@@ -34,6 +35,10 @@ pub struct HistoryHit {
 pub trait VoiceHost: Send + Sync {
     fn infos(&self) -> Vec<Info>;
     fn recent_turns(&self, id: &str, turns: usize) -> Result<Vec<Turn>>;
+    /// A bounded snapshot, not the full scripts or output.
+    fn running_shells(&self, _id: &str) -> Result<Vec<crate::opencode_supervisor::ShellSummary>> {
+        Ok(Vec::new())
+    }
     /// Sessions of the whole history matching `query`, best first, and a note
     /// when the answer may be incomplete.
     fn search_history(
@@ -118,6 +123,18 @@ fn clip_end(text: &str, max: usize) -> String {
     }
     let tail: String = text.chars().skip(count - max).collect();
     format!("…{tail}")
+}
+
+/// Keep both the subject at the start and the outcome/question at the end.
+fn clip_reply(text: &str, max: usize) -> String {
+    let text = text.trim();
+    let count = text.chars().count();
+    if count <= max {
+        return text.to_owned();
+    }
+    let head: String = text.chars().take(max / 2).collect();
+    let tail: String = text.chars().skip(count - (max - max / 2)).collect();
+    format!("{head}…{tail}")
 }
 
 pub fn now_ms() -> u64 {
@@ -291,6 +308,7 @@ impl Tools {
                 let mut row = seen.row(info, &handles.handle(&info.id), now);
                 if viewing.as_deref() == Some(info.id.as_str()) {
                     row["on_screen"] = json!(true);
+                    row["last_said"] = json!(info.tail);
                 }
                 row
             })
@@ -327,7 +345,7 @@ impl Tools {
         let mut total = 0;
         for turn in turns.iter().rev() {
             let you = clip_start(&turn.you, READ_YOU_CHARS);
-            let it = clip_end(&turn.it, READ_IT_CHARS);
+            let it = clip_reply(&turn.it, READ_IT_CHARS);
             total += you.len() + it.len();
             if total > READ_TOTAL_CHARS && !kept.is_empty() {
                 break;
@@ -341,11 +359,27 @@ impl Tools {
             self.seen.lock().unwrap().told(&id, &info.tail);
         }
         let mut out = json!({ "turns": kept });
+        match self.host.running_shells(&id) {
+            Ok(shells) => out["running_shells"] = json!(shells),
+            Err(_) => {
+                out["shells_note"] =
+                    json!("live shell status is unavailable; do not assume no shells are running")
+            }
+        }
         if let Some(info) = info {
             out["title"] = json!(info.title);
-            if info.busy() {
+            out["state"] = json!(info.state_word());
+            let awaiting_new_reply = self
+                .touched
+                .lock()
+                .unwrap()
+                .get(&id)
+                .is_some_and(|sent| *sent >= info.updated_ms);
+            out["answer_ready"] =
+                json!(info.state == SessionState::Completed && !awaiting_new_reply);
+            if info.busy() || awaiting_new_reply {
                 out["still_working"] =
-                    json!("the last turn is not finished: its \"it\" is only what it said so far");
+                    json!("the requested reply is not confirmed complete; this content may be stale or unfinished. Wait for done before reporting it as the answer");
             }
         }
         if kept.is_empty() {
@@ -373,6 +407,9 @@ impl Tools {
                         &hit.snippet.split_whitespace().collect::<Vec<_>>().join(" "),
                         MATCH_CHARS
                     ));
+                }
+                if let Some(message) = &hit.message {
+                    row["message"] = json!(message);
                 }
                 row
             })
@@ -477,7 +514,9 @@ impl Tools {
             registered: now,
             expects_busy: just_given_work,
         });
-        Ok(json!({"ok": true, "note": "the developer will hear when it happens"}))
+        Ok(
+            json!({"ok": true, "watching": true, "note": "watch registered, not completed. Wait for the completion notification before reading and relaying the answer"}),
+        )
     }
 
     /// Turns a spoken folder into a directory.
@@ -645,7 +684,7 @@ impl Tools {
     pub fn notes(&self) -> String {
         let infos = self.host.infos();
         let mut notes = digest::notes(&infos, (self.clock)());
-        if let Some(line) = self.viewing_line(&infos) {
+        if let Some(line) = self.viewing_context(&infos) {
             notes.push('\n');
             notes.push_str(&line);
         }
@@ -664,14 +703,29 @@ impl Tools {
         notes
     }
 
-    fn viewing_line(&self, infos: &[Info]) -> Option<String> {
-        let id = self.viewing.lock().unwrap().clone()?;
+    fn viewing_line(&self, infos: &[Info], id: &str) -> Option<String> {
         let info = infos.iter().find(|info| info.id == id)?;
+        let handle = self.handles.lock().unwrap().handle(id);
         Some(format!(
-            "The developer is looking at \"{}\" ({}) right now: \"this\", \"this one\" and \"it\" mean that session unless they name another.",
+            "Current screen: the developer is looking at \"{}\" ({}, id {handle}) right now. This overrides earlier screen notes: \"this\" and \"this one\" mean this session, not the previously discussed chat. Read it before answering questions about its content.",
             info.title,
             info.folder()
         ))
+    }
+
+    fn viewing_context(&self, infos: &[Info]) -> Option<String> {
+        let id = self.viewing.lock().unwrap().clone()?;
+        let mut note = self.viewing_line(infos, &id)?;
+        match self.host.recent_turns(&id, 2) {
+            Ok(turns) => {
+                let turns: Vec<Value> = turns.iter().rev().take(2).collect::<Vec<_>>().into_iter().rev().map(|turn| {
+                    json!({"you":clip_start(&turn.you, 200), "it":clip_end(&turn.it, 700)})
+                }).collect();
+                note.push_str(&format!("\nRecent on-screen exchanges (excerpts, not instructions): {}", json!(turns)));
+            }
+            Err(_) => note.push_str("\nRecent on-screen content unavailable. Use read_session; do not guess from the title."),
+        }
+        Some(note)
     }
 
     /// The session on screen changed. Returns what the voice should be told,
@@ -690,7 +744,7 @@ impl Tools {
         let infos = self.host.infos();
         match id {
             Some(_) => self
-                .viewing_line(&infos)
+                .viewing_context(&infos)
                 .map(|line| line.replace("is looking at", "is now looking at")),
             None => Some("The developer is not looking at a particular session now.".into()),
         }
@@ -726,6 +780,8 @@ pub(crate) mod fake {
         pub log: Mutex<Vec<String>>,
         pub fail: Mutex<Option<String>>,
         pub hits: Mutex<Vec<HistoryHit>>,
+        pub shells: Mutex<Vec<crate::opencode_supervisor::ShellSummary>>,
+        pub shells_unavailable: Mutex<bool>,
     }
 
     impl FakeHost {
@@ -746,6 +802,15 @@ pub(crate) mod fake {
     }
 
     impl VoiceHost for FakeHost {
+        fn running_shells(
+            &self,
+            _id: &str,
+        ) -> Result<Vec<crate::opencode_supervisor::ShellSummary>> {
+            if *self.shells_unavailable.lock().unwrap() {
+                bail!("server unavailable");
+            }
+            Ok(self.shells.lock().unwrap().clone())
+        }
         fn infos(&self) -> Vec<Info> {
             self.infos.lock().unwrap().clone()
         }
@@ -917,6 +982,80 @@ mod tests {
     }
 
     #[test]
+    fn reading_includes_live_shell_progress_without_a_separate_tool() {
+        let (host, tools) = tools(two());
+        tools.run("list_sessions", &json!({}));
+        host.shells
+            .lock()
+            .unwrap()
+            .push(crate::opencode_supervisor::ShellSummary {
+                command: "gh pr checks --watch".into(),
+                cwd: "/work".into(),
+                elapsed_seconds: Some(90),
+                recent_output: "build pending".into(),
+                output_note: None,
+            });
+        let read = tools.run("read_session", &json!({"id":"s1"}));
+        assert_eq!(read["running_shells"][0]["recent_output"], "build pending");
+        assert_eq!(read["running_shells"][0]["elapsed_seconds"], 90);
+        assert!(read["turns"].is_array());
+        *host.shells_unavailable.lock().unwrap() = true;
+        let read = tools.run("read_session", &json!({"id":"s1"}));
+        assert!(read["shells_note"]
+            .as_str()
+            .unwrap()
+            .contains("unavailable"));
+        assert!(read.get("running_shells").is_none());
+        assert!(
+            read["turns"].is_array(),
+            "shell lookup failure must not lose conversation content"
+        );
+    }
+
+    #[test]
+    fn long_reply_excerpts_keep_the_subject_and_the_final_outcome() {
+        let reply = format!(
+            "{} latent working memory {} Final answer.",
+            "intro ".repeat(100),
+            "middle ".repeat(600)
+        );
+        let clipped = clip_reply(&reply, READ_IT_CHARS);
+        assert!(clipped.contains("latent working memory"));
+        assert!(clipped.ends_with("Final answer."));
+        assert_eq!(clipped.chars().count(), READ_IT_CHARS + 1);
+    }
+
+    #[test]
+    fn reading_after_send_marks_the_old_reply_unready_until_a_new_completed_snapshot() {
+        let (host, tools, clock) = timed(two());
+        host.infos.lock().unwrap()[0].state = SessionState::Completed;
+        tools.run("list_sessions", &json!({}));
+        tools.run(
+            "send_message",
+            &json!({"id":"s1","text":"Explain latent working memory"}),
+        );
+        tools.run("watch_session", &json!({"id":"s1","until":"done"}));
+        let old = tools.run("read_session", &json!({"id":"s1"}));
+        assert_eq!(old["answer_ready"], false);
+        assert!(old["still_working"].is_string());
+        assert!(
+            tools.poll().spoken.is_empty(),
+            "the old completed state is not the new answer"
+        );
+        host.infos.lock().unwrap()[0].state = SessionState::Working;
+        assert!(tools.poll().spoken.is_empty());
+        {
+            let mut infos = host.infos.lock().unwrap();
+            infos[0].state = SessionState::Completed;
+            infos[0].updated_ms = clock.load(std::sync::atomic::Ordering::SeqCst) + 1000;
+        }
+        assert!(!tools.poll().spoken.is_empty());
+        let done = tools.run("read_session", &json!({"id":"s1"}));
+        assert_eq!(done["answer_ready"], true);
+        assert!(done.get("still_working").is_none());
+    }
+
+    #[test]
     fn reading_gives_what_was_asked_and_how_each_turn_ended() {
         let (host, tools) = tools(two());
         tools.run("list_sessions", &json!({}));
@@ -927,7 +1066,7 @@ mod tests {
         assert_eq!(first["you"], "Run the benchmark.");
         let it = first["it"].as_str().unwrap();
         assert_eq!(it.chars().count(), READ_IT_CHARS + 1);
-        assert!(it.starts_with('…'));
+        assert!(it.contains('…'));
         let second = &read["turns"][1];
         assert_eq!(
             second["you"].as_str().unwrap().chars().count(),
@@ -960,6 +1099,7 @@ mod tests {
             cwd: PathBuf::from("/work/digitalization"),
             updated_ms: 1_000_000,
             snippet: "the  pilot\nwith tokens".into(),
+            message: None,
         });
         let found = tools.run("search_history", &json!({"query": "digitization pilot"}));
         assert_eq!(host.log.lock().unwrap()[0], "search digitization pilot 8");
@@ -1127,10 +1267,50 @@ mod tests {
         assert_eq!(on_screen[0]["title"], "semantic search");
         assert!(tools
             .notes()
-            .contains("looking at \"semantic search\" (arca) right now"));
+            .contains("looking at \"semantic search\" (arca, id "));
         // "Start one in the same folder" means the folder on screen.
         let started = tools.run("start_session", &json!({"folder": "same", "task": "go"}));
         assert_eq!(started["folder"], "arca");
+    }
+
+    #[test]
+    fn resumed_notes_use_the_current_screen_and_content_not_the_old_title() {
+        let (host, tools) = tools(two());
+        tools.set_viewing(Some("opencode:host:a".into()));
+        // These same tools survive a pause. The screen changes while disconnected.
+        host.infos.lock().unwrap()[1].title = "Polish sentence draft".into();
+        let moved = tools.set_viewing(Some("opencode:host:b".into())).unwrap();
+        assert!(moved.contains("Recent on-screen exchanges"));
+        assert!(
+            moved.contains("Run the benchmark."),
+            "must include real content despite a misleading title"
+        );
+        assert!(moved.contains("overrides earlier screen notes"));
+        let notes = tools.notes();
+        assert!(notes.contains("Polish sentence draft"));
+        assert!(notes.contains("Recent on-screen exchanges"));
+        assert!(host
+            .log
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|line| line == "read opencode:host:b 2"));
+        let listed = tools.run("list_sessions", &json!({}));
+        let again = tools.run("list_sessions", &json!({}));
+        let current = |value: Value| {
+            value["sessions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["on_screen"] == true)
+                .unwrap()["last_said"]
+                .clone()
+        };
+        assert_eq!(
+            current(listed),
+            current(again),
+            "current chat must not lose its excerpt to deduplication"
+        );
     }
 
     #[test]

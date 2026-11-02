@@ -1493,6 +1493,21 @@ pub fn run_dashboard(
 
 /// Lets a provider's own view start and end a call with the voice key, and say
 /// how the call is going on its bottom row.
+fn voice_session_badge(status: &crate::voice::PanelStatus) -> Option<String> {
+    use crate::voice::Phase;
+    match status.phase {
+        Phase::Idle => None,
+        Phase::Connecting => Some("◌ voice connecting".to_owned()),
+        Phase::Live => {
+            let time = format!("{}:{:02}", status.seconds / 60, status.seconds % 60);
+            Some(match status.speed {
+                Some(speed) => format!("● voice {time}  −  {speed:.1}x  +"),
+                None => format!("● voice {time}"),
+            })
+        }
+    }
+}
+
 fn install_voice_hook(voice: &crate::voice::VoiceService) {
     use crate::voice::{Phase, Toggle};
     let toggler = voice.clone();
@@ -1513,23 +1528,7 @@ fn install_voice_hook(voice: &crate::voice::VoiceService) {
                 Toggle::Failed(error) => Some(error),
             }
         }),
-        badge: Box::new(move || {
-            let status = badger.status();
-            match status.phase {
-                Phase::Idle => status
-                    .paused_for
-                    .map(|seconds| format!("⏸ voice paused {}m · cmd+k continues", seconds / 60)),
-                Phase::Connecting => Some("◌ voice connecting".to_owned()),
-                Phase::Live => {
-                    let time = format!("{}:{:02}", status.seconds / 60, status.seconds % 60);
-                    Some(match status.speed {
-                        // Like the read-aloud controls: slower, the speed, faster.
-                        Some(speed) => format!("● voice {time}  −  {speed:.1}x  +"),
-                        None => format!("● voice {time}"),
-                    })
-                }
-            }
-        }),
+        badge: Box::new(move || voice_session_badge(&badger.status())),
         live: Box::new(move || living.is_live()),
         hush: Box::new(move || {
             hushed.pause();
@@ -3430,6 +3429,20 @@ impl Drop for TerminalSession {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn parked_voice_has_no_opencode_badge_but_live_voice_keeps_speed_controls() {
+        let mut status = crate::voice::PanelStatus::idle();
+        status.paused_for = Some(60);
+        assert!(super::voice_session_badge(&status).is_none());
+        status.phase = crate::voice::Phase::Live;
+        status.seconds = 65;
+        status.speed = Some(1.2);
+        assert_eq!(
+            super::voice_session_badge(&status).as_deref(),
+            Some("● voice 1:05  −  1.2x  +")
+        );
+    }
+
     use std::collections::BTreeSet;
     use std::path::PathBuf;
     use std::sync::Mutex;

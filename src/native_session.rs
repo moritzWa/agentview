@@ -74,6 +74,13 @@ pub fn set_voice_hook(hook: VoiceHook) {
     let _ = VOICE_HOOK.set(hook);
 }
 
+#[cfg(unix)]
+fn pause_for_read_aloud(hook: Option<&VoiceHook>) {
+    if let Some(hook) = hook.filter(|hook| (hook.live)()) {
+        (hook.hush)();
+    }
+}
+
 /// OpenCode's key for "clear input field" (its default).
 const CLEAR_INPUT: &[u8] = b"\x03";
 
@@ -883,6 +890,7 @@ fn detached_registry() -> &'static Mutex<BTreeMap<String, DetachedSession>> {
 
 #[cfg(unix)]
 fn spawn_pty(command: &mut Command) -> Result<(std::process::Child, std::fs::File)> {
+    command.env("AGENTVIEW_NATIVE_BRIDGE", "1");
     let program = command.get_program().to_string_lossy().into_owned();
     let working_directory = command
         .get_current_dir()
@@ -1533,6 +1541,10 @@ fn process_detached_output(
                 keyboard.apply(change);
                 None
             }
+            TerminalQuery::ReadAloudStart => {
+                pause_for_read_aloud(VOICE_HOOK.get());
+                None
+            }
         };
         if let Some(answer) = answer {
             let _ = reply.write_all(answer.as_bytes());
@@ -1562,6 +1574,7 @@ fn observe_shown_output(
                 }
             }
             Some(TerminalQuery::KeyboardChange(change)) => keyboard.apply(change),
+            Some(TerminalQuery::ReadAloudStart) => pause_for_read_aloud(VOICE_HOOK.get()),
             _ => {}
         }
     }
@@ -1580,6 +1593,8 @@ enum TerminalQuery {
     KeyboardFlags,
     /// `CSI > flags u`, `CSI < count u` or `CSI = flags ; mode u`
     KeyboardChange(KeyboardChange),
+    /// The read-aloud plugin is about to start playback, from any entry point.
+    ReadAloudStart,
 }
 
 #[cfg(unix)]
@@ -1691,6 +1706,7 @@ impl TerminalQueryScanner {
         match self.parameters.as_slice() {
             b"10;?" => Some(TerminalQuery::Color(10)),
             b"11;?" => Some(TerminalQuery::Color(11)),
+            b"777;av;tts" => Some(TerminalQuery::ReadAloudStart),
             _ => None,
         }
     }
@@ -2982,6 +2998,66 @@ mod tests {
     #[test]
     fn a_screen_too_small_for_the_badge_gets_none() {
         assert!(badge_spot(&screen_rows(&["", "", "", ""], 20), 28).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_aloud_start_is_detected_across_every_pty_chunk_boundary() {
+        let signal = b"\x1b]777;av;tts\x07";
+        for split in 0..=signal.len() {
+            let mut parser = TerminalQueryScanner::default();
+            let mut events = Vec::new();
+            for chunk in [&signal[..split], &signal[split..]] {
+                events.extend(chunk.iter().filter_map(|byte| parser.feed(*byte)));
+            }
+            assert_eq!(events, vec![TerminalQuery::ReadAloudStart], "split {split}");
+        }
+        let mut parser = TerminalQueryScanner::default();
+        assert!(
+            !b"\x1b]0;777;av;tts\x07"
+                .iter()
+                .any(|byte| parser.feed(*byte).is_some()),
+            "a window title is not playback"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_aloud_notification_uses_the_same_pause_hook_once_not_a_toggle() {
+        use std::sync::{
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+            Arc,
+        };
+        let live = Arc::new(AtomicBool::new(true));
+        let pauses = Arc::new(AtomicUsize::new(0));
+        let watching = live.clone();
+        let ending = live.clone();
+        let count = pauses.clone();
+        let hook = VoiceHook {
+            toggle: Box::new(|_| panic!("read-aloud must not toggle the call")),
+            live: Box::new(move || watching.load(Ordering::SeqCst)),
+            hush: Box::new(move || {
+                ending.store(false, Ordering::SeqCst);
+                count.fetch_add(1, Ordering::SeqCst);
+            }),
+            poll: Box::new(|| None),
+            badge: Box::new(|| None),
+            nudge: Box::new(|_| {}),
+        };
+        for _ in 0..2 {
+            let mut parser = TerminalQueryScanner::default();
+            for byte in b"\x1b]777;av;tts\x07" {
+                if parser.feed(*byte) == Some(TerminalQuery::ReadAloudStart) {
+                    pause_for_read_aloud(Some(&hook));
+                }
+            }
+        }
+        assert!(!live.load(Ordering::SeqCst));
+        assert_eq!(
+            pauses.load(Ordering::SeqCst),
+            1,
+            "already parked stays parked"
+        );
     }
 
     #[test]

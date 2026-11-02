@@ -24,7 +24,7 @@
   {
     "type": "function",
     "name": "read_session",
-    "description": "Read the last few exchanges of one session: for each, what the developer asked and how the agent ended its turn (its final reply). Tool calls, scripts and the narration in between are left out. Works for any session, old ones too.",
+    "description": "Read one session's recent requests and final replies, plus up to six currently running shells: a command excerpt, working folder, elapsed seconds and last few output lines. Output is a progress clue, not an exact execution position. Full scripts, logs and intermediate narration are left out. Works for old sessions too; shells_note means live status was unavailable.",
     "parameters": {
       "type": "object",
       "properties": {
@@ -129,7 +129,7 @@
   {
     "type": "function",
     "name": "search_history",
-    "description": "Find a session anywhere in the history, including old ones that are no longer in list_sessions and what was said inside them (like Cmd+G in OpenCode). Use ordinary words from its title or conversation. Returns up to 8 sessions, best match first, with an id that read_session, send_message and close_session accept.",
+    "description": "Search all session history, including old chats. Use words from the title or conversation. Returns up to 8 sessions, best first, with actual matching-message excerpts, message IDs, roles, creation timestamps in Unix milliseconds, and the preceding/following message when available. Answer from the matching passage; read_session returns recent turns, not necessarily the old passage you searched for. Result session IDs work with read_session, send_message and close_session.",
     "parameters": {
       "type": "object",
       "properties": {

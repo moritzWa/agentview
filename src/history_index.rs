@@ -11,7 +11,24 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 
-pub const REFRESH_INTERVAL: Duration = Duration::from_secs(10 * 60);
+pub const REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+
+#[derive(Clone, Debug, serde::Serialize, PartialEq, Eq)]
+pub struct MessageExcerpt {
+    pub id: String,
+    pub role: String,
+    pub created_at_ms: Option<u64>,
+    pub text: String,
+}
+
+#[derive(Clone, Debug, serde::Serialize, PartialEq, Eq)]
+pub struct MessageMatch {
+    /// May be a subagent; the enclosing search result still restores its root.
+    pub source_session_id: String,
+    pub before: Vec<MessageExcerpt>,
+    pub matched: MessageExcerpt,
+    pub after: Vec<MessageExcerpt>,
+}
 
 /// Dropping the dashboard stops the timer and interrupts an in-flight scan,
 /// including early error returns from terminal setup or event handling.
@@ -212,6 +229,96 @@ impl HistoryIndex {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
+    /// One actual matching message and its adjacent messages, from the same
+    /// read-only WAL snapshot as the match. No provider history is scanned here.
+    pub fn matching_message(
+        &self,
+        session: &str,
+        words: &[String],
+    ) -> Result<Option<MessageMatch>> {
+        if self.provider.is_some() || !self.path.exists() {
+            return Ok(None);
+        }
+        let query = words
+            .iter()
+            .filter(|word| word.chars().count() >= 3)
+            .map(|word| format!("\"{}\"", word.replace('"', "\"\"")))
+            .collect::<Vec<_>>()
+            .join(" OR ");
+        if query.is_empty() {
+            return Ok(None);
+        }
+        let mut db = read_only(&self.path)?;
+        db.busy_timeout(Duration::from_millis(50))?;
+        let tx = db.transaction()?;
+        let root = session.strip_prefix("opencode:host:").unwrap_or(session);
+        let found = tx
+            .query_row(
+                "SELECT d.id,d.source,d.message_id,d.role,d.created_ms,d.text
+             FROM messages_fts JOIN documents d ON d.id=messages_fts.rowid
+             WHERE messages_fts MATCH ?1 AND d.root=?2 AND d.message_id IS NOT NULL
+             ORDER BY CASE WHEN instr(lower(d.text),?3)>0 THEN 0 ELSE 1 END,
+                      bm25(messages_fts),d.created_ms DESC,d.id DESC LIMIT 1",
+                params![query, root, words.join(" ")],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, Option<u64>>(4)?,
+                        row.get::<_, String>(5)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((anchor, source, message, role, created_at_ms, text)) = found else {
+            return Ok(None);
+        };
+        let around = |before: bool| -> Result<Vec<MessageExcerpt>> {
+            let (operator, order) = if before { ("<", "DESC") } else { (">", "ASC") };
+            let sql = format!(
+                "SELECT message_id,role,created_ms FROM documents
+                WHERE source=?1 AND message_id!=?2 AND id {operator} ?3 AND message_id IS NOT NULL
+                GROUP BY message_id ORDER BY min(id) {order} LIMIT 1"
+            );
+            let neighbor = tx
+                .query_row(&sql, params![source, message, anchor], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<u64>>(2)?,
+                    ))
+                })
+                .optional()?;
+            let Some((id, role, created_at_ms)) = neighbor else {
+                return Ok(Vec::new());
+            };
+            let mut statement = tx.prepare("SELECT substr(text,1,600) FROM documents WHERE source=?1 AND message_id=?2 ORDER BY id LIMIT 4")?;
+            let parts = statement
+                .query_map(params![source, id], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(vec![MessageExcerpt {
+                id,
+                role,
+                created_at_ms,
+                text: parts.join("\n").chars().take(600).collect(),
+            }])
+        };
+        let result = MessageMatch {
+            source_session_id: source.clone(),
+            before: around(true)?,
+            matched: MessageExcerpt {
+                id: message.clone(),
+                role,
+                created_at_ms,
+                text: match_excerpt(&text, words),
+            },
+            after: around(false)?,
+        };
+        Ok(Some(result))
+    }
+
     /// `false` means another instance refreshed recently (or owns the writer).
     /// The timestamp and source-session versions commit with the index, so a
     /// cancelled/interrupted refresh cannot incorrectly mark stale data fresh.
@@ -263,7 +370,7 @@ impl HistoryIndex {
         tx.execute_batch(
             "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL);
              CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, updated TEXT NOT NULL, root TEXT NOT NULL);
-             CREATE TABLE IF NOT EXISTS documents (id INTEGER PRIMARY KEY, source TEXT NOT NULL, root TEXT NOT NULL, text TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS documents (id INTEGER PRIMARY KEY, source TEXT NOT NULL, root TEXT NOT NULL, text TEXT NOT NULL, message_id TEXT, created_ms INTEGER, role TEXT);
              CREATE INDEX IF NOT EXISTS documents_source ON documents(source);
              CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(text, content='documents', content_rowid='id', tokenize='trigram');
              CREATE TRIGGER IF NOT EXISTS documents_ai AFTER INSERT ON documents BEGIN
@@ -272,6 +379,25 @@ impl HistoryIndex {
              CREATE TRIGGER IF NOT EXISTS documents_ad AFTER DELETE ON documents BEGIN
                INSERT INTO messages_fts(messages_fts, rowid, text) VALUES ('delete', old.id, old.text);
              END;",
+        )?;
+        let columns = tx
+            .prepare("PRAGMA table_info(documents)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        if !columns.iter().any(|column| column == "message_id") {
+            // Upgrade only this derived cache. Provider storage stays read-only.
+            // WAL readers retain the old index until the complete rebuild commits.
+            tx.execute_batch(
+                "ALTER TABLE documents ADD COLUMN message_id TEXT;
+                ALTER TABLE documents ADD COLUMN created_ms INTEGER;
+                ALTER TABLE documents ADD COLUMN role TEXT;
+                DELETE FROM documents; DELETE FROM sessions;
+                DELETE FROM meta WHERE key='refreshed';",
+            )?;
+        }
+        tx.execute_batch(
+            "CREATE INDEX IF NOT EXISTS documents_message ON documents(source,message_id,id);
+            CREATE INDEX IF NOT EXISTS documents_root ON documents(root);",
         )?;
         let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64;
         let last: i64 = tx
@@ -414,21 +540,34 @@ impl HistoryIndex {
             // Keep each read snapshot short, so a backfill does not pin the
             // OpenCode WAL for its entire duration. The earlier metadata
             // version is conservative if this session changes during a scan.
-            let mut q = source.prepare(
-                "SELECT json_extract(data, '$.text') FROM part
-                 WHERE session_id=?1 AND json_extract(data, '$.type')='text'
-                   AND json_extract(data, '$.synthetic') IS NOT 1
-                   AND length(json_extract(data, '$.text')) > 0 ORDER BY time_created, id",
-            )?;
+            let query = "SELECT json_extract(p.data,'$.text'),p.message_id,COALESCE(m.time_created,p.time_created),
+                COALESCE(json_extract(m.data,'$.role'),'unknown')
+                FROM part p LEFT JOIN message m ON m.id=p.message_id
+                WHERE p.session_id=?1 AND json_extract(p.data,'$.type')='text'
+                AND json_extract(p.data,'$.synthetic') IS NOT 1
+                AND length(json_extract(p.data,'$.text'))>0 ORDER BY COALESCE(m.time_created,p.time_created),p.message_id,p.id";
+            // Older minimal stores may not have message records. Their text is
+            // still searchable; mark role unknown rather than inventing metadata.
+            let mut q = source.prepare(query).or_else(|_| {
+                source.prepare(
+                    "SELECT json_extract(data,'$.text'),id,time_created,'unknown' FROM part
+                 WHERE session_id=?1 AND json_extract(data,'$.type')='text'
+                 AND json_extract(data,'$.synthetic') IS NOT 1
+                 AND length(json_extract(data,'$.text'))>0 ORDER BY time_created,id",
+                )
+            })?;
             let mut rows = q.query([&id])?;
             while let Some(row) = rows.next()? {
                 if cancelled.load(Ordering::Relaxed) {
                     bail!("history indexing cancelled");
                 }
                 let text: String = row.get(0)?;
+                let message: Option<String> = row.get(1)?;
+                let created: Option<u64> = row.get(2)?;
+                let role: String = row.get(3)?;
                 tx.execute(
-                    "INSERT INTO documents(source, root, text) VALUES (?1, ?2, ?3)",
-                    params![id, root, text],
+                    "INSERT INTO documents(source,root,text,message_id,created_ms,role) VALUES (?1,?2,?3,?4,?5,?6)",
+                    params![id,root,text,message,created,role],
                 )?;
             }
             drop(rows);
@@ -527,6 +666,27 @@ impl HistoryIndex {
         }
         Ok(())
     }
+}
+
+fn match_excerpt(text: &str, words: &[String]) -> String {
+    let lower = text.to_lowercase();
+    let at = words
+        .iter()
+        .filter_map(|word| lower.find(word))
+        .min()
+        .unwrap_or(0);
+    let start = lower[..at].chars().count().saturating_sub(250);
+    let excerpt: String = text.chars().skip(start).take(1200).collect();
+    format!(
+        "{}{}{}",
+        if start > 0 { "…" } else { "" },
+        excerpt,
+        if text.chars().count() > start + 1200 {
+            "…"
+        } else {
+            ""
+        }
+    )
 }
 
 fn read_only(path: &Path) -> Result<Connection> {
@@ -641,6 +801,87 @@ pub(crate) mod tests {
             .unwrap();
         }
         (dir, index)
+    }
+
+    #[test]
+    fn matching_messages_keep_ids_timestamps_and_adjacent_exchanges() {
+        let (_dir, index) = v2_fixture(false, false);
+        let source = Connection::open(&index.source).unwrap();
+        let text = format!(
+            "{} Latent working memory is the shared KV cache. {}",
+            "intro ".repeat(200),
+            "ending ".repeat(400)
+        );
+        source
+            .execute(
+                "UPDATE session_message SET data=?1 WHERE id='a'",
+                [serde_json::json!({"content":[{"type":"text","text":text}]}).to_string()],
+            )
+            .unwrap();
+        source
+            .execute(
+                "INSERT INTO session_message VALUES('followup','ses_v2','user',6,30,30,?1)",
+                [r#"{"text":"How does it compare with Interlat?"}"#],
+            )
+            .unwrap();
+        source.execute("INSERT INTO session_message VALUES('speed','ses_v2','assistant',7,40,40,?1)", [r#"{"content":[{"type":"text","text":"Grok audio.output.speed accepts 0.7 to 1.5."}]}"#]).unwrap();
+        assert!(refresh(&index));
+        let found = index
+            .matching_message("opencode:host:ses_v2", &["latent working memory".into()])
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.source_session_id, "ses_v2");
+        assert_eq!(found.matched.id, "a");
+        assert_eq!(found.matched.role, "assistant");
+        assert_eq!(found.matched.created_at_ms, Some(11));
+        assert!(found
+            .matched
+            .text
+            .contains("Latent working memory is the shared KV cache"));
+        assert!(found.matched.text.chars().count() <= 1202);
+        assert_eq!(found.before[0].id, "u");
+        assert_eq!(found.after[0].id, "followup");
+        let speed = index
+            .matching_message("opencode:host:ses_v2", &["0.7".into(), "1.5".into()])
+            .unwrap()
+            .unwrap();
+        assert_eq!(speed.matched.id, "speed");
+        assert_eq!(speed.matched.created_at_ms, Some(40));
+        assert!(speed.matched.text.contains("0.7 to 1.5"));
+        assert!(index
+            .matching_message("opencode:host:fork_v2", &["latent working memory".into()])
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn old_text_only_index_is_upgraded_even_when_it_was_just_refreshed() {
+        let (_dir, index) = fixture();
+        let db = Connection::open(&index.path).unwrap();
+        db.execute_batch("CREATE TABLE meta(key TEXT PRIMARY KEY,value INTEGER NOT NULL);
+            CREATE TABLE sessions(id TEXT PRIMARY KEY,updated TEXT NOT NULL,root TEXT NOT NULL);
+            CREATE TABLE documents(id INTEGER PRIMARY KEY,source TEXT NOT NULL,root TEXT NOT NULL,text TEXT NOT NULL);
+            CREATE VIRTUAL TABLE messages_fts USING fts5(text,content='documents',content_rowid='id',tokenize='trigram');").unwrap();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        db.execute("INSERT INTO meta VALUES('refreshed',?1)", [now])
+            .unwrap();
+        drop(db);
+        assert!(
+            refresh(&index),
+            "metadata upgrade must not wait for freshness timeout"
+        );
+        assert!(index
+            .search("Upload")
+            .unwrap()
+            .contains_key("opencode:host:ses_chat"));
+        let found = index
+            .matching_message("opencode:host:ses_chat", &["upload".into()])
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.matched.created_at_ms, Some(1));
     }
 
     #[test]

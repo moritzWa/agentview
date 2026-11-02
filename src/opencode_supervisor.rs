@@ -129,6 +129,64 @@ pub struct ManagedOpenCodeSession {
     pub tail: String,
 }
 
+/// A small live snapshot for session inspection, never the full script or log.
+#[derive(Clone, Debug, Serialize, Eq, PartialEq)]
+pub struct ShellSummary {
+    pub command: String,
+    pub cwd: String,
+    pub elapsed_seconds: Option<u64>,
+    pub recent_output: String,
+    pub output_note: Option<String>,
+}
+
+fn shell_summary(shell: &Value, output: &str, now_ms: u64) -> ShellSummary {
+    let command = shell["command"].as_str().unwrap_or_default();
+    let first = command.lines().next().unwrap_or_default();
+    let mut command: String = first.chars().take(200).collect();
+    if first.chars().count() > 200
+        || shell["command"]
+            .as_str()
+            .unwrap_or_default()
+            .lines()
+            .count()
+            > 1
+    {
+        command.push_str("… (script excerpt)");
+    }
+    let tail = output
+        .lines()
+        .rev()
+        .take(3)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join("\n");
+    let recent_output = tail
+        .chars()
+        .rev()
+        .take(400)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    ShellSummary {
+        command,
+        cwd: shell["cwd"]
+            .as_str()
+            .unwrap_or_default()
+            .chars()
+            .take(300)
+            .collect(),
+        elapsed_seconds: shell
+            .pointer("/time/started")
+            .and_then(Value::as_u64)
+            .map(|start| now_ms.saturating_sub(start) / 1000),
+        recent_output,
+        output_note: None,
+    }
+}
+
 /// One message of a session, as plain text.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionMessage {
@@ -1046,6 +1104,62 @@ impl OpenCodeSupervisor {
         let roots = crate::adapters::opencode_db::subagent_root_by_id(&self.executable, &ids);
         copy_shells_to_parents(&mut shells, &roots);
         Ok(shells)
+    }
+
+    /// Up to six live shells belonging to this session. Output is only a recent
+    /// excerpt, not proof of the script's current step or percent complete.
+    pub fn session_shells(&self, session_id: &str, cwd: &Path) -> Result<Vec<ShellSummary>> {
+        let record = self
+            .live_record()?
+            .context("no live server for shell inspection")?;
+        if record.api != ApiVersion::V2 {
+            bail!("live shell inspection requires OpenCode V2");
+        }
+        let listed =
+            self.request_json(&record, "GET", &with_directory_query("/shell", cwd), None)?;
+        let mut summaries = Vec::new();
+        for shell in listed
+            .as_array()
+            .context("invalid shell list")?
+            .iter()
+            .filter(|shell| {
+                shell["status"] == "running"
+                    && shell.pointer("/metadata/sessionID").and_then(Value::as_str)
+                        == Some(session_id)
+            })
+            .take(6)
+        {
+            let mut summary = shell_summary(shell, "", now_millis());
+            let output = (|| -> Result<String> {
+                let id = shell["id"].as_str().context("missing shell id")?;
+                let path =
+                    with_directory_query(&format!("/shell/{}/output", url_path_segment(id)), cwd);
+                let size = self.request_json(&record, "GET", &format!("{path}&limit=1"), None)?;
+                let size = size["size"].as_u64().context("missing output size")?;
+                let tail = self.request_json(
+                    &record,
+                    "GET",
+                    &format!("{path}&cursor={}&limit=1024", size.saturating_sub(1024)),
+                    None,
+                )?;
+                Ok(tail["output"]
+                    .as_str()
+                    .context("missing output")?
+                    .to_owned())
+            })();
+            match output {
+                Ok(output) => {
+                    summary.recent_output =
+                        shell_summary(shell, &output, now_millis()).recent_output
+                }
+                Err(_) => {
+                    summary.output_note =
+                        Some("output unavailable; shell may have just exited".to_owned())
+                }
+            }
+            summaries.push(summary);
+        }
+        Ok(summaries)
     }
 
     /// Turns the live server is running in `directories`, for sessions this
@@ -2632,7 +2746,8 @@ fn v2_request(path: &str, body: Option<&Value>) -> Result<(String, Option<Value>
     if matches!(
         route.as_str(),
         "/api/model" | "/api/provider" | "/api/form" | "/api/permission/request" | "/api/shell"
-    ) {
+    ) || route.starts_with("/api/shell/")
+    {
         if let Some(directory) = directory {
             queries.push(format!("location%5Bdirectory%5D={directory}"));
         }
@@ -4079,6 +4194,99 @@ mod tests {
             ]
         );
         assert!(super::running_shell_entries(&serde_json::json!({})).is_empty());
+    }
+
+    #[test]
+    fn shell_summary_is_a_bounded_command_and_recent_progress_excerpt() {
+        let shell = json!({"command":"python train.py\nSECRET_FULL_SCRIPT", "cwd":"/work", "time":{"started":1000}});
+        let summary = super::shell_summary(
+            &shell,
+            "old output\ncompile\ntest 42/90\nwaiting for deploy",
+            61000,
+        );
+        assert_eq!(summary.command, "python train.py… (script excerpt)");
+        assert_eq!(summary.cwd, "/work");
+        assert_eq!(summary.elapsed_seconds, Some(60));
+        assert_eq!(
+            summary.recent_output,
+            "compile\ntest 42/90\nwaiting for deploy"
+        );
+        let summary = super::shell_summary(&shell, &"🦀".repeat(5000), 0);
+        assert_eq!(summary.recent_output.chars().count(), 400);
+        assert_eq!(summary.elapsed_seconds, Some(0));
+        assert_eq!(
+            super::shell_summary(&json!({}), "", 0).elapsed_seconds,
+            None
+        );
+    }
+
+    #[test]
+    fn shell_output_keeps_location_and_bounded_cursor_in_v2() {
+        assert_eq!(
+            super::v2_request(
+                "/shell/sh_a/output?directory=%2Fwork&cursor=4000&limit=1024",
+                None
+            )
+            .unwrap()
+            .0,
+            "/api/shell/sh_a/output?cursor=4000&limit=1024&location%5Bdirectory%5D=%2Fwork"
+        );
+    }
+
+    /// Opt-in integration test against an already-running V2 server. It creates
+    /// only its own short-lived shells and removes them even if an assertion fails.
+    #[test]
+    #[ignore]
+    fn live_voice_shell_snapshot() {
+        let executable = std::env::var("VOICE_TEST_OPENCODE")
+            .expect("set VOICE_TEST_OPENCODE to the existing OpenCode binary");
+        let supervisor = super::OpenCodeSupervisor::host(executable).unwrap();
+        let record = supervisor
+            .live_record()
+            .unwrap()
+            .expect("test needs an existing live server");
+        assert_eq!(record.api, super::ApiVersion::V2);
+        let cwd = std::env::current_dir().unwrap();
+        let session = format!("voice_shell_snapshot_{}", std::process::id());
+        struct Cleanup<'a> {
+            supervisor: &'a super::OpenCodeSupervisor,
+            record: &'a super::ServerRecord,
+            cwd: &'a std::path::Path,
+            ids: Vec<String>,
+        }
+        impl Drop for Cleanup<'_> {
+            fn drop(&mut self) {
+                for id in &self.ids {
+                    let path = super::with_directory_query(&format!("/shell/{id}"), self.cwd);
+                    let _ = self
+                        .supervisor
+                        .request_json(self.record, "DELETE", &path, None);
+                }
+            }
+        }
+        let mut cleanup = Cleanup {
+            supervisor: &supervisor,
+            record: &record,
+            cwd: &cwd,
+            ids: Vec::new(),
+        };
+        for owner in [&session, &format!("{session}_unrelated")] {
+            let created = supervisor.request_json(&record, "POST", &super::with_directory_query("/shell", &cwd), Some(&json!({
+                "command":"printf 'phase: waiting for checks\\n'; sleep 30", "timeout":60000,
+                "metadata":{"sessionID":owner}
+            }))).unwrap();
+            cleanup.ids.push(created["id"].as_str().unwrap().to_owned());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let shells = supervisor.session_shells(&session, &cwd).unwrap();
+        assert_eq!(shells.len(), 1, "only the requested session's live shells");
+        assert_eq!(
+            shells[0].recent_output, "phase: waiting for checks",
+            "{shells:?}"
+        );
+        assert!(shells[0].command.contains("sleep 30"));
+        assert_eq!(shells[0].cwd, cwd.to_string_lossy());
+        assert!(shells[0].output_note.is_none());
     }
 
     #[test]

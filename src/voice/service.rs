@@ -912,7 +912,9 @@ impl Inner {
         };
         let this = self.clone();
         thread::spawn(move || {
+            tools.set_viewing(viewing());
             let mut notes = tools.notes();
+            log("context", json!({"notes": notes}));
             let conversation = resume.as_ref().and_then(|(id, _, _)| id.clone());
             if let Some((_, recap, minutes)) = &resume {
                 // Grok replays the call itself; the other provider is told the end of it.
@@ -975,6 +977,7 @@ impl Inner {
                                     "url": xai::realtime_url(&settings, conversation.as_deref()),
                                     "token": token,
                                     "session": xai::session_update(&settings, &notes),
+                                    "context": notes,
                                 }),
                             );
                         }
@@ -1901,6 +1904,9 @@ mod tests {
         );
         call.service.toggle();
         say(call, id, json!({"type": "offer", "provider": "xai"}));
+        // Like the real page, do not report Grok live before the async token
+        // and session configuration have arrived. Otherwise a late answer can
+        // race with the test's subsequent hangup assertion.
         while next(&inbox)["type"] != "answer" {}
         say(
             call,

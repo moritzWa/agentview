@@ -235,6 +235,13 @@ pub trait ProviderController: Send + Sync {
         )
     }
 
+    fn running_shells(
+        &self,
+        _session: &AgentSession,
+    ) -> Result<Vec<crate::opencode_supervisor::ShellSummary>> {
+        Ok(Vec::new())
+    }
+
     /// The last `turns` exchanges of a session: what was asked and how the
     /// agent ended its turn, without the tool calls between.
     fn recent_turns(
@@ -785,6 +792,14 @@ impl ControlHub {
         self.ensure_provider_io()?;
         self.controller(&session.provider)?
             .recent_turns(session, turns)
+    }
+
+    pub fn running_shells(
+        &self,
+        session: &AgentSession,
+    ) -> Result<Vec<crate::opencode_supervisor::ShellSummary>> {
+        self.ensure_provider_io()?;
+        self.controller(&session.provider)?.running_shells(session)
     }
 
     pub fn edit_last_message(&self, session: &AgentSession, text: &str) -> Result<ControlOutcome> {
