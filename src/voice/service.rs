@@ -1970,18 +1970,14 @@ mod tests {
             .unwrap()
             .resume
             .is_none());
-        // One paused too long ago starts fresh as well.
-        call.service.toggle();
+        // An expired pause starts fresh as well. Use a zero-length window
+        // instead of subtracting from Instant, which underflows on Windows
+        // runners whose monotonic clock started less than 31 minutes ago.
+        let mut settings = grok();
+        settings.resume_minutes = 0;
+        let call = rig(settings, Some("xai-test"));
         let (_, _inbox) = live_grok_call(&call);
         call.service.pause();
-        call.service
-            .inner
-            .parked
-            .lock()
-            .unwrap()
-            .as_mut()
-            .unwrap()
-            .at = Instant::now() - Duration::from_secs(31 * 60);
         assert_eq!(call.service.status().paused_for, None);
         call.service.toggle();
         assert!(call

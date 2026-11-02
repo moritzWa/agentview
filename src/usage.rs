@@ -300,18 +300,7 @@ fn fetch_claude() -> Option<Usage> {
         .or_else(|| std::fs::read_to_string(&path).ok())?;
     let mut credentials: Value = serde_json::from_str(&credentials).ok()?;
     if claude_token_expiring(&credentials, now()) {
-        let refresh = credentials
-            .pointer("/claudeAiOauth/refreshToken")?
-            .as_str()?;
-        let response = post_json(
-            "https://platform.claude.com/v1/oauth/token",
-            &serde_json::json!({
-                "grant_type": "refresh_token",
-                "refresh_token": refresh,
-                "client_id": "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
-            }),
-        )?;
-        apply_claude_refresh(&mut credentials, &response, now())?;
+        refresh_claude_credentials(&mut credentials)?;
         // Persist rotated refresh tokens in the same store Claude Code uses.
         // Never put credentials in subprocess arguments or diagnostic output.
         let encoded = serde_json::to_string(&credentials).ok()?;
@@ -332,6 +321,23 @@ fn fetch_claude() -> Option<Usage> {
         ],
     )?;
     Usage::parse_claude(&body)
+}
+
+fn refresh_claude_credentials(credentials: &mut Value) -> Option<()> {
+    let refresh = credentials
+        .pointer("/claudeAiOauth/refreshToken")?
+        .as_str()?;
+    let response = post_json(
+        "https://platform.claude.com/v1/oauth/token",
+        &serde_json::json!({
+            "grant_type": "refresh_token",
+            "refresh_token": refresh,
+            "client_id": "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
+            "scope": credentials.pointer("/claudeAiOauth/scopes")?.as_array()?
+                .iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" "),
+        }),
+    )?;
+    apply_claude_refresh(credentials, &response, now())
 }
 
 #[cfg(unix)]
@@ -387,6 +393,8 @@ fn post_json(url: &str, body: &Value) -> Option<Value> {
             "-sf",
             "--max-time",
             "10",
+            "--user-agent",
+            "agentview/0.2.0",
             "-H",
             "Content-Type: application/json",
             "--data-binary",
@@ -531,6 +539,21 @@ mod tests {
         assert_eq!(usage.provider, "claude");
         assert!(!usage.windows.is_empty());
         println!("{}", usage.summary(now()).0);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "renews the local Claude login and writes it back to Keychain"]
+    fn live_claude_renewal() {
+        let lock = claude_usage_lock().unwrap();
+        let mut credentials: Value =
+            serde_json::from_str(&keychain_claude_credentials().expect("local Claude login"))
+                .unwrap();
+        refresh_claude_credentials(&mut credentials).expect("renew Claude login");
+        save_keychain_claude_credentials(&credentials.to_string()).expect("save renewed login");
+        assert!(!claude_token_expiring(&credentials, now()));
+        drop(lock);
+        live_claude_usage();
     }
 
     #[test]
