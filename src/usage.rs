@@ -289,9 +289,38 @@ impl Drop for UsageWatcher {
 }
 
 fn fetch_claude() -> Option<Usage> {
-    let credentials = keychain_claude_credentials()
-        .or_else(|| std::fs::read_to_string(home()?.join(".claude/.credentials.json")).ok())?;
-    let credentials: Value = serde_json::from_str(&credentials).ok()?;
+    // Several dashboards may be open. Read credentials only after acquiring
+    // the lock so they cannot simultaneously rotate the same refresh token.
+    #[cfg(unix)]
+    let _lock = claude_usage_lock()?;
+    let keychain = keychain_claude_credentials();
+    let path = home()?.join(".claude/.credentials.json");
+    let credentials = keychain
+        .clone()
+        .or_else(|| std::fs::read_to_string(&path).ok())?;
+    let mut credentials: Value = serde_json::from_str(&credentials).ok()?;
+    if claude_token_expiring(&credentials, now()) {
+        let refresh = credentials
+            .pointer("/claudeAiOauth/refreshToken")?
+            .as_str()?;
+        let response = post_json(
+            "https://platform.claude.com/v1/oauth/token",
+            &serde_json::json!({
+                "grant_type": "refresh_token",
+                "refresh_token": refresh,
+                "client_id": "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
+            }),
+        )?;
+        apply_claude_refresh(&mut credentials, &response, now())?;
+        // Persist rotated refresh tokens in the same store Claude Code uses.
+        // Never put credentials in subprocess arguments or diagnostic output.
+        let encoded = serde_json::to_string(&credentials).ok()?;
+        if keychain.is_some() {
+            save_keychain_claude_credentials(&encoded)?;
+        } else {
+            std::fs::write(path, encoded).ok()?;
+        }
+    }
     let token = credentials
         .pointer("/claudeAiOauth/accessToken")?
         .as_str()?;
@@ -303,6 +332,82 @@ fn fetch_claude() -> Option<Usage> {
         ],
     )?;
     Usage::parse_claude(&body)
+}
+
+#[cfg(unix)]
+fn claude_usage_lock() -> Option<std::fs::File> {
+    use std::os::fd::AsRawFd;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(home()?.join(".claude/.agentview-usage.lock"))
+        .ok()?;
+    (unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0).then_some(file)
+}
+
+fn claude_token_expiring(credentials: &Value, now: u64) -> bool {
+    credentials
+        .pointer("/claudeAiOauth/expiresAt")
+        .and_then(Value::as_u64)
+        .is_some_and(|expires| expires / 1000 <= now + 60)
+}
+
+fn apply_claude_refresh(credentials: &mut Value, response: &Value, now: u64) -> Option<()> {
+    let access = response.get("access_token")?.as_str()?;
+    let expires = response.get("expires_in")?.as_u64()?;
+    let oauth = credentials.get_mut("claudeAiOauth")?.as_object_mut()?;
+    oauth.insert("accessToken".into(), access.into());
+    oauth.insert("expiresAt".into(), ((now + expires) * 1000).into());
+    if let Some(refresh) = response.get("refresh_token").and_then(Value::as_str) {
+        oauth.insert("refreshToken".into(), refresh.into());
+    }
+    Some(())
+}
+
+#[cfg(target_os = "macos")]
+fn save_keychain_claude_credentials(credentials: &str) -> Option<()> {
+    security_framework::passwords::set_generic_password(
+        "Claude Code-credentials",
+        &std::env::var("USER").ok()?,
+        credentials.as_bytes(),
+    )
+    .ok()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn save_keychain_claude_credentials(_credentials: &str) -> Option<()> {
+    None
+}
+
+fn post_json(url: &str, body: &Value) -> Option<Value> {
+    use std::io::Write;
+    let mut child = Command::new("curl")
+        .args([
+            "-sf",
+            "--max-time",
+            "10",
+            "-H",
+            "Content-Type: application/json",
+            "--data-binary",
+            "@-",
+            url,
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    child
+        .stdin
+        .take()?
+        .write_all(body.to_string().as_bytes())
+        .ok()?;
+    let output = child.wait_with_output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    serde_json::from_slice(&output.stdout).ok()
 }
 
 fn fetch_codex() -> Option<Usage> {
@@ -418,6 +523,54 @@ fn parse_rfc3339(text: &str) -> Option<u64> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    #[ignore = "uses the local Claude login and the live usage API"]
+    fn live_claude_usage() {
+        let usage = fetch_claude().expect("Claude usage must be available");
+        assert_eq!(usage.provider, "claude");
+        assert!(!usage.windows.is_empty());
+        println!("{}", usage.summary(now()).0);
+    }
+
+    #[test]
+    fn expired_claude_credentials_are_refreshed_without_losing_account_metadata() {
+        let mut credentials = json!({"claudeAiOauth": {
+            "accessToken": "expired", "refreshToken": "old-refresh", "expiresAt": 1000000,
+            "subscriptionType": "max", "scopes": ["user:profile"]
+        }, "other": true});
+        assert!(!claude_token_expiring(&credentials, 939));
+        assert!(claude_token_expiring(&credentials, 940));
+        apply_claude_refresh(
+            &mut credentials,
+            &json!({
+                "access_token": "new", "refresh_token": "rotated", "expires_in": 3600
+            }),
+            1000,
+        )
+        .unwrap();
+        assert_eq!(credentials["claudeAiOauth"]["accessToken"], "new");
+        assert_eq!(credentials["claudeAiOauth"]["refreshToken"], "rotated");
+        assert_eq!(credentials["claudeAiOauth"]["expiresAt"], 4600000_u64);
+        assert_eq!(credentials["claudeAiOauth"]["subscriptionType"], "max");
+        assert_eq!(credentials["other"], true);
+        assert!(!claude_token_expiring(&credentials, 1000));
+        apply_claude_refresh(
+            &mut credentials,
+            &json!({
+                "access_token": "newer", "expires_in": 3600
+            }),
+            2000,
+        )
+        .unwrap();
+        assert_eq!(credentials["claudeAiOauth"]["refreshToken"], "rotated");
+        let before = credentials.clone();
+        assert_eq!(
+            apply_claude_refresh(&mut credentials, &json!({"error": "invalid_grant"}), 2000),
+            None
+        );
+        assert_eq!(credentials, before);
+    }
 
     #[test]
     fn parses_timestamps_with_fractions_and_offsets() {
