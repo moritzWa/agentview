@@ -17,6 +17,12 @@ and released versions are intended to follow Semantic Versioning.
   Parked calls no longer show a badge inside OpenCode.
 - Shared history search refreshes every 30 seconds instead of ten minutes.
   Voice search counts matches for each query word correctly.
+- History search returns matching-message excerpts with IDs, timestamps and
+  adjacent messages. Long session replies retain their beginning and ending.
+  Follow-up answers are watched until completion before being relayed.
+- Read-aloud playback started by a double-click or playback control pauses the
+  voice call too. Agent View keeps a concise paused-call age in its footer;
+  OpenCode itself does not show a parked-call badge.
 
 - Voice Mode: press Ctrl+K (or type `/voice`) and talk to your OpenCode sessions
   while your hands are busy. A pinned browser tab holds the microphone and

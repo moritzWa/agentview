@@ -1267,7 +1267,15 @@ fn voice_bar(app: &App, width: u16) -> String {
     use crate::voice::{Phase, Who};
     let voice = &app.voice;
     let head = match voice.phase {
-        Phase::Idle => return String::new(),
+        Phase::Idle => {
+            return voice.paused_for.map_or_else(String::new, |seconds| {
+                let minutes = seconds / 60;
+                format!(
+                    "voice call paused {minutes} {} ago · ctrl+k resumes",
+                    if minutes == 1 { "minute" } else { "minutes" }
+                )
+            })
+        }
         Phase::Connecting => "● voice: connecting".to_owned(),
         Phase::Live => {
             let time = format!(
@@ -1310,7 +1318,7 @@ fn voice_bar(app: &App, width: u16) -> String {
 }
 
 fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    if app.voice.phase != crate::voice::Phase::Idle {
+    if app.voice.phase != crate::voice::Phase::Idle || app.voice.paused_for.is_some() {
         frame.render_widget(
             Paragraph::new(voice_bar(app, area.width))
                 .style(Style::default().bg(palette().bg).fg(palette().accent))
@@ -2970,6 +2978,29 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn paused_voice_stays_in_dashboard_footer_without_live_controls_or_transcript() {
+        let mut app = App::new(SessionSnapshot {
+            sessions: Vec::new(),
+            warnings: Vec::new(),
+        });
+        app.voice.paused_for = Some(125);
+        app.voice.speed = Some(1.3);
+        app.voice.lines.push(crate::voice::Line {
+            who: crate::voice::Who::Agent,
+            text: "old transcript".into(),
+        });
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(text.contains("voice call paused 2 minutes ago"));
+        assert!(text.contains("ctrl+k resumes"));
+        assert!(!text.contains("1.3x"));
+        assert!(!text.contains("old transcript"));
+        app.voice.paused_for = None;
+        assert!(voice_bar(&app, 120).is_empty());
+    }
 
     #[test]
     fn draft_layout_wraps_long_lines_and_tracks_the_cursor() {

@@ -105,6 +105,14 @@ Voice history search uses the same SQLite full-text index as the global restore
 picker. It refreshes every 30 seconds at low priority and only reindexes changed
 sessions. Routine voice actions get a short "done", not a narrated recap.
 
+Search results include an excerpt of the actual matching message, its ID, role
+and creation timestamp (Unix milliseconds), plus the preceding and following
+message when present. Matches come from the shared index, not a second history
+scan. An older index is rebuilt once to add message metadata. Session reads keep
+both the beginning and end of long replies; search excerpts center on the match.
+After asking a session for an answer, the voice watches until it is done, then
+reads and relays the final reply. Reads mark stale/incomplete answers explicitly.
+
 On connection (including resume) and screen switches, the voice gets the current
 session's ID, title and two recent exchanges. For Grok, the current-screen note
 is inserted after conversation replay and before buffered microphone audio.
@@ -122,10 +130,18 @@ connection is closed. Parked calls show no indicator inside OpenCode; the active
 call badge stays at the bottom right below the input. `/voice new` makes the next
 call start fresh.
 
+Agent View's own footer keeps a concise `voice call paused 2 minutes ago` status
+with `ctrl+k resumes`. It does not show old transcript text or speed buttons.
+
 **`Cmd+S` in a session's own view** (Ctrl+S, the key your read-aloud plugin
 answers) pauses a live call, and the key still goes through to OpenCode, so the
 plugin starts reading the latest answer. The call is paused, not ended: press
 `Cmd+K` when you want to talk again. Outside a call it does only what it did.
+
+The read-aloud plugin also notifies Agent View from its central playback-start
+path. Double-click, Option+click, playback controls and media-key starts pause a
+call too, without depending on a keyboard shortcut. The notification travels
+over the existing native terminal connection and needs no account or server.
 
 **A draft comes along.** Press `Cmd+K` with text already in an OpenCode session's
 input box and the voice knows that text and which session it belongs to. Say

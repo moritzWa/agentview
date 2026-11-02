@@ -27,6 +27,7 @@ pub struct HistoryHit {
     pub updated_ms: u64,
     /// Where the words matched, when they matched inside the conversation.
     pub snippet: String,
+    pub message: Option<crate::history_index::MessageMatch>,
 }
 
 /// What Voice Mode needs from the dashboard. The real one wraps the control
@@ -122,6 +123,18 @@ fn clip_end(text: &str, max: usize) -> String {
     }
     let tail: String = text.chars().skip(count - max).collect();
     format!("…{tail}")
+}
+
+/// Keep both the subject at the start and the outcome/question at the end.
+fn clip_reply(text: &str, max: usize) -> String {
+    let text = text.trim();
+    let count = text.chars().count();
+    if count <= max {
+        return text.to_owned();
+    }
+    let head: String = text.chars().take(max / 2).collect();
+    let tail: String = text.chars().skip(count - (max - max / 2)).collect();
+    format!("{head}…{tail}")
 }
 
 pub fn now_ms() -> u64 {
@@ -332,7 +345,7 @@ impl Tools {
         let mut total = 0;
         for turn in turns.iter().rev() {
             let you = clip_start(&turn.you, READ_YOU_CHARS);
-            let it = clip_end(&turn.it, READ_IT_CHARS);
+            let it = clip_reply(&turn.it, READ_IT_CHARS);
             total += you.len() + it.len();
             if total > READ_TOTAL_CHARS && !kept.is_empty() {
                 break;
@@ -355,9 +368,18 @@ impl Tools {
         }
         if let Some(info) = info {
             out["title"] = json!(info.title);
-            if info.busy() {
+            out["state"] = json!(info.state_word());
+            let awaiting_new_reply = self
+                .touched
+                .lock()
+                .unwrap()
+                .get(&id)
+                .is_some_and(|sent| *sent >= info.updated_ms);
+            out["answer_ready"] =
+                json!(info.state == SessionState::Completed && !awaiting_new_reply);
+            if info.busy() || awaiting_new_reply {
                 out["still_working"] =
-                    json!("the last turn is not finished: its \"it\" is only what it said so far");
+                    json!("the requested reply is not confirmed complete; this content may be stale or unfinished. Wait for done before reporting it as the answer");
             }
         }
         if kept.is_empty() {
@@ -385,6 +407,9 @@ impl Tools {
                         &hit.snippet.split_whitespace().collect::<Vec<_>>().join(" "),
                         MATCH_CHARS
                     ));
+                }
+                if let Some(message) = &hit.message {
+                    row["message"] = json!(message);
                 }
                 row
             })
@@ -489,7 +514,9 @@ impl Tools {
             registered: now,
             expects_busy: just_given_work,
         });
-        Ok(json!({"ok": true, "note": "the developer will hear when it happens"}))
+        Ok(
+            json!({"ok": true, "watching": true, "note": "watch registered, not completed. Wait for the completion notification before reading and relaying the answer"}),
+        )
     }
 
     /// Turns a spoken folder into a directory.
@@ -986,6 +1013,49 @@ mod tests {
     }
 
     #[test]
+    fn long_reply_excerpts_keep_the_subject_and_the_final_outcome() {
+        let reply = format!(
+            "{} latent working memory {} Final answer.",
+            "intro ".repeat(100),
+            "middle ".repeat(600)
+        );
+        let clipped = clip_reply(&reply, READ_IT_CHARS);
+        assert!(clipped.contains("latent working memory"));
+        assert!(clipped.ends_with("Final answer."));
+        assert_eq!(clipped.chars().count(), READ_IT_CHARS + 1);
+    }
+
+    #[test]
+    fn reading_after_send_marks_the_old_reply_unready_until_a_new_completed_snapshot() {
+        let (host, tools, clock) = timed(two());
+        host.infos.lock().unwrap()[0].state = SessionState::Completed;
+        tools.run("list_sessions", &json!({}));
+        tools.run(
+            "send_message",
+            &json!({"id":"s1","text":"Explain latent working memory"}),
+        );
+        tools.run("watch_session", &json!({"id":"s1","until":"done"}));
+        let old = tools.run("read_session", &json!({"id":"s1"}));
+        assert_eq!(old["answer_ready"], false);
+        assert!(old["still_working"].is_string());
+        assert!(
+            tools.poll().spoken.is_empty(),
+            "the old completed state is not the new answer"
+        );
+        host.infos.lock().unwrap()[0].state = SessionState::Working;
+        assert!(tools.poll().spoken.is_empty());
+        {
+            let mut infos = host.infos.lock().unwrap();
+            infos[0].state = SessionState::Completed;
+            infos[0].updated_ms = clock.load(std::sync::atomic::Ordering::SeqCst) + 1000;
+        }
+        assert!(!tools.poll().spoken.is_empty());
+        let done = tools.run("read_session", &json!({"id":"s1"}));
+        assert_eq!(done["answer_ready"], true);
+        assert!(done.get("still_working").is_none());
+    }
+
+    #[test]
     fn reading_gives_what_was_asked_and_how_each_turn_ended() {
         let (host, tools) = tools(two());
         tools.run("list_sessions", &json!({}));
@@ -996,7 +1066,7 @@ mod tests {
         assert_eq!(first["you"], "Run the benchmark.");
         let it = first["it"].as_str().unwrap();
         assert_eq!(it.chars().count(), READ_IT_CHARS + 1);
-        assert!(it.starts_with('…'));
+        assert!(it.contains('…'));
         let second = &read["turns"][1];
         assert_eq!(
             second["you"].as_str().unwrap().chars().count(),
@@ -1029,6 +1099,7 @@ mod tests {
             cwd: PathBuf::from("/work/digitalization"),
             updated_ms: 1_000_000,
             snippet: "the  pilot\nwith tokens".into(),
+            message: None,
         });
         let found = tools.run("search_history", &json!({"query": "digitization pilot"}));
         assert_eq!(host.log.lock().unwrap()[0], "search digitization pilot 8");

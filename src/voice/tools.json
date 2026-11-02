@@ -129,7 +129,7 @@
   {
     "type": "function",
     "name": "search_history",
-    "description": "Find a session anywhere in the history, including old ones that are no longer in list_sessions and what was said inside them (like Cmd+G in OpenCode). Use ordinary words from its title or conversation. Returns up to 8 sessions, best match first, with an id that read_session, send_message and close_session accept.",
+    "description": "Search all session history, including old chats. Use words from the title or conversation. Returns up to 8 sessions, best first, with actual matching-message excerpts, message IDs, roles, creation timestamps in Unix milliseconds, and the preceding/following message when available. Answer from the matching passage; read_session returns recent turns, not necessarily the old passage you searched for. Result session IDs work with read_session, send_message and close_session.",
     "parameters": {
       "type": "object",
       "properties": {

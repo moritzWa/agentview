@@ -1904,6 +1904,10 @@ mod tests {
         );
         call.service.toggle();
         say(call, id, json!({"type": "offer", "provider": "xai"}));
+        // Like the real page, do not report Grok live before the async token
+        // and session configuration have arrived. Otherwise a late answer can
+        // race with the test's subsequent hangup assertion.
+        while next(&inbox)["type"] != "answer" {}
         say(
             call,
             id,

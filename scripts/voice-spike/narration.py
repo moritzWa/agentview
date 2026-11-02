@@ -16,7 +16,7 @@ key = os.environ.get("XAI_API_KEY") or json.loads(
 )["xai_api_key"]
 
 
-async def check(request, fail=False, screen=False):
+async def check(request, fail=False, screen=False, wait=False, repeat=False):
     async with websockets.connect(
         "wss://api.x.ai/v1/realtime?model=grok-voice-latest",
         additional_headers={"Authorization": "Bearer " + key},
@@ -36,6 +36,11 @@ async def check(request, fail=False, screen=False):
                 raise AssertionError(event)
             if event["type"] == "session.updated":
                 break
+        if repeat:
+            for role, text in [("user", 'Ask s1 for more ideas.'), ("assistant", 'I asked the session for more ideas.')]:
+                await ws.send(json.dumps({"type":"conversation.item.create","item":{
+                    "type":"message","role":role,"content":[{"type":"input_text" if role == "user" else "output_text","text":text}]
+                }}))
         await ws.send(json.dumps({"type": "conversation.item.create", "item": {
             "type": "message", "role": "user",
             "content": [{"type": "input_text", "text": request}],
@@ -59,6 +64,8 @@ async def check(request, fail=False, screen=False):
                     before_read = text
                 calls.append(item["name"])
                 result = {"ok": True}
+                if item["name"] == "watch_session":
+                    result = {"ok": True, "watching": True, "note": "watch registered, not completed. Wait for the completion notification before reading and relaying the answer"}
                 if screen and item["name"] == "read_session":
                     result = {"title": "Polish sentence draft", "turns": [{
                         "you": "Explain Interlat's compressed communication between a talker and reasoner.",
@@ -79,8 +86,12 @@ async def check(request, fail=False, screen=False):
         elif fail:
             assert "unavailable" in text.lower(), "must explain failure rather than say done"
         else:
+            if wait:
+                assert calls[:2] == ["send_message", "watch_session"], calls
+                assert "read_session" not in calls, "do not relay an answer before done"
             assert not before_read.strip(), "routine sends need no preamble: " + before_read
             assert len(text.split()) <= 12, "one short acknowledgment, not a narrated recap"
+            assert "already" not in text.lower(), "do not dismiss repeated requests"
             words = text.lower().replace(".", "").split()
             assert words.count("done") + words.count("sent") <= 1, "no redundant sent/done after the acknowledgment"
 
@@ -89,6 +100,8 @@ async def main():
     await check('Send "continue" to s1 and "check the search ranking" to s2.')
     await check('Send "continue" to s1.', fail=True)
     await check("It's kinda crazy that they compressed 128 to 8 vectors and only lost two points of the eval.", screen=True)
+    await check('Ask s1 what latent working memory means and tell me what it says.', wait=True)
+    await check('Also ask s1 for more ideas.', repeat=True)
 
 
 asyncio.run(asyncio.wait_for(main(), 120))

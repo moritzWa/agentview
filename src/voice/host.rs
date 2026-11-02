@@ -305,8 +305,18 @@ impl VoiceHost for DashboardHost {
             });
         }
         let mut scored: Vec<(usize, usize, &RestorableSession, String)> = Vec::new();
+        let titles: HashMap<String, String> = self
+            .infos()
+            .into_iter()
+            .map(|info| (info.id, info.title))
+            .collect();
         for session in &sessions {
-            let title = session.name.to_lowercase();
+            let title = format!(
+                "{} {}",
+                session.name,
+                titles.get(&session.id).map_or("", String::as_str)
+            )
+            .to_lowercase();
             let folder = session.cwd.to_string_lossy().to_lowercase();
             let mut words_hit = 0;
             let mut score = 0;
@@ -346,13 +356,26 @@ impl VoiceHost for DashboardHost {
         let hits = scored
             .into_iter()
             .map(|(_, _, session, snippet)| {
+                let message = indices
+                    .iter()
+                    .find_map(|index| index.matching_message(&session.id, &words).ok().flatten());
+                if !snippet.is_empty() && message.is_none() {
+                    note.get_or_insert_with(|| {
+                        "Some matching-message context is unavailable until the index refreshes."
+                            .to_owned()
+                    });
+                }
                 cache.insert(session.id.clone(), session.clone());
                 HistoryHit {
                     id: session.id.clone(),
-                    title: session.name.clone(),
+                    title: titles
+                        .get(&session.id)
+                        .cloned()
+                        .unwrap_or_else(|| session.name.clone()),
                     cwd: session.cwd.clone(),
                     updated_ms: session.updated_at_ms,
                     snippet,
+                    message,
                 }
             })
             .collect();
