@@ -32,6 +32,10 @@ and released versions are intended to follow Semantic Versioning.
   through and send the final message (`send_draft`), clearing the box; Grok
   hears you from the first moment of a call.
 
+- The Voice Mode badge in a session's view stays at the bottom right, below the
+  input (on the status row, or the empty row under it on a narrow terminal),
+  and no longer jumps to the top right corner.
+
 - Voice Mode goes quiet about 20 ms after the end key (it took over a second):
   the page cuts the audio first. The hidden browser stays up two minutes after a
   call, and Grok's token is fetched while it starts, so a Grok call is live in

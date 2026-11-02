@@ -2588,35 +2588,22 @@ fn take_badge_clicks(input: &[u8], badge: Option<&VoiceBadge>) -> (Vec<u8>, Vec<
     (kept, nudges)
 }
 
-/// Draws `text` as a badge in the blank stretch of the provider's footer row,
-/// left of what it shows at the right (OpenCode puts its token count there), or
-/// in the top right corner when no footer row has room. Returns where it went,
-/// so it can be taken away again.
-fn draw_voice_badge(
-    output: &mut impl Write,
-    screen: &vt100::Parser,
-    text: &str,
-    previous: Option<VoiceBadge>,
-) -> Result<Option<VoiceBadge>> {
-    let (rows, cols) = screen.screen().size();
-    let label = format!(" {text} ");
-    let width = label.chars().count();
-    if usize::from(cols) < width + 4 || rows < 4 {
-        return Ok(None);
+/// Where the badge goes, given the screen's rows as text: bottom right, below
+/// the input, where the provider keeps its status line (OpenCode puts the
+/// directory at the left and the token count at the right) and where read-aloud
+/// controls sit. In order: the blank stretch before the rightmost text of that
+/// status row, the empty row under it, the blank stretch of the prompt row above
+/// the input's border, then the end of the status row itself. Never the top.
+fn badge_spot(lines: &[Vec<char>], width: usize) -> Option<(usize, usize)> {
+    let rows = lines.len();
+    let cols = lines.first().map_or(0, Vec::len);
+    if cols < width + 4 || rows < 4 {
+        return None;
     }
-    let line_of = |row: u16| -> Vec<char> {
-        (0..cols)
-            .map(|column| {
-                screen
-                    .screen()
-                    .cell(row, column)
-                    .map_or(' ', |cell| cell.contents().chars().next().unwrap_or(' '))
-            })
-            .collect()
-    };
+    let blank = |row: usize| lines[row].iter().all(|c| *c == ' ');
     // The blank stretch before the rightmost text of a row, if wide enough.
-    let place = |row: u16| -> Option<usize> {
-        let line = line_of(row);
+    let gap = |row: usize| -> Option<usize> {
+        let line = &lines[row];
         let last_text = line.iter().rposition(|c| *c != ' ')?;
         let mut start = last_text;
         while start > 0 && !(line[start - 1] == ' ' && start >= 2 && line[start - 2] == ' ') {
@@ -2631,14 +2618,67 @@ fn draw_voice_badge(
         if gap_start == 0 {
             return None;
         }
-        let gap = start - gap_start;
-        (gap >= width + 2).then_some(start - width - 1)
+        if start - gap_start >= width + 2 {
+            Some(start - width - 1)
+        } else {
+            None
+        }
     };
-    // OpenCode keeps its footer on the last or second to last row.
-    let found = (rows.saturating_sub(3)..rows)
+    let right_end = cols - width - 1;
+    // The bottom edge of OpenCode's input is a row of `▀`; its status row is under it.
+    let border = (0..rows)
         .rev()
-        .find_map(|row| place(row).map(|column| (row, column)));
-    let (row, column) = found.unwrap_or((0, usize::from(cols) - width - 1));
+        .find(|row| lines[*row].iter().filter(|c| **c == '▀').count() >= 10);
+    let Some(border) = border else {
+        // Another provider: the last rows, bottom up.
+        return (rows.saturating_sub(3)..rows)
+            .rev()
+            .find_map(|row| gap(row).map(|column| (row, column)))
+            .or(Some((rows - 1, right_end)));
+    };
+    let status = border + 1;
+    let prompt = border.checked_sub(1);
+    if status < rows {
+        if let Some(column) = gap(status) {
+            return Some((status, column));
+        }
+        if let Some(row) = (status + 1..rows).find(|row| blank(*row)) {
+            return Some((row, right_end));
+        }
+    }
+    if let Some((row, column)) = prompt.and_then(|row| gap(row).map(|column| (row, column))) {
+        return Some((row, column));
+    }
+    Some((status.min(rows - 1), right_end))
+}
+
+/// Draws `text` as a badge at the bottom right, below the provider's input (see
+/// [`badge_spot`]). Returns where it went, so it can be taken away again.
+fn draw_voice_badge(
+    output: &mut impl Write,
+    screen: &vt100::Parser,
+    text: &str,
+    previous: Option<VoiceBadge>,
+) -> Result<Option<VoiceBadge>> {
+    let (rows, cols) = screen.screen().size();
+    let label = format!(" {text} ");
+    let width = label.chars().count();
+    let lines: Vec<Vec<char>> = (0..rows)
+        .map(|row| {
+            (0..cols)
+                .map(|column| {
+                    screen
+                        .screen()
+                        .cell(row, column)
+                        .map_or(' ', |cell| cell.contents().chars().next().unwrap_or(' '))
+                })
+                .collect()
+        })
+        .collect();
+    let Some((row, column)) = badge_spot(&lines, width) else {
+        return Ok(None);
+    };
+    let row = row as u16;
     let button = |symbol: char| {
         label
             .chars()
@@ -2870,6 +2910,78 @@ mod tests {
             minus: Some(16),
             plus: Some(24),
         }
+    }
+
+    fn screen_rows(rows: &[&str], cols: usize) -> Vec<Vec<char>> {
+        rows.iter()
+            .map(|row| {
+                let mut line: Vec<char> = row.chars().collect();
+                line.resize(cols, ' ');
+                line
+            })
+            .collect()
+    }
+
+    fn opencode_view(cols: usize, status: &str) -> Vec<Vec<char>> {
+        let border = format!("  ╹{}", "▀".repeat(cols - 3));
+        screen_rows(
+            &[
+                "  some answer text",
+                "",
+                "  ┃",
+                "  ┃  Build · Claude Opus 5.5 Anthropic                          library digitization pilot",
+                &border,
+                status,
+                "",
+            ],
+            cols,
+        )
+    }
+
+    #[test]
+    fn the_badge_sits_left_of_the_token_count_below_the_input() {
+        let lines = opencode_view(
+            120,
+            "  ~/Code/agentview:main                                       413.0K (41%) · $5.66",
+        );
+        let (row, column) = badge_spot(&lines, 28).unwrap();
+        assert_eq!(row, 5, "the status row under the input");
+        let end = column + 28;
+        assert!(end < lines[5].iter().position(|c| *c == '4').unwrap());
+    }
+
+    #[test]
+    fn with_no_room_on_the_status_row_it_goes_on_the_empty_row_under_it_never_the_top() {
+        let lines = opencode_view(
+            80,
+            "  ~/Code/agentview:main  ↓ 2 shells · 897.1K (90%) · $0.00",
+        );
+        let (row, column) = badge_spot(&lines, 28).unwrap();
+        assert_eq!(row, 6, "the empty row below the status row");
+        assert_eq!(column, 80 - 28 - 1, "at the right");
+    }
+
+    #[test]
+    fn a_view_without_the_input_border_uses_the_last_rows() {
+        let mut lines = screen_rows(
+            &[
+                "",
+                "",
+                "",
+                "  ~/work                                  12K (4%)",
+                "",
+            ],
+            60,
+        );
+        assert_eq!(badge_spot(&lines, 20).unwrap().0, 3);
+        lines[3] = vec!['x'; 60];
+        let (row, _) = badge_spot(&lines, 20).unwrap();
+        assert!(row >= 3, "the bottom, not the top");
+    }
+
+    #[test]
+    fn a_screen_too_small_for_the_badge_gets_none() {
+        assert!(badge_spot(&screen_rows(&["", "", "", ""], 20), 28).is_none());
     }
 
     #[test]
