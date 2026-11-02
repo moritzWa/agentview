@@ -1977,8 +1977,9 @@ mod tests {
             .unwrap()
             .resume
             .is_none());
-        // An expired pause starts fresh as well. A zero-length window avoids
-        // Instant subtraction underflow on freshly booted Windows runners.
+        // An expired pause starts fresh as well. Use a zero-length window
+        // instead of subtracting from Instant, which underflows on Windows
+        // runners whose monotonic clock started less than 31 minutes ago.
         let mut settings = grok();
         settings.resume_minutes = 0;
         let call = rig(settings, Some("xai-test"));
