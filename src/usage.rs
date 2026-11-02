@@ -373,12 +373,107 @@ fn apply_claude_refresh(credentials: &mut Value, response: &Value, now: u64) -> 
 
 #[cfg(target_os = "macos")]
 fn save_keychain_claude_credentials(credentials: &str) -> Option<()> {
-    security_framework::passwords::set_generic_password(
+    update_keychain_password(
         "Claude Code-credentials",
         &std::env::var("USER").ok()?,
-        credentials.as_bytes(),
+        credentials,
+        None,
     )
-    .ok()
+}
+
+#[cfg(target_os = "macos")]
+fn keychain_update_input(
+    service: &str,
+    account: &str,
+    credentials: &str,
+    keychain: Option<&std::path::Path>,
+) -> Option<String> {
+    use std::fmt::Write;
+    if [service, account]
+        .iter()
+        .any(|text| text.contains(['\n', '\r']))
+    {
+        return None;
+    }
+    let quote = |text: &str| format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""));
+    let mut encoded = String::with_capacity(credentials.len() * 2);
+    for byte in credentials.as_bytes() {
+        write!(encoded, "{byte:02x}").ok()?;
+    }
+    // Update through the stable Apple helper's legacy in-place API. SecItemUpdate
+    // from an ad-hoc app silently replaces the item's partition ACL with that
+    // build's CDHash on macOS. No -T/-A: retain the existing access controls.
+    // The interactive CLI accepts the secret through stdin, never argv.
+    let path = match keychain {
+        Some(path) => format!(" {}", quote(path.to_str()?)),
+        None => String::new(),
+    };
+    Some(format!(
+        "add-generic-password -U -s {} -a {} -X {encoded}{}\n",
+        quote(service),
+        quote(account),
+        path
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn update_keychain_password(
+    service: &str,
+    account: &str,
+    credentials: &str,
+    keychain: Option<&std::path::Path>,
+) -> Option<()> {
+    let input = keychain_update_input(service, account, credentials, keychain)?;
+    let mut command = Command::new("/usr/bin/security");
+    command.arg("-i");
+    keychain_output(command, Some(input.as_bytes())).map(|_| ())
+}
+
+/// A denied/timed-out background read must not start a new approval dialog on
+/// every poll. A new dashboard can retry after the user repairs/unlocks Keychain.
+static KEYCHAIN_UNAVAILABLE: AtomicBool = AtomicBool::new(false);
+
+fn keychain_output(mut command: Command, input: Option<&[u8]>) -> Option<std::process::Output> {
+    use std::io::Write;
+    if KEYCHAIN_UNAVAILABLE.load(Ordering::Relaxed) {
+        return None;
+    }
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    if let Some(input) = input {
+        if child.stdin.take()?.write_all(input).is_err() {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+    } else {
+        drop(child.stdin.take());
+    }
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(20))
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                KEYCHAIN_UNAVAILABLE.store(true, Ordering::Relaxed);
+                return None;
+            }
+        }
+    }
+    let output = child.wait_with_output().ok()?;
+    if !output.status.success() {
+        KEYCHAIN_UNAVAILABLE.store(true, Ordering::Relaxed);
+        return None;
+    }
+    Some(output)
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -469,16 +564,14 @@ fn keychain_claude_credentials() -> Option<String> {
     if !cfg!(target_os = "macos") {
         return None;
     }
-    let output = Command::new("security")
-        .args([
-            "find-generic-password",
-            "-s",
-            "Claude Code-credentials",
-            "-w",
-        ])
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
+    let mut command = Command::new("/usr/bin/security");
+    command.args([
+        "find-generic-password",
+        "-s",
+        "Claude Code-credentials",
+        "-w",
+    ]);
+    let output = keychain_output(command, None)?;
     output
         .status
         .success()
@@ -532,6 +625,86 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn keychain_updates_use_stdin_and_never_replace_access_controls() {
+        let command =
+            keychain_update_input("disposable service", "test account", "secret\"\n", None)
+                .unwrap();
+        assert!(command.starts_with(
+            "add-generic-password -U -s \"disposable service\" -a \"test account\" -X "
+        ));
+        assert!(command.ends_with("736563726574220a\n"));
+        assert!(!command.contains("secret"));
+        assert!(!command.contains("-A"));
+        assert!(!command.contains("-T"));
+        assert!(keychain_update_input("injected\ncommand", "test", "dummy", None).is_none());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "creates and deletes an isolated temporary Keychain; no real credentials"]
+    fn keychain_update_preserves_disposable_item_acl() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("disposable.keychain-db");
+        let run = |args: &[&str]| {
+            let mut command = Command::new("/usr/bin/security");
+            command.args(args).arg(&path);
+            keychain_output(command, None).expect("disposable Keychain command")
+        };
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let mut command = Command::new("/usr/bin/security");
+                command.arg("delete-keychain").arg(&self.0);
+                // Cleanup must run even if a command failed and tripped the latch.
+                KEYCHAIN_UNAVAILABLE.store(false, Ordering::Relaxed);
+                let _ = keychain_output(command, None);
+            }
+        }
+        run(&["create-keychain", "-p", "disposable-test-only"]);
+        let _cleanup = Cleanup(path.clone());
+        run(&["unlock-keychain", "-p", "disposable-test-only"]);
+        run(&[
+            "add-generic-password",
+            "-s",
+            "agentview-disposable",
+            "-a",
+            "test",
+            "-w",
+            "old-dummy",
+            "-T",
+            "/usr/bin/security",
+        ]);
+        let acl = || {
+            let dump = String::from_utf8(run(&["dump-keychain", "-a"]).stdout).unwrap();
+            dump.split_once("access:")
+                .expect("disposable ACL")
+                .1
+                .to_owned()
+        };
+        let before = acl();
+        update_keychain_password("agentview-disposable", "test", "new-dummy", Some(&path))
+            .expect("in-place update");
+        assert_eq!(
+            acl(),
+            before,
+            "updating a token must not change any ACL entry"
+        );
+        let stored = run(&[
+            "find-generic-password",
+            "-s",
+            "agentview-disposable",
+            "-a",
+            "test",
+            "-w",
+        ]);
+        assert_eq!(
+            String::from_utf8(stored.stdout).unwrap().trim(),
+            "new-dummy"
+        );
+    }
+
     #[test]
     #[ignore = "uses the local Claude login and the live usage API"]
     fn live_claude_usage() {
@@ -539,21 +712,6 @@ mod tests {
         assert_eq!(usage.provider, "claude");
         assert!(!usage.windows.is_empty());
         println!("{}", usage.summary(now()).0);
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    #[ignore = "renews the local Claude login and writes it back to Keychain"]
-    fn live_claude_renewal() {
-        let lock = claude_usage_lock().unwrap();
-        let mut credentials: Value =
-            serde_json::from_str(&keychain_claude_credentials().expect("local Claude login"))
-                .unwrap();
-        refresh_claude_credentials(&mut credentials).expect("renew Claude login");
-        save_keychain_claude_credentials(&credentials.to_string()).expect("save renewed login");
-        assert!(!claude_token_expiring(&credentials, now()));
-        drop(lock);
-        live_claude_usage();
     }
 
     #[test]
