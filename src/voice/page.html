@@ -256,6 +256,11 @@ function openXai(msg) {
     let event; try { event = JSON.parse(m.data); } catch { return; }
     if (event.type === "response.output_audio.delta") return playPcm(event.delta);
     if (event.type === "session.updated" && !grokReady) {
+      // A resumed conversation contains old screen references. Put the current
+      // one at the end of history before releasing speech buffered during startup.
+      if (msg.context) xws.send(JSON.stringify({ type: "conversation.item.create", item: {
+        type: "message", role: "system", content: [{ type: "input_text", text: msg.context }]
+      }}));
       grokReady = true;
       for (const audio of heardEarly) xws.send(JSON.stringify({ type: "input_audio_buffer.append", audio }));
       heardEarly = [];

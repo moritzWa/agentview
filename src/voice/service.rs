@@ -912,7 +912,9 @@ impl Inner {
         };
         let this = self.clone();
         thread::spawn(move || {
+            tools.set_viewing(viewing());
             let mut notes = tools.notes();
+            log("context", json!({"notes": notes}));
             let conversation = resume.as_ref().and_then(|(id, _, _)| id.clone());
             if let Some((_, recap, minutes)) = &resume {
                 // Grok replays the call itself; the other provider is told the end of it.
@@ -975,6 +977,7 @@ impl Inner {
                                     "url": xai::realtime_url(&settings, conversation.as_deref()),
                                     "token": token,
                                     "session": xai::session_update(&settings, &notes),
+                                    "context": notes,
                                 }),
                             );
                         }
@@ -1970,18 +1973,13 @@ mod tests {
             .unwrap()
             .resume
             .is_none());
-        // One paused too long ago starts fresh as well.
-        call.service.toggle();
+        // An expired pause starts fresh as well. A zero-length window avoids
+        // Instant subtraction underflow on freshly booted Windows runners.
+        let mut settings = grok();
+        settings.resume_minutes = 0;
+        let call = rig(settings, Some("xai-test"));
         let (_, _inbox) = live_grok_call(&call);
         call.service.pause();
-        call.service
-            .inner
-            .parked
-            .lock()
-            .unwrap()
-            .as_mut()
-            .unwrap()
-            .at = Instant::now() - Duration::from_secs(31 * 60);
         assert_eq!(call.service.status().paused_for, None);
         call.service.toggle();
         assert!(call

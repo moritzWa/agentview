@@ -65,7 +65,7 @@ own interface.
   searches conversation text through local SQLite FTS5 indices, including
   partial words and matching snippets. `Enter` resumes the exact session,
   even outside the dashboard's recent-history limit. Indices catch up at
-  startup and every ten minutes at low priority; only changed sessions are
+  startup and every 30 seconds at low priority; only changed sessions are
   reindexed. Provider logs and databases stay read-only.
 - **Launches stay on the dashboard** for harnesses that can run in the
   background. `Enter` opens the new row.

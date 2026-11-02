@@ -170,6 +170,18 @@ fn millis(time: Option<std::time::SystemTime>) -> u64 {
         .map_or(0, |elapsed| elapsed.as_millis() as u64)
 }
 
+struct ContentHits {
+    needle: String,
+    phrase: bool,
+    rows: HashMap<String, String>,
+}
+
+impl ContentHits {
+    fn matches_word(&self, word: &str, id: &str) -> bool {
+        !self.phrase && self.needle == word && self.rows.contains_key(id)
+    }
+}
+
 impl VoiceHost for DashboardHost {
     fn infos(&self) -> Vec<Info> {
         let Ok(sessions) = self.sessions.lock() else {
@@ -225,6 +237,10 @@ impl VoiceHost for DashboardHost {
             .collect()
     }
 
+    fn running_shells(&self, id: &str) -> Result<Vec<crate::opencode_supervisor::ShellSummary>> {
+        self.control.running_shells(&self.session(id)?)
+    }
+
     fn recent_turns(&self, id: &str, turns: usize) -> Result<Vec<Turn>> {
         let session = self.session(id)?;
         Ok(self
@@ -274,7 +290,7 @@ impl VoiceHost for DashboardHost {
                 .filter(|word| word.chars().count() >= 3)
                 .map(|w| (w.clone(), false)),
         );
-        let mut content: Vec<(bool, HashMap<String, String>)> = Vec::new();
+        let mut content = Vec::new();
         for (needle, phrase) in &needles {
             let mut found = HashMap::new();
             for index in &indices {
@@ -282,7 +298,11 @@ impl VoiceHost for DashboardHost {
                     found.extend(rows);
                 }
             }
-            content.push((*phrase, found));
+            content.push(ContentHits {
+                needle: needle.clone(),
+                phrase: *phrase,
+                rows: found,
+            });
         }
         let mut scored: Vec<(usize, usize, &RestorableSession, String)> = Vec::new();
         for session in &sessions {
@@ -293,11 +313,9 @@ impl VoiceHost for DashboardHost {
             for word in &words {
                 let in_title = title.contains(word.as_str());
                 let in_folder = folder.contains(word.as_str());
-                let in_text = content.iter().any(|(phrase, rows)| {
-                    !phrase
-                        && needles.iter().any(|(n, p)| !p && n == word)
-                        && rows.contains_key(&session.id)
-                });
+                let in_text = content
+                    .iter()
+                    .any(|hit| hit.matches_word(word, &session.id));
                 if in_title || in_folder || in_text {
                     words_hit += 1;
                 }
@@ -306,7 +324,7 @@ impl VoiceHost for DashboardHost {
             }
             if content
                 .iter()
-                .any(|(phrase, rows)| *phrase && rows.contains_key(&session.id))
+                .any(|hit| hit.phrase && hit.rows.contains_key(&session.id))
             {
                 score += 4;
             }
@@ -316,7 +334,7 @@ impl VoiceHost for DashboardHost {
             }
             let snippet = content
                 .iter()
-                .filter_map(|(_, rows)| rows.get(&session.id))
+                .filter_map(|hit| hit.rows.get(&session.id))
                 .next()
                 .cloned()
                 .unwrap_or_default();
@@ -452,6 +470,23 @@ fn search_words(query: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn one_query_word_hit_does_not_count_for_other_words_or_sessions() {
+        let hit = ContentHits {
+            needle: "speed".into(),
+            phrase: false,
+            rows: HashMap::from([("voice".into(), "speed 0.7 to 1.5".into())]),
+        };
+        assert!(hit.matches_word("speed", "voice"));
+        assert!(!hit.matches_word("range", "voice"));
+        assert!(!hit.matches_word("speed", "unrelated"));
+        let phrase = ContentHits {
+            phrase: true,
+            ..hit
+        };
+        assert!(!phrase.matches_word("speed", "voice"));
+    }
 
     #[test]
     fn spoken_searches_keep_the_words_that_name_something() {

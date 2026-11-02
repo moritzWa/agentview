@@ -50,7 +50,8 @@ os.write(fd, b"\x0b")
 check("the call goes live in the session's view", wait_for("●", 12), badge())
 pump(2)
 os.write(fd, b"\x13")                      # Ctrl+S: Cmd+S in this terminal setup
-check("Ctrl+S pauses the call", wait_for("⏸", 4), badge())
+pump(2)
+check("Ctrl+S parks without an OpenCode paused badge", not badge(), badge())
 pump(3)
 os.write(fd, b"\x0b")                      # the voice key continues it
 check("the voice key continues the call", wait_for("●", 12), badge())

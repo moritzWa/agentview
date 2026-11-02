@@ -58,12 +58,12 @@ fn feature_matrix(readme: &str) -> &str {
 fn readme_status_badges_match_release_metadata() {
     let readme = read_readme();
     let release_badge = format!(
-        "https://img.shields.io/badge/release-v{}-7c5cff.svg",
+        "https://img.shields.io/badge/release-v{}-506CF7.svg",
         env!("CARGO_PKG_VERSION")
     );
 
     assert!(
-        readme.contains("https://img.shields.io/badge/tests-verified-2ea44f.svg"),
+        readme.contains("https://img.shields.io/badge/tests-verified-506CF7.svg"),
         "README test badge must report the documented manual verification gate"
     );
     assert!(

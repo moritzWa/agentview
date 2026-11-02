@@ -24,7 +24,7 @@
   {
     "type": "function",
     "name": "read_session",
-    "description": "Read the last few exchanges of one session: for each, what the developer asked and how the agent ended its turn (its final reply). Tool calls, scripts and the narration in between are left out. Works for any session, old ones too.",
+    "description": "Read one session's recent requests and final replies, plus up to six currently running shells: a command excerpt, working folder, elapsed seconds and last few output lines. Output is a progress clue, not an exact execution position. Full scripts, logs and intermediate narration are left out. Works for old sessions too; shells_note means live status was unavailable.",
     "parameters": {
       "type": "object",
       "properties": {

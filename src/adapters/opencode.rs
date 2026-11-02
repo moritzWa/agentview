@@ -455,6 +455,16 @@ impl ProviderController for OpenCodeController {
             .abort_any(&session.provider_session_id, &session.cwd)
     }
 
+    fn running_shells(
+        &self,
+        session: &AgentSession,
+    ) -> Result<Vec<crate::opencode_supervisor::ShellSummary>> {
+        self.supervisor
+            .as_ref()
+            .context("managed OpenCode control is not configured")?
+            .session_shells(&session.provider_session_id, &session.cwd)
+    }
+
     fn recent_turns(
         &self,
         session: &AgentSession,

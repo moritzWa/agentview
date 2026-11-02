@@ -11,7 +11,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{bail, Context, Result};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 
-pub const REFRESH_INTERVAL: Duration = Duration::from_secs(10 * 60);
+pub const REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Dropping the dashboard stops the timer and interrupts an in-flight scan,
 /// including early error returns from terminal setup or event handling.

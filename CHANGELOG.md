@@ -10,6 +10,14 @@ and released versions are intended to follow Semantic Versioning.
 
 ### Added
 
+- Voice session reads include bounded running-shell progress: command excerpt,
+  folder, elapsed time and recent output. Resumed calls and screen switches get
+  fresh on-screen context with two recent exchanges; content questions prompt a
+  read rather than guessing from titles. Routine actions get a short "done".
+  Parked calls no longer show a badge inside OpenCode.
+- Shared history search refreshes every 30 seconds instead of ten minutes.
+  Voice search counts matches for each query word correctly.
+
 - Voice Mode: press Ctrl+K (or type `/voice`) and talk to your OpenCode sessions
   while your hands are busy. A pinned browser tab holds the microphone and
   speaks with OpenAI's GPT-Live; it can list the sessions you are working in,
