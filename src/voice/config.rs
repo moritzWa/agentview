@@ -244,6 +244,9 @@ pub struct Settings {
     pub browser: String,
     /// The Chromium-based browser `hidden` runs, when it is not where agentview looks.
     pub chrome_path: Option<String>,
+    /// Seconds the hidden browser stays up after a call, so the next one starts
+    /// at once. 0 stops it with the call.
+    pub keep_warm_seconds: u64,
 }
 
 impl Default for Settings {
@@ -262,6 +265,7 @@ impl Default for Settings {
             service_tier: None,
             browser: "hidden".into(),
             chrome_path: None,
+            keep_warm_seconds: 120,
         }
     }
 }

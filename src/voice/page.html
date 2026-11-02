@@ -42,6 +42,7 @@
 //                      {type:"answer", provider:"xai", url, token, session}  where and how to open Grok's websocket
 //                      {type:"send", event}          a client event for the data channel
 //                      {type:"mute", on}             mute or unmute the microphone track
+//                      {type:"silence"}              stop the voice now, before the call is torn down
 //                      {type:"end"}                  tear the call down
 //                      {type:"retire"}               a hidden browser runs the call now: close this tab
 //   page -> agentview  {type:"hello", ready, hidden} page is up; ready = microphone already allowed
@@ -120,6 +121,7 @@ function applyMute() {
 
 async function begin() {
   if (pc) return;
+  out.muted = false;
   post({ type: "stage", stage: "microphone" });
   try {
     stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
@@ -190,8 +192,16 @@ function stopPlayback() {
   playing = []; nextTime = 0;
 }
 
+// The voice stops this instant: what is playing is cut and nothing more is let through.
+function silence() {
+  out.muted = true;
+  stopPlayback();
+  try { ctx?.suspend(); } catch {}
+  post({ type: "silenced" });
+}
+
 function playPcm(data) {
-  if (!ctx) return;
+  if (!ctx || out.muted) return;
   const text = atob(data), count = text.length >> 1;
   const buffer = ctx.createBuffer(1, count, 24000), samples = buffer.getChannelData(0);
   for (let i = 0; i < count; i++) {
@@ -209,6 +219,7 @@ function playPcm(data) {
 
 async function beginXai() {
   if (ctx) return;
+  out.muted = false;
   post({ type: "stage", stage: "microphone" });
   try {
     stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
@@ -294,6 +305,7 @@ function connect() {
     else if (msg.type === "send" && provider === "xai") sendXai(msg.event);
     else if (msg.type === "send" && dc?.readyState === "open") dc.send(JSON.stringify(msg.event));
     else if (msg.type === "mute") { muted = !!msg.on; applyMute(); }
+    else if (msg.type === "silence") silence();
     else if (msg.type === "end") end(msg.reason || "ended by agentview");
     else if (msg.type === "retire") { retired = true; setState("not needed: agentview runs the voice in the background now. Close this tab.", "bad"); $("enable").hidden = true; }
   };

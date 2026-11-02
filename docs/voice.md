@@ -92,6 +92,16 @@ clicks while such a call is live, so selecting text works as usual otherwise
 (Shift-drag still selects while it is). OpenAI has no speed setting, so its
 badge has no buttons.
 
+## Starting and stopping fast
+
+Pressing the key to end a call silences the voice at once (about 20 ms): the
+page cuts the audio before anything else happens, and the call is torn down
+behind it. After a call, the hidden browser stays up for two minutes
+(`keep_warm_seconds`, 0 turns it off), so the next call skips starting it. A
+Grok call is live in about 1 second cold and 0.4 seconds warm; an OpenAI call in
+3 to 4 seconds cold and 1.5 warm, because OpenAI needs the browser's offer
+before it can create the session. `scripts/voice-spike/latency.py` measures it.
+
 ## How it works
 
 ```text
@@ -160,6 +170,7 @@ points at a particular browser.
   "idle_minutes": 10,
   "max_minutes": 60,
   "browser": "hidden",
+  "keep_warm_seconds": 120,
   "chrome_path": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 }
 ```
