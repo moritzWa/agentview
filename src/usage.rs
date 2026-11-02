@@ -643,6 +643,22 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn denied_keychain_access_does_not_spawn_another_approval_attempt() {
+        let mut denied = Command::new("/bin/sh");
+        denied.args(["-c", "exit 128"]);
+        assert!(keychain_output(denied, None).is_none());
+        assert!(KEYCHAIN_UNAVAILABLE.load(Ordering::Relaxed));
+        let directory = tempfile::tempdir().unwrap();
+        let marker = directory.path().join("must-not-run");
+        let mut retry = Command::new("/usr/bin/touch");
+        retry.arg(&marker);
+        assert!(keychain_output(retry, None).is_none());
+        assert!(!marker.exists());
+        KEYCHAIN_UNAVAILABLE.store(false, Ordering::Relaxed);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     #[ignore = "creates and deletes an isolated temporary Keychain; no real credentials"]
     fn keychain_update_preserves_disposable_item_acl() {
         let directory = tempfile::tempdir().unwrap();
