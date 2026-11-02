@@ -79,8 +79,10 @@ async def check(request, fail=False, screen=False):
         elif fail:
             assert "unavailable" in text.lower(), "must explain failure rather than say done"
         else:
-            assert text.lower().strip().rstrip(".! ").endswith("done"), text
-            assert len(text.split()) <= 6, "routine actions must not get a narrated recap"
+            assert not before_read.strip(), "routine sends need no preamble: " + before_read
+            assert len(text.split()) <= 12, "one short acknowledgment, not a narrated recap"
+            words = text.lower().replace(".", "").split()
+            assert words.count("done") + words.count("sent") <= 1, "no redundant sent/done after the acknowledgment"
 
 
 async def main():
