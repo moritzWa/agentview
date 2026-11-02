@@ -73,6 +73,7 @@ struct PendingOpen {
 }
 const LAUNCH_ANIMATION_INTERVAL: Duration = Duration::from_millis(120);
 const LIVE_SESSION_ANIMATION_INTERVAL: Duration = Duration::from_millis(550);
+const LOADING_ANIMATION_INTERVAL: Duration = Duration::from_millis(90);
 /// Held frontends publish their screen every 250 ms; checking more often
 /// keeps a reply's "working" within one publish of the keypress.
 const SCREEN_STATUS_INTERVAL: Duration = Duration::from_millis(100);
@@ -203,6 +204,8 @@ pub fn run_dashboard(
     theme_preference: ThemePreference,
     color_scheme: ColorScheme,
 ) -> Result<()> {
+    let dashboard_started = Instant::now();
+    let mut first_draw_logged = false;
     let MigrationServices {
         client: migration_client,
         registry: migration_registry,
@@ -245,8 +248,11 @@ pub fn run_dashboard(
                 worker_engine.discover_progressively(
                     &worker_request,
                     |partial, completed, total| {
+                        let _span = crate::perf_log::span("partial-callback");
+                        // Not enriched: enrichment asks every provider's server
+                        // and costs about as much as the whole discovery, and
+                        // the complete snapshot that follows is enriched.
                         let mut partial = partial.clone();
-                        worker_control.enrich(&mut partial);
                         if !worker_request.include_external {
                             worker_control.retain_owned(&mut partial);
                         }
@@ -309,6 +315,7 @@ pub fn run_dashboard(
         control.default_launch_provider(),
         control.launch_targets(),
     );
+    app.start_loading();
     app.set_yolo(control.yolo_enabled(), control.yolo_supported_providers());
     app.set_paused(paused_sessions.paused());
     app.set_sort_keys(session_order.sort_keys());
@@ -389,6 +396,7 @@ pub fn run_dashboard(
     let mut launch_animation_tick = 0usize;
     let mut next_launch_animation = Instant::now();
     let mut next_live_animation = Instant::now() + LIVE_SESSION_ANIMATION_INTERVAL;
+    let mut next_loading_animation = Instant::now() + LOADING_ANIMATION_INTERVAL;
     let mut next_screen_status = Instant::now();
     let mut screen_working = std::collections::BTreeSet::<String>::new();
     let mut refresh_after_screen_idle: Option<Instant> = None;
@@ -450,6 +458,12 @@ pub fn run_dashboard(
                     // started must not put the row back to idle.
                     crate::adapters::apply_running_sessions(&mut snapshot, &running_sessions);
                     let changed = snapshot != app.snapshot;
+                    crate::perf!(
+                        "startup",
+                        "snapshot sessions={} complete={complete} since_start={}",
+                        snapshot.sessions.len(),
+                        crate::perf_log::ms(dashboard_started.elapsed())
+                    );
                     app.replace_snapshot(snapshot);
                     if let Some(session_id) = resolve_pending_reveal(
                         &mut app,
@@ -477,6 +491,7 @@ pub fn run_dashboard(
                         pending_launch_retry_at = None;
                     }
                     if complete {
+                        app.finish_loading();
                         refresh_in_flight = false;
                         last_refresh = Instant::now();
                         if let Some(pending) = pending_launch.as_ref() {
@@ -717,6 +732,10 @@ pub fn run_dashboard(
             next_launch_animation = Instant::now() + LAUNCH_ANIMATION_INTERVAL;
             needs_draw = true;
         }
+        if app.loading_tick().is_some() && Instant::now() >= next_loading_animation {
+            needs_draw |= app.advance_loading();
+            next_loading_animation = Instant::now() + LOADING_ANIMATION_INTERVAL;
+        }
         if Instant::now() >= next_live_animation {
             needs_draw |= app.advance_live_animation();
             next_live_animation = Instant::now() + LIVE_SESSION_ANIMATION_INTERVAL;
@@ -897,6 +916,14 @@ pub fn run_dashboard(
             terminal.terminal.draw(|frame| ui::render(frame, &app))?;
             terminal.set_title(&ui::terminal_title(&app));
             needs_draw = false;
+            if !first_draw_logged {
+                first_draw_logged = true;
+                crate::perf!(
+                    "startup",
+                    "first-draw since_start={}",
+                    crate::perf_log::ms(dashboard_started.elapsed())
+                );
+            }
         }
 
         let until_refresh = if refresh_in_flight {

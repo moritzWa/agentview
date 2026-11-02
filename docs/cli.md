@@ -282,6 +282,11 @@ dashboard loop stops turning for 1.5 s outside a native session.
 `AGENTVIEW_PERF_LOG=/tmp/av.log` writes elsewhere; `AGENTVIEW_PERF_LOG=off`
 turns it off.
 
+Startup is traced too: `startup` lines give the first draw and every snapshot the
+list received (with its session count and whether discovery was complete), `span`
+lines time the OpenCode discovery steps, `enrich` lines time each provider's
+enrichment, and `http` lines time each request to the OpenCode server.
+
 OpenCode history queries read OpenCode's database file directly, read-only,
 instead of starting `opencode db` for each one. `opencode-db` lines show each
 query's time, or `cli` with the reason when a query went through OpenCode's

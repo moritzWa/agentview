@@ -330,6 +330,9 @@ pub struct App {
     session_counts: BTreeMap<SessionState, usize>,
     provider_labels: Vec<String>,
     live_animation_visible: bool,
+    /// Set from startup until the first complete discovery lands; the value
+    /// is the frame counter of the placeholder rows.
+    loading_tick: Option<usize>,
     #[cfg(test)]
     group_cache_rebuilds: usize,
     pub notice: Option<String>,
@@ -444,6 +447,7 @@ impl App {
             session_counts: BTreeMap::new(),
             provider_labels: Vec::new(),
             live_animation_visible: true,
+            loading_tick: None,
             #[cfg(test)]
             group_cache_rebuilds: 0,
             notice: None,
@@ -599,6 +603,30 @@ impl App {
 
     pub fn live_animation_visible(&self) -> bool {
         self.live_animation_visible
+    }
+
+    /// The list is still being discovered for the first time: show
+    /// placeholder rows instead of an empty list.
+    pub fn start_loading(&mut self) {
+        self.loading_tick = Some(0);
+    }
+
+    pub fn finish_loading(&mut self) -> bool {
+        self.loading_tick.take().is_some()
+    }
+
+    pub fn loading_tick(&self) -> Option<usize> {
+        self.loading_tick
+    }
+
+    pub fn advance_loading(&mut self) -> bool {
+        match &mut self.loading_tick {
+            Some(tick) => {
+                *tick = tick.wrapping_add(1);
+                true
+            }
+            None => false,
+        }
     }
 
     pub fn provider_labels(&self) -> &[String] {

@@ -42,6 +42,9 @@ const SHARED_CLIENT_PREVIEW_WAIT: Duration = Duration::from_millis(3_000);
 /// A TUI still starting drops a session switch sent before it subscribed to
 /// the server's events, so a switch not drawn within this is sent again.
 const SHARED_CLIENT_RESELECT: Duration = Duration::from_millis(400);
+/// A refresh discovers, then enriches: both read the managed sessions, and
+/// the second read can reuse the first.
+const MANAGED_LIST_SHARED_FOR: Duration = Duration::from_millis(1500);
 /// Quiet after the title changes, so the frame that set it has finished.
 const SHARED_CLIENT_SETTLE: Duration = Duration::from_millis(40);
 const MAX_RESTORABLE_SESSIONS: usize = 2_000;
@@ -258,7 +261,7 @@ impl ProviderController for OpenCodeController {
         let Some(supervisor) = &self.supervisor else {
             return;
         };
-        let managed = match supervisor.list() {
+        let managed = match supervisor.list_recent(MANAGED_LIST_SHARED_FOR) {
             Ok(managed) => managed,
             Err(error) => {
                 snapshot
@@ -1390,7 +1393,12 @@ impl SessionSource for OpenCodeSource {
         };
         let (discovery, running) = std::thread::scope(|scope| {
             let running = scope.spawn(|| {
-                shells.running(self.runner.as_ref(), &|query| {
+                let _span = crate::perf_log::span("opencode-shells-lookup");
+                let v2 = self
+                    .supervisor
+                    .as_ref()
+                    .is_some_and(|supervisor| supervisor.is_v2().unwrap_or(false));
+                shells.running(self.runner.as_ref(), v2, &|query| {
                     let output = self
                         .runner
                         .run(&self.db_command(query, Duration::from_secs(8)))?;
@@ -1419,6 +1427,23 @@ impl SessionSource for OpenCodeSource {
 
 impl OpenCodeSource {
     fn discover_sessions(&self, request: &DiscoveryRequest) -> Result<SourceDiscovery> {
+        // The managed sessions come from the server and do not depend on the
+        // database or process lookups, so ask while those run.
+        std::thread::scope(|scope| {
+            if let Some(supervisor) = self
+                .supervisor
+                .as_ref()
+                .filter(|_| self.runtime == Runtime::Host)
+            {
+                scope.spawn(move || {
+                    let _ = supervisor.list_recent(MANAGED_LIST_SHARED_FOR);
+                });
+            }
+            self.discover_listed_sessions(request)
+        })
+    }
+
+    fn discover_listed_sessions(&self, request: &DiscoveryRequest) -> Result<SourceDiscovery> {
         let mut sessions = BTreeMap::new();
         let mut warnings = Vec::new();
         let external = self.discover_external_history && request.include_external;
@@ -1444,10 +1469,13 @@ impl OpenCodeSource {
             }
         }
         if external || !owned.is_empty() {
-            let holders = if self.runtime == Runtime::Host {
-                (self.probe)()
-            } else {
-                Vec::new()
+            let holders = {
+                let _span = crate::perf_log::span("opencode-holder-probe");
+                if self.runtime == Runtime::Host {
+                    (self.probe)()
+                } else {
+                    Vec::new()
+                }
             };
             // Persisted history that no live process holds is completed.
             // Avoid starting the potentially enormous global database query
@@ -1456,8 +1484,11 @@ impl OpenCodeSource {
                 .supervisor
                 .as_ref()
                 .filter(|_| self.runtime == Runtime::Host);
-            let server_live = server
-                .is_some_and(|supervisor| supervisor.live_server_pid().ok().flatten().is_some());
+            let server_live = {
+                let _span = crate::perf_log::span("opencode-live-server-pid");
+                server
+                    .is_some_and(|supervisor| supervisor.live_server_pid().ok().flatten().is_some())
+            };
             if request.include_completed || !holders.is_empty() || server_live {
                 let history_limit = request.history_limit.max(1);
                 let scope = if external {
@@ -1472,8 +1503,12 @@ impl OpenCodeSource {
                 } else {
                     Scope::Only(owned.clone())
                 };
-                let records = self.query(&scope)?;
+                let records = {
+                    let _span = crate::perf_log::span("opencode-history-query");
+                    self.query(&scope)?
+                };
                 let unfinished = unfinished_directories(&records);
+                let _activity_span = crate::perf_log::span("opencode-server-activity");
                 let activity = server
                     .filter(|supervisor| {
                         server_live
@@ -1486,6 +1521,7 @@ impl OpenCodeSource {
                             None
                         }
                     });
+                drop(_activity_span);
                 let mut history = self.normalize_beside_server(
                     records,
                     &holders,
@@ -1531,10 +1567,13 @@ impl OpenCodeSource {
             }
         }
         if let Some(supervisor) = &self.supervisor {
-            let managed = supervisor.list().unwrap_or_else(|error| {
-                warnings.push(format!("OpenCode managed control: {error:#}"));
-                Vec::new()
-            });
+            let _span = crate::perf_log::span("opencode-managed-list");
+            let managed = supervisor
+                .list_recent(MANAGED_LIST_SHARED_FOR)
+                .unwrap_or_else(|error| {
+                    warnings.push(format!("OpenCode managed control: {error:#}"));
+                    Vec::new()
+                });
             for managed in managed {
                 let session = agent_session_from_managed(&managed);
                 if (request.include_completed || session.state != SessionState::Completed)

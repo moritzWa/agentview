@@ -52,6 +52,20 @@ impl DirectDbRunner {
     }
 
     fn resolve_path(&self) -> Option<PathBuf> {
+        let key = path_cache_key(&self.program);
+        if let Some(key) = &key {
+            if let Some(path) = read_cached_path(key) {
+                return Some(path);
+            }
+        }
+        let path = self.resolve_path_with_cli();
+        if let (Some(key), Some(path)) = (&key, &path) {
+            write_cached_path(key, path);
+        }
+        path
+    }
+
+    fn resolve_path_with_cli(&self) -> Option<PathBuf> {
         for args in [vec!["db", "path"], vec!["debug", "paths", "db"]] {
             let mut request = CommandRequest::new(
                 self.program.clone(),
@@ -234,6 +248,76 @@ impl DirectDbRunner {
         }
         Ok(Some(serde_json::json!({"messages":messages}).to_string()))
     }
+}
+
+/// Asking the CLI where the database is starts the whole OpenCode runtime,
+/// about 0.1 to 0.25 s, on every launch. The answer only changes with the
+/// executable or the OpenCode and XDG environment, so it is kept on disk under
+/// a key made of both. A cached path that is no longer a file is ignored.
+fn path_cache_key(program: &str) -> Option<String> {
+    use std::hash::{Hash, Hasher};
+    if cfg!(test) {
+        return None;
+    }
+    let executable = if program.contains('/') {
+        PathBuf::from(program)
+    } else {
+        std::env::split_paths(&std::env::var_os("PATH")?)
+            .map(|dir| dir.join(program))
+            .find(|candidate| candidate.is_file())?
+    };
+    let metadata = std::fs::metadata(&executable).ok()?;
+    let modified = metadata
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    let mut environment = std::env::vars()
+        .filter(|(name, _)| {
+            name.starts_with("OPENCODE") || name.starts_with("XDG_") || name == "HOME"
+        })
+        .collect::<Vec<_>>();
+    environment.sort();
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    environment.hash(&mut hasher);
+    Some(format!(
+        "{}|{modified}|{}|{:x}",
+        executable.display(),
+        metadata.len(),
+        hasher.finish()
+    ))
+}
+
+fn path_cache_file() -> Option<PathBuf> {
+    let base = match crate::fs_util::xdg_home("XDG_STATE_HOME") {
+        Some(state) => PathBuf::from(state),
+        None => PathBuf::from(std::env::var_os("HOME")?).join(".local/state"),
+    };
+    Some(base.join("agentview").join("opencode-db-path.json"))
+}
+
+fn read_cached_path(key: &str) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(path_cache_file()?).ok()?;
+    let entries: BTreeMap<String, String> = serde_json::from_str(&text).ok()?;
+    let path = PathBuf::from(entries.get(key)?);
+    (path.is_absolute() && path.is_file()).then_some(path)
+}
+
+fn write_cached_path(key: &str, path: &std::path::Path) {
+    let Some(file) = path_cache_file() else {
+        return;
+    };
+    let mut entries: BTreeMap<String, String> = std::fs::read_to_string(&file)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default();
+    // Executables are rebuilt often; keep the file from growing without bound.
+    if entries.len() > 16 {
+        entries.clear();
+    }
+    entries.insert(key.to_owned(), path.display().to_string());
+    let _ = crate::fs_util::write_private_json(&file, &entries);
 }
 
 fn has_table(db: &Connection, name: &str) -> Result<bool> {

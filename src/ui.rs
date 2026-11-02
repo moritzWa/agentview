@@ -438,6 +438,22 @@ fn render_session_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
         }
     }
 
+    if let Some(tick) = app.loading_tick().filter(|_| app.filter.is_empty()) {
+        let room = usize::from(area.height).saturating_sub(lines.len());
+        if lines.is_empty() {
+            lines.extend(skeleton_lines(usize::from(area.width), tick, room.min(24)));
+        } else if room > 3 {
+            // Rows of the providers that answered first stay put; the rest
+            // are still on their way.
+            lines.push(Line::default());
+            lines.extend(skeleton_lines(
+                usize::from(area.width),
+                tick,
+                (room - 1).min(8),
+            ));
+        }
+    }
+
     if lines.is_empty() {
         if app.filter.is_empty() && area.width >= 60 && area.height >= 12 {
             lines.extend(empty_state_lines(app.includes_completed));
@@ -482,6 +498,73 @@ fn render_show_more_row(hidden: usize, page_size: usize, selected: bool) -> Line
         ],
         selected,
     )
+}
+
+/// Placeholder groups and rows shaped like the real list, with a light band
+/// sweeping across them, shown until the first discovery completes. Each
+/// group is a folder name and rows of `(title, summary)` bar lengths.
+const SKELETON_GROUPS: [(usize, &[(usize, usize)]); 4] = [
+    (16, &[(22, 48), (16, 36), (28, 52)]),
+    (12, &[(18, 40), (24, 30)]),
+    (20, &[(14, 44), (26, 38), (20, 50), (12, 28)]),
+    (14, &[(30, 34)]),
+];
+
+fn skeleton_lines(width: usize, tick: usize, room: usize) -> Vec<Line<'static>> {
+    const STATUS_COLUMN: usize = 36;
+    let dim = Style::default().fg(palette().dim);
+    let sweep = (tick * 2) % (width + 16);
+    // One run of bars starting at `column`, with the band drawn heavier.
+    let bar = |column: usize, length: usize, shear: usize| -> Span<'static> {
+        let text: String = (0..length)
+            .map(|offset| {
+                let behind = (column + offset + 6 + shear).wrapping_sub(sweep);
+                if behind < 6 {
+                    '▒'
+                } else {
+                    '░'
+                }
+            })
+            .collect();
+        Span::styled(text, dim)
+    };
+    let mut lines = Vec::new();
+    let mut row_index = 0;
+    'groups: for (title, rows) in SKELETON_GROUPS.iter().cycle() {
+        if !lines.is_empty() {
+            lines.push(Line::default());
+        }
+        if lines.len() >= room {
+            break;
+        }
+        lines.push(Line::from(bar(
+            0,
+            (*title).min(width.saturating_sub(1)),
+            row_index,
+        )));
+        for (title, summary) in rows.iter() {
+            if lines.len() >= room {
+                break 'groups;
+            }
+            row_index += 1;
+            let shear = row_index * 3;
+            let mut spans = vec![
+                Span::raw("  "),
+                bar(2, (*title).min(width.saturating_sub(4)), shear),
+            ];
+            if width > STATUS_COLUMN + 14 {
+                let used = 2 + title;
+                spans.push(Span::raw(" ".repeat(STATUS_COLUMN.saturating_sub(used))));
+                spans.push(bar(STATUS_COLUMN, 6, shear));
+                spans.push(Span::raw("  "));
+                let summary = (*summary).min(width.saturating_sub(STATUS_COLUMN + 14));
+                spans.push(bar(STATUS_COLUMN + 8, summary, shear));
+            }
+            lines.push(Line::from(spans));
+        }
+    }
+    lines.truncate(room);
+    lines
 }
 
 fn empty_state_lines(includes_completed: bool) -> Vec<Line<'static>> {
@@ -3521,6 +3604,58 @@ mod tests {
         assert!(rendered.contains("Completed"));
         assert!(rendered.contains("wait here for you to review"));
         assert!(rendered.contains("Hand off a substantial task below"));
+    }
+
+    #[test]
+    fn the_first_load_shows_placeholder_rows_instead_of_the_empty_state() {
+        let mut app = App::new(SessionSnapshot::default());
+        app.start_loading();
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let rendered = buffer_text(terminal.backend().buffer());
+
+        assert!(rendered.contains('░'));
+        assert!(!rendered.contains("Hand off a substantial task below"));
+        assert!(!rendered.contains("No coding-agent sessions found"));
+
+        app.advance_loading();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        assert_ne!(rendered, buffer_text(terminal.backend().buffer()));
+
+        app.finish_loading();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(!rendered.contains('░'));
+        assert!(rendered.contains("Hand off a substantial task below"));
+    }
+
+    #[test]
+    fn rows_that_arrive_first_keep_placeholders_below_them_while_loading() {
+        let mut app = App::new(SessionSnapshot {
+            sessions: vec![session("worker", SessionState::Working)],
+            warnings: vec![],
+        });
+        app.start_loading();
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let rendered = buffer_text(terminal.backend().buffer());
+
+        assert!(rendered.contains("worker"));
+        assert!(rendered.contains('░'));
+    }
+
+    #[test]
+    fn placeholder_rows_fit_narrow_and_short_lists() {
+        for (width, height) in [(32, 8), (40, 10), (60, 12), (200, 60)] {
+            let mut app = App::new(SessionSnapshot::default());
+            app.start_loading();
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+        }
     }
 
     #[test]

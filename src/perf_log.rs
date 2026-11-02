@@ -110,6 +110,28 @@ pub fn event(name: &str, details: std::fmt::Arguments<'_>) {
     }
 }
 
+/// Logs `span <name> took=…` when dropped.
+pub struct Span {
+    name: &'static str,
+    started: std::time::Instant,
+}
+
+pub fn span(name: &'static str) -> Span {
+    Span {
+        name,
+        started: std::time::Instant::now(),
+    }
+}
+
+impl Drop for Span {
+    fn drop(&mut self) {
+        event(
+            "span",
+            format_args!("{} took={}", self.name, ms(self.started.elapsed())),
+        );
+    }
+}
+
 pub fn ms(duration: Duration) -> String {
     format!("{:.1}ms", duration.as_secs_f64() * 1000.0)
 }

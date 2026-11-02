@@ -2569,7 +2569,7 @@ fn owned_dashboard_never_starts_opencode_external_history_query_even_when_comple
             r#"#!/bin/sh
 if [ "${1:-}" = db ] && [ "${2:-}" != path ]; then
   case "$2" in
-    *"FROM part p JOIN session s"*) printf 'record\n'; exit 0 ;;
+    *"FROM part p JOIN session s"*|*"FROM main.session_message m"*) printf 'record\n'; exit 0 ;;
   esac
   printf '%s\n' "$@" > "$AGENTVIEW_OPENCODE_HISTORY_CALLED"
   sleep 2

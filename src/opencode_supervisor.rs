@@ -155,6 +155,9 @@ pub struct OpenCodeSupervisor {
     lock_path: PathBuf,
     /// Server pid and how far that server can move a single TUI.
     client_targeting: Mutex<Option<(u32, SharedClientReach)>>,
+    /// The latest `list()` answer, so the discovery and the enrichment of one
+    /// refresh share a single pass over the server.
+    recent_list: Mutex<Option<(Instant, Vec<ManagedOpenCodeSession>)>>,
 }
 
 /// How far `/tui/select-session` can move one attached TUI.
@@ -205,6 +208,7 @@ impl OpenCodeSupervisor {
             lock_path: state_dir.join("server.lock"),
             state_dir,
             client_targeting: Mutex::new(None),
+            recent_list: Mutex::new(None),
         };
         supervisor.discover_v2_service()?;
         Ok(supervisor)
@@ -377,6 +381,27 @@ impl OpenCodeSupervisor {
         self.session_snapshot(&record, record.sessions.get(&id).expect("inserted session"))
     }
 
+    /// [`Self::list`], unless it answered less than `max_age` ago. For the
+    /// refresh path, where discovery and enrichment ask back to back; anything
+    /// that acts on a session it just changed must call `list`.
+    pub fn list_recent(&self, max_age: Duration) -> Result<Vec<ManagedOpenCodeSession>> {
+        // Held across the request: a second caller waits for the first one's
+        // answer instead of asking the server again.
+        let mut recent = self
+            .recent_list
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some((at, sessions)) = recent.as_ref() {
+            if at.elapsed() < max_age {
+                return Ok(sessions.clone());
+            }
+        }
+        let started = Instant::now();
+        let sessions = self.list()?;
+        *recent = Some((started, sessions.clone()));
+        Ok(sessions)
+    }
+
     /// List only sessions backed by an already-running, exactly verified
     /// server. Read-only discovery never starts a server as a side effect.
     pub fn list(&self) -> Result<Vec<ManagedOpenCodeSession>> {
@@ -385,11 +410,20 @@ impl OpenCodeSupervisor {
         };
         let mut statuses_by_directory = BTreeMap::new();
         let mut sessions_by_directory = BTreeMap::new();
+        // A V2 server answers the status and session routes for every folder
+        // at once, and the session list pages through the whole history, so
+        // one answer serves all folders.
+        let mut v2_answers: Option<(Value, Value)> = None;
         for owned in record.sessions.values() {
             if !owned.cwd.is_dir() {
                 continue;
             }
             if !statuses_by_directory.contains_key(&owned.cwd) {
+                if let Some((statuses, sessions)) = &v2_answers {
+                    statuses_by_directory.insert(owned.cwd.clone(), statuses.clone());
+                    sessions_by_directory.insert(owned.cwd.clone(), sessions.clone());
+                    continue;
+                }
                 // A folder that no longer exists makes the server answer 404;
                 // that must hide its own sessions, not every other row.
                 let path = with_directory_query("/session/status", &owned.cwd);
@@ -400,6 +434,9 @@ impl OpenCodeSupervisor {
                 let Ok(sessions) = self.request_json(&record, "GET", &path, None) else {
                     continue;
                 };
+                if record.api == ApiVersion::V2 {
+                    v2_answers = Some((statuses.clone(), sessions.clone()));
+                }
                 statuses_by_directory.insert(owned.cwd.clone(), statuses);
                 sessions_by_directory.insert(owned.cwd.clone(), sessions);
             }
@@ -1940,7 +1977,15 @@ impl OpenCodeSupervisor {
             }
             b
         });
-        let response = request_http(record, method, &path, body.as_ref())?;
+        let started = Instant::now();
+        let response = request_http(record, method, &path, body.as_ref());
+        crate::perf!(
+            "http",
+            "{method} {} took={}",
+            path.split('?').next().unwrap_or(&path),
+            crate::perf_log::ms(started.elapsed())
+        );
+        let response = response?;
         if !(200..300).contains(&response.status) {
             return Err(HttpStatusError {
                 status: response.status,

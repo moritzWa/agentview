@@ -136,8 +136,17 @@ and released versions are intended to follow Semantic Versioning.
   agents run throwaway sessions there and leave them behind. Pinned sessions
   stay visible, and `--include-temp` shows the rest.
 
+- The first load shows placeholder rows shaped like the list instead of the
+  empty-state text, and keeps them under any rows that arrive early, until every
+  provider has answered.
+
 ### Fixed
 
+- The session list appears in a fraction of a second on a large OpenCode V2
+  history, where it took about six. Startup no longer scans the whole message
+  table for background shells, enriches every partial result, fetches the
+  session list once per folder, or starts OpenCode to ask where its database is
+  (the answer is remembered between launches).
 - An idle Devin, Hermes Agent, MastraCode, or other native harness session
   held in the background shows as completed instead of working. Its screen
   decides: a turn in progress still shows as working.

@@ -83,6 +83,7 @@ impl BackgroundShells {
     pub fn running(
         &self,
         runner: &dyn CommandRunner,
+        v2: bool,
         query: &dyn Fn(String) -> Result<String>,
     ) -> BTreeSet<String> {
         let logs = self
@@ -119,7 +120,12 @@ impl BackgroundShells {
                     .iter()
                     .map(|(log, _)| part_window(log.created_ms))
                     .collect::<Vec<_>>();
-                if let Ok(output) = query(parts_query(&windows)) {
+                let sql = if v2 {
+                    parts_query_v2(&windows)
+                } else {
+                    parts_query(&windows)
+                };
+                if let Ok(output) = query(sql) {
                     let parts = parse_parts(&output);
                     for (log, started) in lookups {
                         let shell = match_shell(&parts, log.created_ms, &started);
@@ -253,6 +259,33 @@ fn parts_query(windows: &[(u64, u64)]) -> String {
     )
 }
 
+/// The same lookup for a V2 store, whose tool calls live inside assistant
+/// messages (`msg_` IDs, output under `state.content`). The V1-shaped `part`
+/// projection hides the message ID behind an expression, so selecting it
+/// there reads every message in a database that can be tens of gigabytes.
+fn parts_query_v2(windows: &[(u64, u64)]) -> String {
+    let ranges = windows
+        .iter()
+        .map(|(from, to)| {
+            let (low, high) = (
+                part_id_at(*from).replacen("prt_", "msg_", 1),
+                part_id_at(to + 1).replacen("prt_", "msg_", 1),
+            );
+            let joiner = if low <= high { "AND" } else { "OR" };
+            format!("(m.id >= '{low}' {joiner} m.id < '{high}')")
+        })
+        .collect::<Vec<_>>()
+        .join(" OR ");
+    let markers = PID_MARKERS
+        .iter()
+        .map(|marker| format!("instr(c.value, '{marker}') > 0"))
+        .collect::<Vec<_>>()
+        .join(" OR ");
+    format!(
+        "SELECT json_object('session', COALESCE(s.parent_id, s.id), 'created', m.time_created, 'text', COALESCE(substr((SELECT group_concat(json_extract(x.value, '$.text'), char(10)) FROM json_each(c.value, '$.state.content') x), -400), '') || char(10) || COALESCE(substr(json_extract(c.value, '$.state.metadata.output'), -400), '')) AS record FROM main.session_message m, json_each(m.data, '$.content') c JOIN main.session_v2 s ON s.id = m.session_id WHERE m.type = 'assistant' AND ({ranges}) AND ({markers})"
+    )
+}
+
 #[derive(Debug, Deserialize)]
 struct Part {
     session: String,
@@ -314,6 +347,14 @@ mod tests {
         assert!(query.contains("(p.id >= 'prt_ffffffff6000' OR p.id < 'prt_00000000b000')"));
         let query = parts_query(&[(1_000, 2_000)]);
         assert!(query.contains("(p.id >= 'prt_0000003e8000' AND p.id < 'prt_0000007d1000')"));
+    }
+
+    #[test]
+    fn v2_query_selects_by_message_id_without_the_part_projection() {
+        let query = parts_query_v2(&[(1_000, 2_000)]);
+        assert!(query.contains("(m.id >= 'msg_0000003e8000' AND m.id < 'msg_0000007d1000')"));
+        assert!(query.contains("main.session_message"));
+        assert!(!query.contains("FROM part"));
     }
 
     #[test]
@@ -409,7 +450,7 @@ mod tests {
             queried.set(true);
             Ok(String::new())
         };
-        assert!(shells.running(&NoProcesses, &query).is_empty());
+        assert!(shells.running(&NoProcesses, false, &query).is_empty());
         assert!(!queried.get());
     }
 }

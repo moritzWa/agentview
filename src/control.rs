@@ -414,8 +414,15 @@ impl ControlHub {
     }
 
     pub fn enrich(&self, snapshot: &mut SessionSnapshot) {
-        for controller in self.controllers.values() {
+        for (provider, controller) in &self.controllers {
+            let started = std::time::Instant::now();
             controller.enrich(snapshot);
+            crate::perf!(
+                "enrich",
+                "provider={} took={}",
+                provider.label(),
+                crate::perf_log::ms(started.elapsed())
+            );
         }
     }
 
