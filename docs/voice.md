@@ -126,12 +126,9 @@ for 30 minutes (`resume_minutes`). The next `Cmd+K` continues it: Grok replays
 the conversation itself (spoken turns only), OpenAI is told the end of it, and
 either way the voice has the same session in mind and tells you what changed
 while you were away. Nothing is billed while it is paused, because the
-connection is closed. Parked calls show no indicator inside OpenCode; the active
-call badge stays at the bottom right below the input. `/voice new` makes the next
-call start fresh.
-
-Agent View's own footer keeps a concise `voice call paused 2 minutes ago` status
-with `ctrl+k resumes`. It does not show old transcript text or speed buttons.
+connection is closed. A paused call shows no indicator, in Agent View or inside
+OpenCode; only a live call shows its badge. `Cmd+K` still continues it. `/voice
+new` makes the next call start fresh.
 
 **`Cmd+S` in a session's own view** (Ctrl+S, the key your read-aloud plugin
 answers) pauses a live call, and the key still goes through to OpenCode, so the
