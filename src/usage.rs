@@ -288,6 +288,66 @@ impl Drop for UsageWatcher {
     }
 }
 
+/// Claude Code stores the subscription login in `claudeAiOauth`. A later MCP
+/// OAuth entry can be cut off inside the Keychain item, which makes the whole
+/// document fail to parse and drops the usage row. The subscription object
+/// itself is still complete. A recovered document contains only that object,
+/// so a later refresh persists the repair and drops the unreadable tail.
+fn parse_claude_credentials(raw: &str) -> Option<Value> {
+    let text = raw.trim();
+    if let Ok(value) = serde_json::from_str(text) {
+        return Some(value);
+    }
+    let object = json_object_after_key(text, "claudeAiOauth")?;
+    serde_json::from_str(&format!("{{\"claudeAiOauth\":{object}}}")).ok()
+}
+
+fn json_object_after_key<'a>(text: &'a str, key: &str) -> Option<&'a str> {
+    let marker = format!("\"{key}\"");
+    let mut rest = text;
+    while let Some(start) = rest.find(&marker) {
+        let after = rest.get(start + marker.len()..)?.trim_start();
+        let object = after.strip_prefix(':').map(str::trim_start);
+        if let Some(object) = object.filter(|value| value.starts_with('{')) {
+            if let Some(end) = matching_json_end(object) {
+                return object.get(..=end);
+            }
+        }
+        rest = rest.get(start + marker.len()..)?;
+    }
+    None
+}
+
+fn matching_json_end(text: &str) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (index, ch) in text.char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '{' => depth += 1,
+            '}' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 fn fetch_claude() -> Option<Usage> {
     // Several dashboards may be open. Read credentials only after acquiring
     // the lock so they cannot simultaneously rotate the same refresh token.
@@ -295,10 +355,10 @@ fn fetch_claude() -> Option<Usage> {
     let _lock = claude_usage_lock()?;
     let keychain = keychain_claude_credentials();
     let path = home()?.join(".claude/.credentials.json");
-    let credentials = keychain
+    let raw = keychain
         .clone()
         .or_else(|| std::fs::read_to_string(&path).ok())?;
-    let mut credentials: Value = serde_json::from_str(&credentials).ok()?;
+    let mut credentials = parse_claude_credentials(&raw)?;
     if claude_token_expiring(&credentials, now()) {
         refresh_claude_credentials(&mut credentials)?;
         // Persist rotated refresh tokens in the same store Claude Code uses.
@@ -624,6 +684,38 @@ fn parse_rfc3339(text: &str) -> Option<u64> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn truncated_keychain_blob_still_yields_the_subscription_login() {
+        let raw = r#"{"claudeAiOauth":{"accessToken":"tok}en","expiresAt":1793646640000,"refreshToken":"refresh","scopes":["user:inference"]},"mcpOAuth":{"serverUrl":"https://mcp.neo"#;
+        let credentials = parse_claude_credentials(raw).unwrap();
+        assert_eq!(
+            credentials
+                .pointer("/claudeAiOauth/accessToken")
+                .and_then(Value::as_str),
+            Some("tok}en")
+        );
+        assert_eq!(
+            credentials
+                .pointer("/claudeAiOauth/expiresAt")
+                .and_then(Value::as_u64),
+            Some(1_793_646_640_000)
+        );
+        assert_eq!(
+            credentials
+                .pointer("/claudeAiOauth/scopes/0")
+                .and_then(Value::as_str),
+            Some("user:inference")
+        );
+        assert!(parse_claude_credentials("not json").is_none());
+    }
+
+    #[test]
+    fn intact_credentials_keep_sibling_fields() {
+        let raw = r#"{"claudeAiOauth":{"accessToken":"token"},"mcpOAuth":{"ok":true}}"#;
+        let credentials = parse_claude_credentials(raw).unwrap();
+        assert_eq!(credentials["mcpOAuth"]["ok"], true);
+    }
 
     #[cfg(target_os = "macos")]
     #[test]
