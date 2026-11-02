@@ -44,6 +44,9 @@ pub trait VoiceHost: Send + Sync {
     /// Stops what the session is doing and removes it from Agent View. Its
     /// history stays and `search_history` still finds it.
     fn close(&self, id: &str) -> Result<String>;
+    /// Sends the final message of a draft the developer started typing into the
+    /// session's input box, and empties the box.
+    fn send_draft(&self, id: &str, text: &str) -> Result<()>;
     fn send(&self, id: &str, text: &str) -> Result<()>;
     /// Asks for fresh session data; the dashboard may be busy elsewhere.
     fn refresh(&self) {}
@@ -90,6 +93,9 @@ pub struct Tools {
     touched: Mutex<std::collections::HashMap<String, u64>>,
     /// Folders whose children a spoken name may refer to, such as `~/Code`.
     roots: Vec<PathBuf>,
+    /// What was typed into the on-screen session's input box when the call
+    /// started, and which session that is.
+    draft: Mutex<Option<(String, String)>>,
 }
 
 /// Text cut to `max` characters, keeping the start.
@@ -156,7 +162,17 @@ impl Tools {
             reads: Mutex::default(),
             touched: Mutex::default(),
             roots: Vec::new(),
+            draft: Mutex::default(),
         }
+    }
+
+    /// The draft in the input box of the session on screen, or none.
+    pub fn set_draft(&self, text: Option<String>) {
+        let session = self.viewing.lock().unwrap().clone();
+        *self.draft.lock().unwrap() = text
+            .filter(|text| !text.trim().is_empty())
+            .zip(session)
+            .map(|(text, session)| (session, text));
     }
 
     /// Runs one tool. Whatever happens, the answer is JSON the model can read.
@@ -170,6 +186,7 @@ impl Tools {
             "start_session" => self.start(args),
             "search_history" => self.search(args),
             "close_session" => self.close(args),
+            "send_draft" => self.send_draft(args),
             "watch_session" => self.watch(args),
             "end_call" => Ok(
                 json!({"ok": true, "note": "the call ends in a few seconds: say a short goodbye"}),
@@ -367,6 +384,17 @@ impl Tools {
             out["note"] = json!("nothing in the history matches; try other words from the conversation or its title");
         }
         Ok(out)
+    }
+
+    fn send_draft(&self, args: &Value) -> Result<Value> {
+        let text = Self::text(args, "text")?;
+        let Some((session, _)) = self.draft.lock().unwrap().clone() else {
+            bail!("the developer did not start a message before this call: use send_message");
+        };
+        self.host.send_draft(&session, &text)?;
+        *self.draft.lock().unwrap() = None;
+        self.touch(&session);
+        Ok(json!({"ok": true, "note": "sent to the session and the input box is empty again"}))
     }
 
     fn close(&self, args: &Value) -> Result<Value> {
@@ -621,6 +649,18 @@ impl Tools {
             notes.push('\n');
             notes.push_str(&line);
         }
+        if let Some((session, text)) = self.draft.lock().unwrap().clone() {
+            let title = infos
+                .iter()
+                .find(|info| info.id == session)
+                .map_or("the session on screen".to_owned(), |info| {
+                    format!("\"{}\"", info.title)
+                });
+            notes.push_str(&format!(
+                "\nBefore the call the developer had started typing this into {title}'s input box: \"{}\". They may want to think it through with you. When they approve it, send the whole message with send_draft: their draft plus what you agreed, in their words.",
+                clip_start(&text, 1500)
+            ));
+        }
         notes
     }
 
@@ -729,6 +769,9 @@ pub(crate) mod fake {
         ) -> Result<(Vec<HistoryHit>, Option<String>)> {
             self.record(format!("search {query} {limit}"))?;
             Ok((self.hits.lock().unwrap().clone(), None))
+        }
+        fn send_draft(&self, id: &str, text: &str) -> Result<()> {
+            self.record(format!("send_draft {id} {text}"))
         }
         fn close(&self, id: &str) -> Result<String> {
             self.record(format!("close {id}"))?;

@@ -92,6 +92,28 @@ clicks while such a call is live, so selecting text works as usual otherwise
 (Shift-drag still selects while it is). OpenAI has no speed setting, so its
 badge has no buttons.
 
+## Pausing, continuing, and drafts
+
+**Ending pauses.** A call you end on purpose (the key, `Cmd+S`, "bye") is kept
+for 30 minutes (`resume_minutes`). The next `Cmd+K` continues it: Grok replays
+the conversation itself (spoken turns only), OpenAI is told the end of it, and
+either way the voice has the same session in mind and tells you what changed
+while you were away. Nothing is billed while it is paused, because the
+connection is closed. The OpenCode footer shows `⏸ voice paused 12m · cmd+k
+continues`. `/voice new` makes the next call start fresh.
+
+**`Cmd+S` in a session's own view** (Ctrl+S, the key your read-aloud plugin
+answers) pauses a live call, and the key still goes through to OpenCode, so the
+plugin starts reading the latest answer. The call is paused, not ended: press
+`Cmd+K` when you want to talk again. Outside a call it does only what it did.
+
+**A draft comes along.** Press `Cmd+K` with text already in an OpenCode session's
+input box and the voice knows that text and which session it belongs to. Say
+"help me think this through", talk for a while, then "sounds good": it sends the
+whole message (your draft plus what you agreed) with `send_draft` and empties the
+box. agentview reads the box off the screen, so it sees what is visible, and it
+clears it with OpenCode's own clear key (`ctrl+c`, the default).
+
 ## Starting and stopping fast
 
 Pressing the key to end a call silences the voice at once (about 20 ms): the
@@ -100,7 +122,11 @@ behind it. After a call, the hidden browser stays up for two minutes
 (`keep_warm_seconds`, 0 turns it off), so the next call skips starting it. A
 Grok call is live in about 1 second cold and 0.4 seconds warm; an OpenAI call in
 3 to 4 seconds cold and 1.5 warm, because OpenAI needs the browser's offer
-before it can create the session. `scripts/voice-spike/latency.py` measures it.
+before it can create the session. Grok also hears you from the first moment: the
+page records while the call connects and sends that audio first, so you can
+start talking as you press the key (a test that spoke at once lost "Which" without
+this, and heard the whole sentence with it). `scripts/voice-spike/latency.py`
+measures it.
 
 ## How it works
 
@@ -171,6 +197,7 @@ points at a particular browser.
   "max_minutes": 60,
   "browser": "hidden",
   "keep_warm_seconds": 120,
+  "resume_minutes": 30,
   "chrome_path": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 }
 ```

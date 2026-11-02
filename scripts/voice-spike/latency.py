@@ -9,9 +9,15 @@ binary = sys.argv[1] if len(sys.argv) > 1 else os.path.expanduser("~/Code/agentv
 grok = os.environ.get("E2E_PROVIDER", "").lower() in ("grok", "xai")
 scratch = tempfile.mkdtemp(prefix="voice-latency-")
 log = os.path.join(scratch, "log.jsonl")
+# E2E_SPEAK=1: the fake microphone starts talking the moment the call does, to see whether the first words are heard.
+wav = None
+if os.environ.get("E2E_SPEAK"):
+    wav = os.path.join(scratch, "mic.wav")
+    subprocess.run(["say", "-v", "Samantha", "-o", wav + ".aiff", "Which of my sessions need me right now?"], check=True)
+    subprocess.run(["python3", os.path.expanduser("~/.claude/scripts/heavy-job.py"), "--wait", "--", "ffmpeg", "-y", "-loglevel", "error", "-i", wav + ".aiff", "-ar", "48000", "-ac", "1", "-sample_fmt", "s16", wav], check=True)
 env = dict(os.environ, TERM="xterm-256color", AGENTVIEW_VOICE_STATE_DIR=scratch, AGENTVIEW_PERF_LOG=os.path.join(scratch, "perf.log"),
            AGENTVIEW_VOICE_PORT="47697", AGENTVIEW_VOICE_LOG=log,
-           AGENTVIEW_VOICE_CHROME_ARGS="--no-sandbox --use-fake-device-for-media-stream --mute-audio")
+           AGENTVIEW_VOICE_CHROME_ARGS="--no-sandbox --use-fake-device-for-media-stream --mute-audio" + (f" --use-file-for-fake-audio-capture={wav}%noloop" if wav else ""))
 if grok:
     env["AGENTVIEW_XAI_API_KEY"] = subprocess.run(["op", "item", "get", "x ai api key", "--fields", "credential", "--reveal"], capture_output=True, text=True).stdout.strip()
     open(os.path.join(scratch, "settings.json"), "w").write('{"provider": "grok"}')
@@ -42,6 +48,9 @@ for call in ("cold start", "warm start"):
     live, silenced = events("live"), events("silenced")
     print(f"{call}: live after {live[-1]['d']['ms']} ms" if live else f"{call}: never live", end="")
     print(f", silenced {silenced[-1]['d']['ms_after_the_key']} ms after the end key" if silenced else ", no silence reported")
+    if wav:
+        heard = [e["d"]["text"] for e in events("said") if "transcription" in e["d"].get("who", "") and e["d"].get("status") == "completed"]
+        print(f"   first words heard: {heard[-1]!r}" if heard else "   nothing heard")
 os.kill(pid, 9)
 # A browser kept for the next call outlives a killed agentview: stop this run's.
 for line in subprocess.run(["ps", "-A", "-o", "pid=,command="], capture_output=True, text=True).stdout.splitlines():

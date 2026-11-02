@@ -136,6 +136,8 @@ pub enum AppAction {
     },
     /// `/voice grok` or `/voice openai`: whose voice calls use from now on.
     VoiceProvider(crate::voice::config::Provider),
+    /// `/voice new`: the next call starts fresh instead of continuing a paused one.
+    VoiceForget,
     /// `/voice speed 1.2`, in tenths: how fast Grok talks.
     VoiceSpeed(u32),
     SetCompletedVisibility {
@@ -3208,6 +3210,9 @@ impl App {
         if let Some(provider) = crate::voice::config::Provider::parse(first) {
             return AppAction::VoiceProvider(provider);
         }
+        if first.eq_ignore_ascii_case("new") {
+            return AppAction::VoiceForget;
+        }
         let number = if first.eq_ignore_ascii_case("speed") {
             words.next().unwrap_or_default()
         } else {
@@ -3218,7 +3223,9 @@ impl App {
                 (crate::voice::config::clamp_speed(speed) * 10.0).round() as u32,
             ),
             Err(_) => {
-                self.set_notice("use /voice, /voice grok, /voice openai or /voice speed 1.2");
+                self.set_notice(
+                    "use /voice, /voice grok, /voice openai, /voice new or /voice speed 1.2",
+                );
                 AppAction::None
             }
         }
@@ -4858,6 +4865,7 @@ mod tests {
             ("/voice grok", AppAction::VoiceProvider(Voice::Xai)),
             ("/voice xai", AppAction::VoiceProvider(Voice::Xai)),
             ("/voice openai", AppAction::VoiceProvider(Voice::OpenAi)),
+            ("/voice new", AppAction::VoiceForget),
             ("/voice speed 1.25", AppAction::VoiceSpeed(13)),
             ("/voice 1.5x", AppAction::VoiceSpeed(15)),
             ("/voice speed 9", AppAction::VoiceSpeed(15)),

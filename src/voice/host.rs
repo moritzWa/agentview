@@ -341,6 +341,13 @@ impl VoiceHost for DashboardHost {
         Ok((hits, note))
     }
 
+    fn send_draft(&self, id: &str, text: &str) -> Result<()> {
+        self.send(id, text)?;
+        // The message went in as a new one; the draft it came from is emptied.
+        crate::native_session::request_input(crate::native_session::InputRequest::ClearDraft);
+        Ok(())
+    }
+
     fn close(&self, id: &str) -> Result<String> {
         let session = self.stoppable(id)?;
         let working = self

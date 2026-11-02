@@ -58,6 +58,8 @@ const stateEl = $("state"), log = $("log"), out = $("out");
 const hidden = new URLSearchParams(location.search).has("hidden");
 let ws, pc, dc, stream, ready = hidden, muted = false, retired = false;
 let provider = "openai", xws, ctx, capture, nextTime = 0, playing = [];
+// What was said before Grok was ready to listen is kept and sent first, so speaking right after the key loses nothing.
+let heardEarly = [], grokReady = false;
 let youLine = null, voiceLine = null;
 
 function setState(text, kind = "") { stateEl.textContent = text; stateEl.className = kind; }
@@ -236,8 +238,11 @@ async function beginXai() {
   await ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([captureProcessor], { type: "text/javascript" })));
   capture = new AudioWorkletNode(ctx, "capture");
   ctx.createMediaStreamSource(stream).connect(capture);
+  heardEarly = []; grokReady = false;
   capture.port.onmessage = (e) => {
-    if (xws?.readyState === 1) xws.send(JSON.stringify({ type: "input_audio_buffer.append", audio: toBase64(e.data) }));
+    const audio = toBase64(e.data);
+    if (grokReady && xws?.readyState === 1) xws.send(JSON.stringify({ type: "input_audio_buffer.append", audio }));
+    else if (heardEarly.length < 150) heardEarly.push(audio);   // up to 15 seconds
   };
   $("mute").disabled = false; $("end").disabled = false;
   post({ type: "stage", stage: "offer" });
@@ -250,6 +255,11 @@ function openXai(msg) {
   xws.onmessage = (m) => {
     let event; try { event = JSON.parse(m.data); } catch { return; }
     if (event.type === "response.output_audio.delta") return playPcm(event.delta);
+    if (event.type === "session.updated" && !grokReady) {
+      grokReady = true;
+      for (const audio of heardEarly) xws.send(JSON.stringify({ type: "input_audio_buffer.append", audio }));
+      heardEarly = [];
+    }
     if (event.type === "input_audio_buffer.speech_started") stopPlayback();
     caption(event);
     if (event.type !== "ping") post({ type: "event", event });
@@ -284,7 +294,7 @@ function end(reason) {
   try { stopPlayback(); capture?.disconnect(); ctx?.close(); } catch {}
   stream?.getTracks().forEach((t) => t.stop());
   clearInterval(meterTimer);
-  pc = dc = stream = xws = ctx = capture = null; youLine = voiceLine = null;
+  pc = dc = stream = xws = ctx = capture = null; youLine = voiceLine = null; heardEarly = []; grokReady = false;
   out.srcObject = null;
   $("mute").disabled = true; $("end").disabled = true;
   setState(ready ? "ready" : "idle", ready ? "live" : "");

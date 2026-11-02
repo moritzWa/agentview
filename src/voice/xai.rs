@@ -10,9 +10,14 @@ use serde_json::{json, Value};
 
 use super::config::{clamp_speed, Settings};
 
-/// The websocket the page opens, with the token in the subprotocol.
-pub fn realtime_url(settings: &Settings) -> String {
-    format!("wss://api.x.ai/v1/realtime?model={}", settings.xai_model)
+/// The websocket the page opens, with the token in the subprotocol. A
+/// conversation id makes xAI replay what was said in it.
+pub fn realtime_url(settings: &Settings, conversation: Option<&str>) -> String {
+    let mut url = format!("wss://api.x.ai/v1/realtime?model={}", settings.xai_model);
+    if let Some(id) = conversation {
+        url.push_str(&format!("&conversation_id={id}"));
+    }
+    url
 }
 
 /// The first `session.update`: voice, prompt with the status notes, tools,
@@ -27,6 +32,8 @@ pub fn session_update(settings: &Settings, notes: &str) -> Value {
             "instructions": format!("{}\n\nStatus notes:\n{notes}", include_str!("xai.md")),
             "turn_detection": {"type": "server_vad"},
             "reasoning": {"effort": settings.xai_reasoning},
+            // Needed to be able to continue a call that was paused.
+            "resumption": {"enabled": true},
             "tools": tools,
             "audio": {
                 "input": {
