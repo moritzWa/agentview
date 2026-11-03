@@ -1759,7 +1759,7 @@ fn selected_group_can_delete(app: &App) -> bool {
 }
 
 fn session_control_suffix(session: &AgentSession) -> &'static str {
-    if session.capabilities.contains(&Capability::Interrupt) {
+    if session.can_interrupt() {
         " · ctrl+x to stop"
     } else if session.capabilities.contains(&Capability::Delete)
         && session.capabilities.contains(&Capability::Archive)
@@ -1860,7 +1860,7 @@ fn help_sections(app: &App) -> Vec<HelpSection> {
         } else if session.capabilities.contains(&Capability::Inspect) {
             selected.push(("space", "inspect"));
         }
-        let removal = if session.capabilities.contains(&Capability::Interrupt) {
+        let removal = if session.can_interrupt() {
             "stop"
         } else if session.capabilities.contains(&Capability::Delete) {
             "delete"
@@ -3906,6 +3906,19 @@ mod tests {
 
         assert!(rendered.contains("ctrl+x"));
         assert_eq!(help_description(&app, "ctrl+x"), Some("stop"));
+    }
+
+    #[test]
+    fn completed_opencode_with_stale_stop_authority_is_labeled_hide() {
+        let mut item = session("finished", SessionState::Completed);
+        item.provider = Provider::OpenCode;
+        item.capabilities.insert(Capability::Interrupt);
+        assert_eq!(session_control_suffix(&item), " · ctrl+x to hide locally");
+        let app = App::new(SessionSnapshot {
+            sessions: vec![item],
+            warnings: vec![],
+        });
+        assert_eq!(help_description(&app, "ctrl+x"), Some("hide locally"));
     }
 
     #[test]

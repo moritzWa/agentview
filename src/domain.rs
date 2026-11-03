@@ -236,6 +236,13 @@ mod optional_system_time_millis {
 }
 
 impl AgentSession {
+    /// OpenCode stops a running turn, not its shared client. Other providers
+    /// may still need to stop an idle managed transport before removing it.
+    pub fn can_interrupt(&self) -> bool {
+        self.capabilities.contains(&Capability::Interrupt)
+            && (self.provider != Provider::OpenCode || self.state == SessionState::Working)
+    }
+
     pub fn age(&self, now: SystemTime) -> Option<Duration> {
         now.duration_since(self.updated_at.or(self.started_at)?)
             .ok()

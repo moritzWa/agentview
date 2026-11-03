@@ -1679,7 +1679,7 @@ impl App {
     fn removal_action(&self) -> Result<AppAction, &'static str> {
         if let Some(session) = self.selected_session() {
             let id = session.id.clone();
-            return Ok(if session.capabilities.contains(&Capability::Interrupt) {
+            return Ok(if session.can_interrupt() {
                 AppAction::Interrupt { session_id: id }
             } else if !is_active_session_state(session.state)
                 && session.capabilities.contains(&Capability::Delete)
@@ -6223,6 +6223,25 @@ mod tests {
                 session_ids: vec!["active".into()]
             }
         );
+    }
+
+    #[test]
+    fn idle_opencode_row_with_stale_interrupt_authority_can_still_be_removed() {
+        for state in [SessionState::Completed, SessionState::ReadyForReview] {
+            let mut item = session("finished", state);
+            item.provider = Provider::OpenCode;
+            grant(&mut item, &[Capability::Interrupt]);
+            let mut app = app_with(vec![item]);
+
+            assert_eq!(app.start_confirm(), AppAction::None);
+            assert_eq!(app.pending_removal_verb(), Some("hide"));
+            assert_eq!(
+                app.start_confirm(),
+                AppAction::Hide {
+                    session_ids: vec!["finished".into()]
+                }
+            );
+        }
     }
 
     #[test]
