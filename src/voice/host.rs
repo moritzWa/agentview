@@ -443,6 +443,17 @@ impl VoiceHost for DashboardHost {
         }
     }
 
+    fn pause_speech(&self, id: &str) {
+        let session = self
+            .sessions
+            .lock()
+            .ok()
+            .and_then(|sessions| sessions.iter().find(|s| s.id == id).cloned());
+        if let Some(session) = session {
+            self.control.pause_speech(&session);
+        }
+    }
+
     fn start(&self, cwd: &Path, task: &str) -> Result<String> {
         let outcome = self.control.launch_with(
             Provider::OpenCode,

@@ -448,6 +448,12 @@ impl ProviderController for OpenCodeController {
             .recent_messages(&owned.id, count)
     }
 
+    fn pause_speech(&self, session: &AgentSession) {
+        if session.runtime == Runtime::Host {
+            self.pause_speech_in(&session.cwd);
+        }
+    }
+
     fn force_interrupt(&self, session: &AgentSession) -> Result<()> {
         self.supervisor
             .as_ref()
@@ -524,7 +530,7 @@ impl ProviderController for OpenCodeController {
         };
         let exit = crate::native_session::run(command, &session.id)?;
         if matches!(exit, crate::native_session::NativeSessionExit::Backgrounded) {
-            self.pause_speech(&session.cwd);
+            self.pause_speech_in(&session.cwd);
         }
         native_outcome(exit, &session.provider_session_id, &session.name)
     }
@@ -864,7 +870,7 @@ impl OpenCodeController {
             }
         };
         if matches!(exit, crate::native_session::NativeSessionExit::Backgrounded) {
-            self.pause_speech(&session.cwd);
+            self.pause_speech_in(&session.cwd);
         } else if let Ok(mut clients) = shared_clients().lock() {
             clients.remove(key);
         }
@@ -1074,7 +1080,7 @@ impl OpenCodeController {
     /// A backgrounded TUI keeps running, so without this a TUI reading an
     /// answer aloud (the opencode-read-aloud plugin) would keep talking over
     /// the dashboard. Pausing keeps its place for when the session is reopened.
-    fn pause_speech(&self, cwd: &Path) {
+    fn pause_speech_in(&self, cwd: &Path) {
         if let Some(supervisor) = self.supervisor.as_ref() {
             if supervisor.is_v2().unwrap_or(true) {
                 if let Some((_, reach)) = supervisor.known_client_reach() {

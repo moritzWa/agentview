@@ -140,6 +140,11 @@ path. Double-click, Option+click, playback controls and media-key starts pause a
 call too, without depending on a keyboard shortcut. The notification travels
 over the existing native terminal connection and needs no account or server.
 
+The reverse also holds: starting a call (`Cmd+K`) pauses the read-aloud plugin in
+the session on screen, so the two voices never overlap. Agent View sends the
+plugin's own `speech.pause` command through the OpenCode server, the same one it
+sends when you leave a session's view; the plugin keeps its place.
+
 **A draft comes along.** Press `Cmd+K` with text already in an OpenCode session's
 input box and the voice knows that text and which session it belongs to. Say
 "help me think this through", talk for a while, then "sounds good": it sends the

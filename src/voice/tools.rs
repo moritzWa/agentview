@@ -55,6 +55,9 @@ pub trait VoiceHost: Send + Sync {
     fn send(&self, id: &str, text: &str) -> Result<()>;
     /// Asks for fresh session data; the dashboard may be busy elsewhere.
     fn refresh(&self) {}
+    /// Pauses a read-aloud plugin speaking the session's answer, so it does
+    /// not talk over a call that is starting.
+    fn pause_speech(&self, _id: &str) {}
     fn interrupt(&self, id: &str) -> Result<()>;
     fn edit_last(&self, id: &str, text: &str) -> Result<()>;
     /// Starts a session in `cwd` and returns its id.
@@ -844,6 +847,9 @@ pub(crate) mod fake {
         }
         fn send(&self, id: &str, text: &str) -> Result<()> {
             self.record(format!("send {id} {text}"))
+        }
+        fn pause_speech(&self, id: &str) {
+            let _ = self.record(format!("pause_speech {id}"));
         }
         fn interrupt(&self, id: &str) -> Result<()> {
             self.record(format!("interrupt {id}"))

@@ -537,7 +537,13 @@ impl Inner {
                 tools
             }
         };
-        tools.set_viewing(viewing());
+        let on_screen = viewing();
+        tools.set_viewing(on_screen.clone());
+        // A read-aloud plugin still speaking the answer on screen would talk over the call.
+        if let Some(id) = on_screen {
+            let host = self.host.clone();
+            thread::spawn(move || host.pause_speech(&id));
+        }
         let has_draft = draft.is_some();
         tools.set_draft(draft.map(|draft| draft.text));
         if has_draft {
@@ -2072,6 +2078,21 @@ mod tests {
         ));
         // Sent once: there is no draft left to send.
         assert!(tools.run("send_draft", &json!({"text": "again"}))["error"].is_string());
+        crate::voice::set_viewing(None);
+    }
+
+    #[test]
+    fn starting_a_call_pauses_the_read_aloud_of_the_session_on_screen() {
+        let call = rig(Settings::default(), Some("sk-test"));
+        crate::voice::set_viewing(Some("opencode:host:a".into()));
+        assert_eq!(call.service.toggle(), Toggle::Started);
+        until(|| {
+            call.host
+                .log
+                .lock()
+                .unwrap()
+                .contains(&"pause_speech opencode:host:a".to_owned())
+        });
         crate::voice::set_viewing(None);
     }
 

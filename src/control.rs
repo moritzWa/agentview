@@ -226,6 +226,10 @@ pub trait ProviderController: Send + Sync {
         bail!("{} message reading is unavailable", self.provider().label())
     }
 
+    /// Silences a read-aloud plugin speaking the session's answer, keeping its
+    /// place. Best effort: a harness without one does nothing.
+    fn pause_speech(&self, _session: &AgentSession) {}
+
     /// Stops a session's running turn even when this dashboard did not start
     /// the session.
     fn force_interrupt(&self, _session: &AgentSession) -> Result<()> {
@@ -780,6 +784,14 @@ impl ControlHub {
     pub fn force_interrupt(&self, session: &AgentSession) -> Result<()> {
         self.ensure_provider_io()?;
         self.controller(&session.provider)?.force_interrupt(session)
+    }
+
+    pub fn pause_speech(&self, session: &AgentSession) {
+        if self.ensure_provider_io().is_ok() {
+            if let Ok(controller) = self.controller(&session.provider) {
+                controller.pause_speech(session);
+            }
+        }
     }
 
     /// Reads the session's stored history, so it works for any session, owned
