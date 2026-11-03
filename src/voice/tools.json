@@ -146,6 +146,24 @@
   },
   {
     "type": "function",
+    "name": "web_search",
+    "description": "Search the web for current facts the developer asks about that are not in their sessions. Returns up to five results, each with a title, URL and a one-line snippet. Say the answer in a sentence; do not read out URLs.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "What to look up, as a search query."
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
     "name": "close_session",
     "description": "Close a session: stop what it is doing and remove it from Agent View, the developer's list of sessions in focus. Its history is kept and search_history can still find it. Use when the developer says close, kill, remove, get rid of, clean up or dismiss a session.",
     "parameters": {

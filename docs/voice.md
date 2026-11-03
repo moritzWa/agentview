@@ -119,6 +119,15 @@ is inserted after conversation replay and before buffered microphone audio.
 Both providers are prompted to read three exchanges before answering about the
 chat on screen, rather than infer its subject from its title.
 
+## Web search
+
+`web_search` takes a query and returns up to five results from Exa, each with a
+title, URL and a one-line snippet, so you can ask for a current fact (a release,
+a doc page) without leaving the call. It needs an Exa key: `EXA_API_KEY` (or
+`AGENTVIEW_EXA_API_KEY`) in the environment, or `exa_api_key` in `key.json` next
+to the other voice keys. Without one the tool says so. There is no caching and
+no ranking beyond what Exa returns.
+
 ## Pausing, continuing, and drafts
 
 **Ending pauses.** A call you end on purpose (the key, `Cmd+S`, "bye") is kept

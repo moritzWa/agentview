@@ -13,6 +13,7 @@ pub mod log;
 pub mod server;
 pub mod service;
 pub mod tools;
+pub mod web;
 pub mod xai;
 
 pub use call::{Line, Who};

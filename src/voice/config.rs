@@ -95,6 +95,8 @@ struct KeyFile {
     openai_api_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     xai_api_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    exa_api_key: Option<String>,
 }
 
 fn read_key_file() -> KeyFile {
@@ -128,6 +130,15 @@ pub fn key_for(provider: Provider) -> Option<String> {
         Provider::OpenAi => file.openai_api_key,
         Provider::Xai => file.xai_api_key,
     })
+}
+
+/// The Exa key behind the voice's web search: the environment, then
+/// `exa_api_key` in the same key file.
+pub fn exa_key() -> Option<String> {
+    ["AGENTVIEW_EXA_API_KEY", "EXA_API_KEY"]
+        .iter()
+        .find_map(|name| clean(std::env::var(name).ok()))
+        .or_else(|| clean(read_key_file().exa_api_key))
 }
 
 /// An OpenAI key with access to GPT-Live.

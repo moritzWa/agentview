@@ -205,6 +205,7 @@ impl Tools {
             "edit_last_message" => self.edit_last(args),
             "start_session" => self.start(args),
             "search_history" => self.search(args),
+            "web_search" => self.web_search(args),
             "close_session" => self.close(args),
             "send_draft" => self.send_draft(args),
             "watch_session" => self.watch(args),
@@ -424,6 +425,17 @@ impl Tools {
             out["note"] = json!("nothing in the history matches; try other words from the conversation or its title");
         }
         Ok(out)
+    }
+
+    fn web_search(&self, args: &Value) -> Result<Value> {
+        let query = Self::text(args, "query")?;
+        let Some(key) = super::config::exa_key() else {
+            bail!(
+                "web search has no Exa key: set EXA_API_KEY or exa_api_key in the voice key file"
+            );
+        };
+        let results = super::web::search(&query, &key)?;
+        Ok(json!({ "results": results }))
     }
 
     fn send_draft(&self, args: &Value) -> Result<Value> {
@@ -676,7 +688,10 @@ impl Tools {
 
     /// Whether a tool only looks and never changes anything.
     pub fn is_read_only(name: &str) -> bool {
-        matches!(name, "list_sessions" | "read_session" | "search_history")
+        matches!(
+            name,
+            "list_sessions" | "read_session" | "search_history" | "web_search"
+        )
     }
 
     /// Whether anything is being watched, which keeps a quiet call open.
@@ -1123,6 +1138,13 @@ mod tests {
         let none = tools.run("search_history", &json!({"query": "zebra"}));
         assert!(none["note"].as_str().unwrap().contains("nothing"));
         assert!(tools.run("search_history", &json!({}))["error"].is_string());
+    }
+
+    #[test]
+    fn web_search_needs_a_query_and_counts_as_read_only() {
+        let (_, tools) = tools(two());
+        assert!(tools.run("web_search", &json!({}))["error"].is_string());
+        assert!(Tools::is_read_only("web_search"));
     }
 
     #[test]

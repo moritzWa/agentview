@@ -491,6 +491,7 @@ mod tests {
                 "edit_last_message",
                 "start_session",
                 "search_history",
+                "web_search",
                 "close_session",
                 "send_draft",
                 "watch_session",
