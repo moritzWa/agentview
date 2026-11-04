@@ -53,7 +53,8 @@ const NATIVE_PREVIEW_DELAY: Duration = Duration::from_millis(150);
 const LAUNCH_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
 const REVEAL_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long an open waits on the dashboard for the hidden native client to
-/// draw the session before it is shown anyway.
+/// draw the session before reporting that it is not ready. Never fall back to
+/// a synchronous switch: a slow server would then block dashboard input.
 const DEFERRED_OPEN_TIMEOUT: Duration = Duration::from_secs(2);
 /// How often the dashboard checks whether a deferred open can go ahead.
 const DEFERRED_OPEN_POLL: Duration = Duration::from_millis(5);
@@ -70,6 +71,23 @@ struct PendingOpen {
     session_id: String,
     since: Instant,
     deadline: Instant,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum OpenReadiness {
+    Waiting,
+    TimedOut,
+    Ready,
+}
+
+impl PendingOpen {
+    fn readiness(&self, ready: Option<bool>, now: Instant) -> OpenReadiness {
+        match ready {
+            Some(false) if now < self.deadline => OpenReadiness::Waiting,
+            Some(false) => OpenReadiness::TimedOut,
+            _ => OpenReadiness::Ready,
+        }
+    }
 }
 const LAUNCH_ANIMATION_INTERVAL: Duration = Duration::from_millis(120);
 const LIVE_SESSION_ANIMATION_INTERVAL: Duration = Duration::from_millis(550);
@@ -747,10 +765,28 @@ pub fn run_dashboard(
                 .filter(|session| session.id == pending.session_id)
             {
                 Some(session)
-                    if control.native_open_ready(session) == Some(false)
-                        && Instant::now() < pending.deadline =>
+                    if pending.readiness(control.native_open_ready(session), Instant::now())
+                        == OpenReadiness::Waiting =>
                 {
                     pending_open = Some(pending);
+                }
+                Some(session)
+                    if pending.readiness(control.native_open_ready(session), Instant::now())
+                        == OpenReadiness::TimedOut =>
+                {
+                    crate::perf!(
+                        "open-timeout",
+                        "session={} waited={} dashboard=responsive",
+                        pending.session_id,
+                        crate::perf_log::ms(pending.since.elapsed()),
+                    );
+                    app.set_notice(
+                        "OpenCode is still loading; Enter to retry, or choose another session",
+                    );
+                    // Allow the preview worker to retry, including after a
+                    // failed request, without doing any server IO here.
+                    previewed_row = None;
+                    needs_draw = true;
                 }
                 Some(session) => {
                     crate::perf!(
@@ -3456,6 +3492,36 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn an_unready_open_times_out_without_dispatching_a_blocking_switch() {
+        let since = Instant::now();
+        let pending = PendingOpen {
+            session_id: "slow-server".into(),
+            since,
+            deadline: since + DEFERRED_OPEN_TIMEOUT,
+        };
+        assert_eq!(
+            pending.readiness(Some(false), since),
+            OpenReadiness::Waiting
+        );
+        assert_eq!(
+            pending.readiness(Some(false), pending.deadline),
+            OpenReadiness::TimedOut
+        );
+        // The recording had an 8-second HTTP timeout. Even after that long,
+        // an unready preview must never become permission to switch in front.
+        assert_eq!(
+            pending.readiness(Some(false), since + Duration::from_secs(13)),
+            OpenReadiness::TimedOut
+        );
+        assert_eq!(
+            pending.readiness(Some(true), pending.deadline),
+            OpenReadiness::Ready
+        );
+        // Providers without a preview still use the ordinary open path.
+        assert_eq!(pending.readiness(None, since), OpenReadiness::Ready);
+    }
 
     #[test]
     fn a_pause_that_fails_to_save_is_taken_back_off_the_screen() {
