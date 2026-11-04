@@ -242,6 +242,11 @@ pub fn continue_response() -> Value {
     json!({"type": "response.create", "event_id": event_id("cont")})
 }
 
+/// A watch that is now waiting: nothing to say until it fires.
+pub fn is_registered_watch(name: &str, result: &Value) -> bool {
+    name == "watch_session" && result.get("watching").and_then(Value::as_bool) == Some(true)
+}
+
 /// Something the voice should say, in its own words.
 pub fn commentary(text: &str) -> Value {
     json!({"type": "session.commentary.append", "event_id": event_id("say"), "delegation_id": null, "content": clip(text)})
@@ -307,6 +312,15 @@ mod tests {
 
     fn done_call(call_id: &str, name: &str, arguments: &str) -> Value {
         json!({"type": "response.output_item.done", "item": {"type": "function_call", "call_id": call_id, "name": name, "arguments": arguments}})
+    }
+
+    #[test]
+    fn only_a_watch_that_is_waiting_has_nothing_to_say() {
+        let waiting = json!({"ok": true, "watching": true});
+        let already = json!({"already": true, "note": "it is already done"});
+        assert!(is_registered_watch("watch_session", &waiting));
+        assert!(!is_registered_watch("watch_session", &already));
+        assert!(!is_registered_watch("send_message", &waiting));
     }
 
     #[test]

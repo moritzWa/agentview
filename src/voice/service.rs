@@ -1088,6 +1088,7 @@ impl Inner {
                             let _ =
                                 outgoing.send(json!({"type": "send", "event": event}).to_string());
                         };
+                        let mut registered_watches_only = true;
                         for call_ in &calls {
                             let args: Value =
                                 serde_json::from_str(&call_.arguments).unwrap_or(Value::Null);
@@ -1107,9 +1108,15 @@ impl Inner {
                                     "result": clip(&result.to_string(), 2000),
                                 }),
                             );
+                            registered_watches_only &=
+                                call::is_registered_watch(&call_.name, &result);
                             send(call::function_output(&call_.call_id, &result));
                         }
-                        send(call::continue_response());
+                        // Grok fills a turn it has nothing to say in with a
+                        // placeholder like "(no response)", and says it aloud.
+                        if !(provider == Provider::Xai && registered_watches_only) {
+                            send(call::continue_response());
+                        }
                         if calls.iter().any(|call| call.name == "end_call") {
                             // Long enough for the goodbye to be said.
                             thread::sleep(Duration::from_secs(6));
