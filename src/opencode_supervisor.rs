@@ -1354,6 +1354,8 @@ impl OpenCodeSupervisor {
     /// session that asked for the restart: its own turn cannot finish while it
     /// waits. A shell dies with the server and nothing restarts it, so a
     /// session whose turn ended on a shell it is waiting for counts as busy.
+    /// A durable shell, one the server marks in its listing, survives the
+    /// restart and does not count.
     /// Returns the sessions still busy when `timeout` passes, empty when the
     /// server went idle. A nonempty result must cancel an idle-only restart:
     /// turns can resume after a restart, but the shells do not come back.
@@ -2371,13 +2373,16 @@ fn running_session_ids(statuses: &Value) -> Vec<String> {
 }
 
 /// `(session, command)` for each shell in a `/shell` listing that is still
-/// running and names the session that started it.
+/// running and names the session that started it. A durable shell keeps
+/// running through a restart, so stopping the server cuts it off from nothing
+/// and it is not counted.
 fn running_shell_entries(listed: &Value) -> Vec<(String, String)> {
     listed
         .as_array()
         .into_iter()
         .flatten()
         .filter(|shell| shell["status"] == "running")
+        .filter(|shell| shell.pointer("/metadata/durable") != Some(&Value::Bool(true)))
         .filter_map(|shell| {
             Some((
                 shell.pointer("/metadata/sessionID")?.as_str()?.to_owned(),
@@ -4177,7 +4182,7 @@ mod tests {
         );
     }
     #[test]
-    fn only_running_shells_that_name_a_session_count_as_busy() {
+    fn only_running_shells_that_name_a_session_and_a_restart_would_stop_count_as_busy() {
         let listed = serde_json::json!([
             {"status": "running", "command": "sleep 900", "metadata": {"sessionID": "ses_a"}},
             {"status": "running", "command": "make", "metadata": {"sessionID": "ses_a"}},
@@ -4185,6 +4190,7 @@ mod tests {
             {"status": "cancelled", "command": "land.sh", "metadata": {"sessionID": "ses_c"}},
             {"status": "running", "command": "orphan", "metadata": {}},
             {"status": "running", "metadata": {"sessionID": "ses_d"}},
+            {"status": "running", "command": "watch.sh", "metadata": {"sessionID": "ses_e", "durable": true}},
         ]);
         assert_eq!(
             super::running_shell_entries(&listed),

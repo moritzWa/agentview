@@ -394,7 +394,8 @@ agentview opencode restart --when-idle --wait-timeout 120
 It polls until no top-level session has a running turn and no session has a
 running background shell, then restarts. A shell dies with the server and is
 not restarted, so a session whose turn ended on a shell it waits for counts as
-busy. The session named by `CLAUDE_CODE_SESSION_ID` is not waited for, since
+busy. A durable background shell, which a current OpenCode server marks in its
+shell listing, keeps running through the restart and does not count. The session named by `CLAUDE_CODE_SESSION_ID` is not waited for, since
 the agent that runs the command is itself mid-turn. Its own shells are also
 excluded, so do not use this exception while that session has other scripts
 running. After `--wait-timeout` seconds (default 600), it cancels the restart
