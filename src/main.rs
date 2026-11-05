@@ -182,7 +182,7 @@ enum OpenCodeCommand {
         /// The session named by `CLAUDE_CODE_SESSION_ID` is not waited for.
         #[arg(long)]
         when_idle: bool,
-        /// With `--when-idle`, seconds to wait before restarting anyway.
+        /// With `--when-idle`, seconds to wait before cancelling the restart.
         #[arg(long, default_value_t = 600, requires = "when_idle")]
         wait_timeout: u64,
     },
@@ -1275,8 +1275,8 @@ fn run_opencode_command(command: &OpenCodeCommand, cli: &Cli) -> Result<()> {
                         },
                     )?;
                     if !still_running.is_empty() {
-                        eprintln!(
-                            "Still busy after {wait_timeout}s; restarting anyway. Turns resume afterwards; background shells are killed and not restarted."
+                        anyhow::bail!(
+                            "Still busy after {wait_timeout}s; restart cancelled. The server and its background shells were left running."
                         );
                     }
                 }

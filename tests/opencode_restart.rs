@@ -140,6 +140,49 @@ fn waiting_for_idle_skips_the_caller_and_gives_up_at_the_timeout() {
     target_os = "macos",
     ignore = "the Python fake server misses the 10s readiness window on hosted macOS runners"
 )]
+fn idle_restart_timeout_leaves_the_existing_server_running() {
+    let directory = tempdir().unwrap();
+    let fake = directory.path().join("fake-opencode");
+    write_fake_opencode(&fake);
+    let state_home = directory.path().join("xdg-state");
+    let supervisor = OpenCodeSupervisor::with_state_dir(
+        fake.display().to_string(),
+        state_home.join("agentview/opencode"),
+    )
+    .unwrap();
+    let launched = supervisor
+        .launch("still running", directory.path())
+        .unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_agentview"))
+        .args([
+            "--opencode-bin",
+            fake.to_str().unwrap(),
+            "opencode",
+            "restart",
+            "--when-idle",
+            "--wait-timeout",
+            "0",
+        ])
+        .env("XDG_STATE_HOME", &state_home)
+        .env_remove("AGENTVIEW_OPENCODE_SERVICE_FILE")
+        .env_remove("AGENTVIEW_OPENCODE_API")
+        .env_remove("CLAUDE_CODE_SESSION_ID")
+        .output()
+        .unwrap();
+    // Clean up before assertions so an old implementation that restarts the
+    // server cannot leave a fixture process behind when this test fails.
+    let current_pid = supervisor.live_server_pid().unwrap();
+    supervisor.shutdown_server().unwrap();
+    assert!(!output.status.success(), "a busy server was restarted");
+    assert_eq!(current_pid, Some(launched.server_pid));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("restart cancelled"));
+}
+
+#[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "the Python fake server misses the 10s readiness window on hosted macOS runners"
+)]
 fn waiting_for_idle_returns_as_soon_as_the_other_turns_finish() {
     let directory = tempdir().unwrap();
     let supervisor = two_running_turns(directory.path());

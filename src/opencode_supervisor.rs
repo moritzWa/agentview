@@ -1355,8 +1355,8 @@ impl OpenCodeSupervisor {
     /// waits. A shell dies with the server and nothing restarts it, so a
     /// session whose turn ended on a shell it is waiting for counts as busy.
     /// Returns the sessions still busy when `timeout` passes, empty when the
-    /// server went idle. A restart after a timeout is still safe for turns,
-    /// which resume; the shells do not come back.
+    /// server went idle. A nonempty result must cancel an idle-only restart:
+    /// turns can resume after a restart, but the shells do not come back.
     pub fn wait_until_idle(
         &self,
         except: Option<&str>,
