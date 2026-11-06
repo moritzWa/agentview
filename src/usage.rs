@@ -260,7 +260,10 @@ impl UsageWatcher {
         thread::Builder::new()
             .name("subscription-usage".into())
             .spawn(move || loop {
-                for usage in [fetch_claude(), fetch_codex()].into_iter().flatten() {
+                for usage in fetch_claude_accounts()
+                    .into_iter()
+                    .chain(fetch_codex())
+                {
                     if tx.send(usage).is_err() {
                         return;
                     }
@@ -349,15 +352,63 @@ fn matching_json_end(text: &str) -> Option<usize> {
 }
 
 fn fetch_claude() -> Option<Usage> {
+    fetch_claude_account("Claude Code-credentials", "claude", true)
+}
+
+/// Primary login plus each `~/.claude-*` profile. A missing extra account must
+/// not hide the primary row.
+fn fetch_claude_accounts() -> Vec<Usage> {
+    let mut usages = Vec::new();
+    if let Some(usage) = fetch_claude() {
+        usages.push(usage);
+    }
+    let Some(home) = home() else {
+        return usages;
+    };
+    let Ok(entries) = std::fs::read_dir(&home) else {
+        return usages;
+    };
+    let mut extras = entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name();
+            let name = name.to_str()?;
+            if !name.starts_with(".claude-") {
+                return None;
+            }
+            let path = entry.path();
+            let text = path.to_str()?;
+            Some(format!(
+                "Claude Code-credentials-{}",
+                sha256_prefix(text)?
+            ))
+        })
+        .collect::<Vec<_>>();
+    extras.sort();
+    for (index, service) in extras.into_iter().enumerate() {
+        let label = match index {
+            0 => "claude2",
+            _ => "claude3",
+        };
+        if let Some(usage) = fetch_claude_account(&service, label, false) {
+            usages.push(usage);
+        }
+    }
+    usages
+}
+
+fn fetch_claude_account(service: &str, label: &'static str, file_fallback: bool) -> Option<Usage> {
     // Several dashboards may be open. Read credentials only after acquiring
     // the lock so they cannot simultaneously rotate the same refresh token.
     #[cfg(unix)]
     let _lock = claude_usage_lock()?;
-    let keychain = keychain_claude_credentials();
+    let keychain = read_keychain_service(service);
     let path = home()?.join(".claude/.credentials.json");
-    let raw = keychain
-        .clone()
-        .or_else(|| std::fs::read_to_string(&path).ok())?;
+    let raw = keychain.clone().or_else(|| {
+        file_fallback
+            .then(|| std::fs::read_to_string(&path).ok())
+            .flatten()
+    })?;
     let mut credentials = parse_claude_credentials(&raw)?;
     if claude_token_expiring(&credentials, now()) {
         refresh_claude_credentials(&mut credentials)?;
@@ -365,8 +416,8 @@ fn fetch_claude() -> Option<Usage> {
         // Never put credentials in subprocess arguments or diagnostic output.
         let encoded = serde_json::to_string(&credentials).ok()?;
         if keychain.is_some() {
-            save_keychain_claude_credentials(&encoded)?;
-        } else {
+            save_keychain_service(service, &encoded)?;
+        } else if file_fallback {
             std::fs::write(path, encoded).ok()?;
         }
     }
@@ -380,7 +431,9 @@ fn fetch_claude() -> Option<Usage> {
             "anthropic-beta: oauth-2025-04-20".into(),
         ],
     )?;
-    Usage::parse_claude(&body)
+    let mut usage = Usage::parse_claude(&body)?;
+    usage.provider = label;
+    Some(usage)
 }
 
 fn refresh_claude_credentials(credentials: &mut Value) -> Option<()> {
@@ -429,16 +482,6 @@ fn apply_claude_refresh(credentials: &mut Value, response: &Value, now: u64) -> 
         oauth.insert("refreshToken".into(), refresh.into());
     }
     Some(())
-}
-
-#[cfg(target_os = "macos")]
-fn save_keychain_claude_credentials(credentials: &str) -> Option<()> {
-    update_keychain_password(
-        "Claude Code-credentials",
-        &std::env::var("USER").ok()?,
-        credentials,
-        None,
-    )
 }
 
 #[cfg(target_os = "macos")]
@@ -536,11 +579,6 @@ fn keychain_output(mut command: Command, input: Option<&[u8]>) -> Option<std::pr
     Some(output)
 }
 
-#[cfg(not(target_os = "macos"))]
-fn save_keychain_claude_credentials(_credentials: &str) -> Option<()> {
-    None
-}
-
 fn post_json(url: &str, body: &Value) -> Option<Value> {
     use std::io::Write;
     let mut child = Command::new("curl")
@@ -620,23 +658,85 @@ fn home() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-fn keychain_claude_credentials() -> Option<String> {
+/// A missing extra account is not a Keychain failure. Only a timeout or a
+/// denied read of the primary item disables later polls.
+fn read_keychain_service(service: &str) -> Option<String> {
     if !cfg!(target_os = "macos") {
         return None;
     }
+    if KEYCHAIN_UNAVAILABLE.load(Ordering::Relaxed) {
+        return None;
+    }
     let mut command = Command::new("/usr/bin/security");
-    command.args([
-        "find-generic-password",
-        "-s",
-        "Claude Code-credentials",
-        "-w",
-    ]);
-    let output = keychain_output(command, None)?;
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8(output.stdout).ok())
-        .flatten()
+    command.args(["find-generic-password", "-s", service, "-w"]);
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(20))
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                if service == "Claude Code-credentials" {
+                    KEYCHAIN_UNAVAILABLE.store(true, Ordering::Relaxed);
+                }
+                return None;
+            }
+        }
+    }
+    let output = child.wait_with_output().ok()?;
+    if output.status.success() {
+        return String::from_utf8(output.stdout).ok();
+    }
+    // security exits 44 when the item is absent.
+    if output.status.code() != Some(44) && service == "Claude Code-credentials" {
+        KEYCHAIN_UNAVAILABLE.store(true, Ordering::Relaxed);
+    }
+    None
+}
+
+fn save_keychain_service(service: &str, credentials: &str) -> Option<()> {
+    #[cfg(target_os = "macos")]
+    {
+        return update_keychain_password(
+            service,
+            &std::env::var("USER").ok()?,
+            credentials,
+            None,
+        );
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (service, credentials);
+        None
+    }
+}
+
+/// First 8 hex chars of SHA-256, matching Claude Code's config-dir suffix.
+fn sha256_prefix(text: &str) -> Option<String> {
+    use std::io::Write;
+    let mut child = Command::new("/usr/bin/shasum")
+        .args(["-a", "256"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    child.stdin.take()?.write_all(text.as_bytes()).ok()?;
+    let output = child.wait_with_output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let hex = String::from_utf8(output.stdout).ok()?;
+    Some(hex.get(..8)?.to_owned())
 }
 
 fn countdown(seconds: u64) -> String {
@@ -870,6 +970,11 @@ mod tests {
             None
         );
         assert_eq!(credentials, before);
+    }
+
+    #[test]
+    fn config_dir_suffix_matches_claude_code() {
+        assert_eq!(sha256_prefix("abc").as_deref(), Some("ba7816bf"));
     }
 
     #[test]

@@ -1373,7 +1373,7 @@ fn render_usage(frame: &mut Frame<'_>, app: &App, area: Rect) {
 
 fn usage_header_rows(usages: &[crate::usage::Usage], now: u64, width: usize) -> Vec<String> {
     let mut labels = Vec::new();
-    for window in usages.iter().take(2).flat_map(|usage| &usage.windows) {
+    for window in usages.iter().take(3).flat_map(|usage| &usage.windows) {
         if !labels.contains(&window.label) {
             labels.push(window.label);
         }
@@ -1387,7 +1387,7 @@ fn usage_header_rows(usages: &[crate::usage::Usage], now: u64, width: usize) -> 
     for detail in 0..4 {
         let cells = usages
             .iter()
-            .take(2)
+            .take(3)
             .map(|usage| {
                 labels
                     .iter()
@@ -1447,7 +1447,7 @@ fn usage_header_rows(usages: &[crate::usage::Usage], now: u64, width: usize) -> 
             .collect::<Vec<_>>();
         let rows = usages
             .iter()
-            .take(2)
+            .take(3)
             .zip(cells)
             .map(|(usage, cells)| {
                 let columns = cells
@@ -4159,6 +4159,33 @@ mod tests {
             !narrow[0].contains('→') && narrow[0].contains("reset"),
             "{narrow:?}"
         );
+    }
+
+    #[test]
+    fn usage_header_shows_a_second_claude_account() {
+        let now = 1_000_000;
+        let window = crate::usage::Window {
+            label: "week",
+            percent: 12.0,
+            resets_at: Some(now + 3 * 86_400),
+        };
+        let usages = [
+            crate::usage::Usage {
+                provider: "claude",
+                windows: vec![window.clone()],
+            },
+            crate::usage::Usage {
+                provider: "claude2",
+                windows: vec![window.clone()],
+            },
+            crate::usage::Usage {
+                provider: "codex",
+                windows: vec![window],
+            },
+        ];
+        let rows = usage_header_rows(&usages, now, 120);
+        assert_eq!(rows.len(), 3, "{rows:?}");
+        assert!(rows[1].starts_with("claude2"), "{rows:?}");
     }
 
     #[test]
