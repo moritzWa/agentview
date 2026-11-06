@@ -13,6 +13,221 @@ use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 
 pub const REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 
+/// A picker text match. `distance` is the span of the tightest cluster of
+/// the query words; zero means the query itself appears as a substring.
+#[derive(Clone, Debug)]
+pub struct SearchHit {
+    pub snippet: String,
+    pub distance: u32,
+}
+
+/// Byte span of a match inside the text `text_hit` was given.
+#[derive(Clone, Debug)]
+pub(crate) struct TextHit {
+    pub start: usize,
+    pub end: usize,
+    pub distance: u32,
+}
+
+/// Find `needle` in `text`. ASCII case folding keeps the returned offsets
+/// valid in the original string.
+pub(crate) fn text_hit(text: &str, needle: &str) -> Option<TextHit> {
+    let needle = needle.trim().to_ascii_lowercase();
+    if needle.chars().count() < 3 {
+        return None;
+    }
+    let text = text.to_ascii_lowercase();
+    if let Some(start) = text.find(&needle) {
+        return Some(TextHit {
+            start,
+            end: start + needle.len(),
+            distance: 0,
+        });
+    }
+    let tokens: Vec<&str> = needle
+        .split_whitespace()
+        .filter(|token| token.chars().count() >= 3)
+        .collect();
+    if tokens.len() < 2 {
+        return None;
+    }
+    let hits: Vec<Vec<(usize, usize)>> =
+        tokens.iter().map(|token| word_hits(&text, token)).collect();
+    if hits.iter().any(|group| group.is_empty()) {
+        return None;
+    }
+    tightest(&hits)
+}
+
+fn word_hits(text: &str, token: &str) -> Vec<(usize, usize)> {
+    let bytes = text.as_bytes();
+    let mut hits = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        if !bytes[index].is_ascii_alphanumeric() {
+            index += 1;
+            continue;
+        }
+        let start = index;
+        while index < bytes.len() && bytes[index].is_ascii_alphanumeric() {
+            index += 1;
+        }
+        if word_matches(token, &text[start..index]) {
+            hits.push((start, index));
+        }
+    }
+    hits
+}
+
+fn word_matches(query: &str, word: &str) -> bool {
+    if word.contains(query) {
+        return true;
+    }
+    let query_stem = stem(query);
+    let word_stem = stem(word);
+    if query_stem == word_stem {
+        return true;
+    }
+    let shared = query_stem
+        .bytes()
+        .zip(word_stem.bytes())
+        .take_while(|(left, right)| left == right)
+        .count();
+    shared >= 5 && is_inflection(&query_stem[shared..]) && is_inflection(&word_stem[shared..])
+}
+
+fn stem(word: &str) -> &str {
+    for suffix in ["tion", "ing", "ion", "es", "ed", "se", "s", "e", "d"] {
+        if let Some(stem) = word.strip_suffix(suffix) {
+            if stem.len() >= 5 {
+                return stem;
+            }
+        }
+    }
+    word
+}
+
+fn is_inflection(rest: &str) -> bool {
+    matches!(
+        rest,
+        "" | "e" | "s" | "es" | "ed" | "d" | "ing" | "se" | "ion" | "tion"
+    )
+}
+
+fn tightest(groups: &[Vec<(usize, usize)>]) -> Option<TextHit> {
+    let mut best: Option<TextHit> = None;
+    for &(origin_start, origin_end) in &groups[0] {
+        let mut span_start = origin_start;
+        let mut span_end = origin_end;
+        let mut ok = true;
+        let origin_mid = origin_start + (origin_end - origin_start) / 2;
+        for group in &groups[1..] {
+            let Some(&(start, end)) = group.iter().min_by_key(|(start, end)| {
+                let mid = start + (end - start) / 2;
+                mid.abs_diff(origin_mid)
+            }) else {
+                ok = false;
+                break;
+            };
+            span_start = span_start.min(start);
+            span_end = span_end.max(end);
+        }
+        if !ok {
+            continue;
+        }
+        let distance = (span_end - span_start) as u32;
+        if best.as_ref().is_none_or(|hit| distance < hit.distance) {
+            best = Some(TextHit {
+                start: span_start,
+                end: span_end,
+                distance,
+            });
+        }
+    }
+    best
+}
+
+fn fts_query(needle: &str) -> String {
+    let tokens: Vec<&str> = needle
+        .split_whitespace()
+        .filter(|token| token.chars().count() >= 3)
+        .collect();
+    if tokens.len() < 2 {
+        return quote_fts(needle);
+    }
+    tokens
+        .iter()
+        .map(|token| {
+            let forms = query_forms(token);
+            if forms.len() == 1 {
+                quote_fts(&forms[0])
+            } else {
+                format!(
+                    "({})",
+                    forms
+                        .iter()
+                        .map(|form| quote_fts(form))
+                        .collect::<Vec<_>>()
+                        .join(" OR ")
+                )
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" AND ")
+}
+
+fn query_forms(token: &str) -> Vec<String> {
+    let mut forms = BTreeSet::new();
+    forms.insert(token.to_string());
+    let Some(stem) = inflection_stem(token) else {
+        return vec![token.to_string()];
+    };
+    for suffix in ["d", "se", "s", "es", "ed", "ing", "e"] {
+        let form = format!("{stem}{suffix}");
+        if form.chars().count() < 5 {
+            continue;
+        }
+        forms.insert(form.clone());
+        if suffix == "d" {
+            for extra in ["s", "ed", "ing"] {
+                let verb = format!("{form}{extra}");
+                if verb.chars().count() >= 5 {
+                    forms.insert(verb);
+                }
+            }
+        }
+    }
+    forms.into_iter().collect()
+}
+
+fn inflection_stem(token: &str) -> Option<&str> {
+    for suffix in ["tion", "ing", "ion", "es", "ed", "se", "s", "e", "d"] {
+        if let Some(stem) = token.strip_suffix(suffix) {
+            if stem.len() >= 5 {
+                return Some(stem);
+            }
+        }
+    }
+    None
+}
+
+fn quote_fts(token: &str) -> String {
+    format!("\"{}\"", token.replace('"', "\"\""))
+}
+
+fn window(text: &str, start: usize, end: usize) -> String {
+    let pad = 180;
+    let mut from = start.saturating_sub(pad);
+    while !text.is_char_boundary(from) {
+        from -= 1;
+    }
+    let mut to = (end + pad).min(text.len());
+    while to < text.len() && !text.is_char_boundary(to) {
+        to += 1;
+    }
+    text[from..to].to_string()
+}
+
 #[derive(Clone, Debug, serde::Serialize, PartialEq, Eq)]
 pub struct MessageExcerpt {
     pub id: String,
@@ -202,31 +417,52 @@ impl HistoryIndex {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
-    /// Literal, case-insensitive substring matching, like the old picker.
-    /// Trigrams keep partial words ("lead" in "leads") indexed too.
-    pub fn search(&self, needle: &str) -> Result<BTreeMap<String, String>> {
+    /// Case-insensitive text match. One word is a substring, so "lead" still
+    /// finds "leads". Several words match when each word, or a close
+    /// inflection of it, appears anywhere in the text. The hit is the
+    /// tightest cluster, not the exact phrase: "archie response" finds
+    /// "Never respond in a thread Archie".
+    pub fn search(&self, needle: &str) -> Result<BTreeMap<String, SearchHit>> {
         if needle.trim().chars().count() < 3 || !self.path.exists() {
             return Ok(BTreeMap::new());
         }
         let db = read_only(&self.path)?;
         db.busy_timeout(Duration::from_millis(50))?;
-        let query = format!("\"{}\"", needle.replace('"', "\"\""));
         let mut statement = db.prepare(
-            "SELECT d.root, substr(d.text, max(1, instr(lower(d.text), lower(?1)) - 100), length(?1) + 300)
+            "SELECT d.root, substr(d.text, 1, 20000)
              FROM messages_fts JOIN documents d ON d.id = messages_fts.rowid
-             WHERE messages_fts MATCH ?2 GROUP BY d.root",
+             WHERE messages_fts MATCH ?1
+             LIMIT 400",
         )?;
-        let rows = statement.query_map(params![needle, query], |row| {
-            Ok((
-                if self.provider.is_some() {
-                    row.get::<_, String>(0)?
-                } else {
-                    format!("opencode:host:{}", row.get::<_, String>(0)?)
-                },
-                row.get(1)?,
-            ))
+        let rows = statement.query_map(params![fts_query(needle)], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
+        let mut best = BTreeMap::new();
+        for row in rows {
+            let (root, text) = row?;
+            let Some(hit) = text_hit(&text, needle) else {
+                continue;
+            };
+            let id = if self.provider.is_some() {
+                root
+            } else {
+                format!("opencode:host:{root}")
+            };
+            let replace = best
+                .get(&id)
+                .is_none_or(|previous: &SearchHit| hit.distance < previous.distance);
+            if !replace {
+                continue;
+            }
+            best.insert(
+                id,
+                SearchHit {
+                    snippet: window(&text, hit.start, hit.end),
+                    distance: hit.distance,
+                },
+            );
+        }
+        Ok(best)
     }
 
     /// One actual matching message and its adjacent messages, from the same
@@ -852,6 +1088,39 @@ pub(crate) mod tests {
             .matching_message("opencode:host:fork_v2", &["latent working memory".into()])
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn search_finds_nearby_word_forms_ahead_of_a_distant_mention() {
+        let (_dir, index) = fixture();
+        let db = Connection::open(&index.source).unwrap();
+        db.execute_batch(
+            "INSERT INTO session VALUES ('ses_gate', NULL, 2), ('ses_far', NULL, 3), ('ses_no', NULL, 4);
+             INSERT INTO part(id, session_id, time_created, data) VALUES
+               ('pg', 'ses_gate', 1, '{\"type\":\"text\",\"text\":\"Never respond in a thread Archie has not joined.\"}'),
+               ('pf', 'ses_far', 1, '{\"type\":\"text\",\"text\":\"archie is mentioned up front. filler filler filler filler filler and only later a response header.\"}'),
+               ('pn', 'ses_no', 1, '{\"type\":\"text\",\"text\":\"Archie is responsible for the nightly snapshot.\"}');",
+        )
+        .unwrap();
+        assert!(refresh(&index));
+        let found = index.search("archie response").unwrap();
+        let near = found
+            .get("opencode:host:ses_gate")
+            .expect("nearby respond/Archie");
+        let far = found.get("opencode:host:ses_far").expect("distant mention");
+        assert!(
+            near.distance < far.distance,
+            "near {} far {}",
+            near.distance,
+            far.distance
+        );
+        let snippet = near.snippet.to_ascii_lowercase();
+        assert!(snippet.contains("respond"), "{snippet}");
+        assert!(snippet.contains("archie"), "{snippet}");
+        assert!(
+            !found.contains_key("opencode:host:ses_no"),
+            "responsible is not a form of response"
+        );
     }
 
     #[test]

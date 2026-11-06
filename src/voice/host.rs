@@ -295,7 +295,7 @@ impl VoiceHost for DashboardHost {
             let mut found = HashMap::new();
             for index in &indices {
                 if let Ok(rows) = index.search(needle) {
-                    found.extend(rows);
+                    found.extend(rows.into_iter().map(|(id, hit)| (id, hit.snippet)));
                 }
             }
             content.push(ContentHits {

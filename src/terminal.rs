@@ -2264,7 +2264,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> AppAction {
             {
                 AppAction::BrowseHidden
             }
-            KeyCode::Char('g') if app.overlay == Overlay::HiddenPicker => app.escape(),
+            KeyCode::Char('g') if app.overlay == Overlay::HiddenPicker => app.close_hidden_picker(),
             KeyCode::Char('o')
                 if matches!(
                     app.overlay,
@@ -3604,7 +3604,10 @@ mod tests {
         assert_eq!(session_page_size_for_terminal(28, 2), 17);
         assert_eq!(session_page_size_for_terminal(34, 2), 23);
         assert_eq!(session_page_size_for_terminal(36, 2), SESSION_PAGE_SIZE);
-        assert_eq!(session_page_size_for_terminal(u16::MAX, 2), SESSION_PAGE_SIZE);
+        assert_eq!(
+            session_page_size_for_terminal(u16::MAX, 2),
+            SESSION_PAGE_SIZE
+        );
         assert_eq!(
             session_page_size_for_terminal(28, 2),
             session_page_size_for_terminal(28, 3) + 1

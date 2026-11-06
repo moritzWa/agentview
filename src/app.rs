@@ -307,7 +307,7 @@ pub struct App {
     pub restorable_text_loading: bool,
     history_indices: Vec<crate::history_index::HistoryIndex>,
     history_index_ready: bool,
-    indexed_matches: RefCell<Option<(String, BTreeMap<String, String>)>>,
+    indexed_matches: RefCell<Option<(String, BTreeMap<String, crate::history_index::SearchHit>)>>,
     pub models_loading: bool,
     pub models_provider: Option<Provider>,
     pub models_error: Option<String>,
@@ -888,20 +888,12 @@ impl App {
                 AppAction::None
             }
             Overlay::HiddenPicker => {
-                self.overlay = if self.hidden_picker_from_composer {
-                    Overlay::Composer(ComposerMode::NewSession)
-                } else {
-                    Overlay::None
-                };
-                self.hidden_filter.clear();
-                self.hidden_candidates.clear();
-                self.open_candidates.clear();
-                self.restorable.clear();
-                self.transcripts_lower.clear();
-                self.restorable_loading = false;
-                self.restorable_text_loading = false;
-                self.notice = None;
-                AppAction::None
+                if !self.hidden_filter.is_empty() {
+                    self.hidden_filter.clear();
+                    self.reconcile_hidden_selection();
+                    return AppAction::None;
+                }
+                self.close_hidden_picker()
             }
             Overlay::DirectoryPicker => {
                 self.close_directory_picker();
@@ -913,6 +905,25 @@ impl App {
                 AppAction::None
             }
         }
+    }
+
+    /// Close find-session. Ctrl+G uses this so a typed query does not take a
+    /// second key; Escape clears the query first.
+    pub fn close_hidden_picker(&mut self) -> AppAction {
+        self.overlay = if self.hidden_picker_from_composer {
+            Overlay::Composer(ComposerMode::NewSession)
+        } else {
+            Overlay::None
+        };
+        self.hidden_filter.clear();
+        self.hidden_candidates.clear();
+        self.open_candidates.clear();
+        self.restorable.clear();
+        self.transcripts_lower.clear();
+        self.restorable_loading = false;
+        self.restorable_text_loading = false;
+        self.notice = None;
+        AppAction::None
     }
 
     pub fn toggle_help(&mut self) {
@@ -2776,16 +2787,25 @@ impl App {
         }
         let mut cached = self.indexed_matches.borrow_mut();
         if cached.as_ref().map(|(query, _)| query.as_str()) != Some(needle) {
-            let mut matches = BTreeMap::new();
+            let mut matches: BTreeMap<String, crate::history_index::SearchHit> = BTreeMap::new();
             for index in &self.history_indices {
                 match index.search(needle) {
-                    Ok(found) => matches.extend(found),
+                    Ok(found) => {
+                        for (id, hit) in found {
+                            match matches.get(&id) {
+                                Some(previous) if previous.distance <= hit.distance => {}
+                                _ => {
+                                    matches.insert(id, hit);
+                                }
+                            }
+                        }
+                    }
                     Err(error) => crate::perf!("history-search", "failed: {error:#}"),
                 }
             }
             *cached = Some((needle.to_owned(), matches));
         }
-        cached.as_ref()?.1.get(id).cloned()
+        cached.as_ref()?.1.get(id).map(|hit| hit.snippet.clone())
     }
 
     /// Whether a picker row is in the local hidden registry, as opposed to a
@@ -2809,7 +2829,7 @@ impl App {
     /// each, sessions the list already shows come first.
     pub fn hidden_choices(&self) -> Vec<&HiddenSessionRecord> {
         let needle = self.hidden_filter.to_ascii_lowercase();
-        let (mut by_label, by_text): (Vec<_>, Vec<_>) = self
+        let (mut by_label, mut by_text): (Vec<_>, Vec<_>) = self
             .open_candidates
             .iter()
             .chain(&self.hidden_candidates)
@@ -2817,7 +2837,7 @@ impl App {
                 if needle.is_empty() || self.label_matches(record, &needle) {
                     Some((record, true))
                 } else if self.indexed_snippet(&record.id, &needle).is_some()
-                    || self.transcript_match(&record.id, &needle).is_some()
+                    || self.transcript_hit(&record.id, &needle).is_some()
                 {
                     Some((record, false))
                 } else {
@@ -2825,6 +2845,9 @@ impl App {
                 }
             })
             .partition(|(_, label)| *label);
+        // A session where the words sit together outranks one that only
+        // mentions each word somewhere. Equal distances keep list order.
+        by_text.sort_by_key(|(record, _)| self.text_distance(&record.id, &needle));
         by_label.extend(by_text);
         by_label.into_iter().map(|(record, _)| record).collect()
     }
@@ -2855,13 +2878,31 @@ impl App {
                 .is_some_and(|cwd| cwd.to_string_lossy().to_ascii_lowercase().contains(needle))
     }
 
-    /// Byte offset of `needle` in a row's message text. Needles shorter than
-    /// three characters match nearly every transcript, so they never search it.
-    fn transcript_match(&self, id: &str, needle: &str) -> Option<usize> {
-        if needle.trim().chars().count() < 3 {
+    /// Message-text match for a row the index did not answer. Needles shorter
+    /// than three characters match nearly every transcript, so they never
+    /// search it.
+    fn transcript_hit(&self, id: &str, needle: &str) -> Option<crate::history_index::TextHit> {
+        crate::history_index::text_hit(self.transcripts_lower.get(id)?, needle)
+    }
+
+    fn text_distance(&self, id: &str, needle: &str) -> u32 {
+        self.indexed_distance(id, needle)
+            .or_else(|| self.transcript_hit(id, needle).map(|hit| hit.distance))
+            .unwrap_or(u32::MAX)
+    }
+
+    fn indexed_distance(&self, id: &str, needle: &str) -> Option<u32> {
+        if self.history_indices.is_empty() {
             return None;
         }
-        self.transcripts_lower.get(id)?.find(needle)
+        // Fill the snippet cache, then read the rank stored beside it.
+        self.indexed_snippet(id, needle);
+        self.indexed_matches
+            .borrow()
+            .as_ref()?
+            .1
+            .get(id)
+            .map(|hit| hit.distance)
     }
 
     /// Whether the filter is long enough to search message text, which gives
@@ -2890,24 +2931,10 @@ impl App {
     ) -> Option<(String, Option<std::ops::Range<usize>>)> {
         let needle = self.hidden_filter.to_ascii_lowercase();
         if let Some(text) = self.indexed_snippet(id, &needle) {
-            let start = text.to_ascii_lowercase().find(&needle)?;
-            let snippet = snippet_around(&text, start, needle.len(), width);
-            let flat_needle = needle.split_whitespace().collect::<Vec<_>>().join(" ");
-            let range = snippet
-                .to_ascii_lowercase()
-                .find(&flat_needle)
-                .map(|at| at..at + flat_needle.len());
-            return Some((snippet, range));
+            return present_snippet(&text, &needle, width);
         }
-        let start = self.transcript_match(id, &needle)?;
         let text = &self.restorable.get(id)?.transcript;
-        let snippet = snippet_around(text, start, needle.len(), width);
-        let flat_needle = needle.split_whitespace().collect::<Vec<_>>().join(" ");
-        let range = snippet
-            .to_ascii_lowercase()
-            .find(&flat_needle)
-            .map(|at| at..at + flat_needle.len());
-        Some((snippet, range))
+        present_snippet(text, &needle, width)
     }
 
     pub fn move_hidden_selection(&mut self, delta: isize) {
@@ -3772,6 +3799,20 @@ fn abbreviate_home(path: &std::path::Path) -> String {
         .and_then(|home| path.strip_prefix(home).ok().map(PathBuf::from))
         .map(|relative| format!("~/{}", relative.display()))
         .unwrap_or_else(|| path.display().to_string())
+}
+
+/// Window `text` around its match for `needle`, and the byte range of that
+/// match inside the flattened snippet when it survived the cut.
+fn present_snippet(
+    text: &str,
+    needle: &str,
+    width: usize,
+) -> Option<(String, Option<std::ops::Range<usize>>)> {
+    let hit = crate::history_index::text_hit(text, needle)?;
+    let len = hit.end.saturating_sub(hit.start).max(1);
+    let snippet = snippet_around(text, hit.start, len, width);
+    let range = crate::history_index::text_hit(&snippet, needle).map(|hit| hit.start..hit.end);
+    Some((snippet, range))
 }
 
 /// About `width` characters of `text` around the match at byte `start`, on
@@ -4720,12 +4761,42 @@ mod tests {
         app.push_input('m');
         assert_eq!(app.hidden_choices().len(), 1);
         assert_eq!(app.hidden_selection, 0);
+        assert_eq!(app.escape(), AppAction::None, "esc clears a typed query");
+        assert_eq!(app.overlay, Overlay::HiddenPicker);
+        assert!(app.hidden_filter.is_empty());
         assert_eq!(
             app.escape(),
             AppAction::None,
-            "esc closes the picker without quitting"
+            "a second esc closes the picker without quitting"
         );
         assert_eq!(app.overlay, Overlay::None);
+    }
+
+    #[test]
+    fn restore_picker_ranks_nearby_word_forms_above_a_scattered_mention() {
+        let mut app = app_with(Vec::new());
+        app.open_restore_picker(Vec::new());
+        let mut far = restorable("ses_far", "notes", "/work/b", 90);
+        far.transcript = "archie is mentioned up front. filler filler filler filler filler and only later a response header.".into();
+        let mut near = restorable("ses_gate", "archie-mention-free", "/work/arca", 40);
+        near.transcript = "Never respond in a thread Archie has not joined.".into();
+        app.add_restorable_sessions(vec![far, near], &[]);
+        for character in "archie response".chars() {
+            app.push_input(character);
+        }
+        assert_eq!(
+            app.hidden_choices()
+                .iter()
+                .map(|record| record.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["opencode:host:ses_gate", "opencode:host:ses_far"]
+        );
+        let (snippet, _) = app
+            .hidden_snippet_for("opencode:host:ses_gate", 80)
+            .unwrap();
+        let snippet = snippet.to_ascii_lowercase();
+        assert!(snippet.contains("respond"), "{snippet}");
+        assert!(snippet.contains("archie"), "{snippet}");
     }
 
     #[test]

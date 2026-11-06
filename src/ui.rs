@@ -1648,9 +1648,21 @@ fn contextual_footer(app: &App, width: u16) -> String {
         ),
         Overlay::ModelPicker => "type filter · ↑/↓ · enter · esc".into(),
         Overlay::HiddenPicker if width >= 70 => {
-            "search current, hidden, and older sessions · ↑/↓ move · enter open · esc close".into()
+            let esc = if app.hidden_filter.is_empty() {
+                "esc close"
+            } else {
+                "esc clear"
+            };
+            format!("current, hidden, and older sessions · ↑/↓ move · enter open · {esc}")
         }
-        Overlay::HiddenPicker => "type to search · ↑/↓ · enter open · esc".into(),
+        Overlay::HiddenPicker => {
+            let esc = if app.hidden_filter.is_empty() {
+                "esc close"
+            } else {
+                "esc clear"
+            };
+            format!("type to filter · ↑/↓ · enter · {esc}")
+        }
         Overlay::DirectoryPicker if width >= 70 => {
             "type to search folders or a path · ↑/↓ move · enter choose · esc close".into()
         }
@@ -2213,21 +2225,18 @@ fn render_hidden_picker(frame: &mut Frame<'_>, app: &App, area: Rect) {
         popup_width,
         popup_height,
     );
-    let mut lines = vec![Line::from(vec![
-        Span::styled("search  ", Style::default().fg(palette().dim)),
-        Span::styled(
-            if app.hidden_filter.is_empty() {
-                "type a name, folder, ID, or words from the chat".into()
-            } else {
-                sanitize_inline(&app.hidden_filter)
-            },
-            if app.hidden_filter.is_empty() {
-                Style::default().fg(palette().dim)
-            } else {
-                Style::default().fg(palette().fg)
-            },
-        ),
-    ])];
+    let mut lines = vec![Line::from(Span::styled(
+        if app.hidden_filter.is_empty() {
+            "type a name, folder, ID, or words from the chat".into()
+        } else {
+            sanitize_inline(&app.hidden_filter)
+        },
+        if app.hidden_filter.is_empty() {
+            Style::default().fg(palette().dim)
+        } else {
+            Style::default().fg(palette().fg)
+        },
+    ))];
     if choices.is_empty() {
         lines.push(Line::from(Span::styled(
             if app.restorable_loading {
@@ -3560,6 +3569,30 @@ mod tests {
             "{row}"
         );
         assert!(row.trim_end().ends_with('│'), "{row}");
+    }
+
+    #[test]
+    fn find_session_input_has_no_search_prefix() {
+        let mut app = App::new(SessionSnapshot::default());
+        app.open_hidden_picker(vec![crate::hidden::HiddenSessionRecord {
+            id: "opencode:host:abc".into(),
+            provider: Some(Provider::OpenCode),
+            name: Some("archie-mention-free".into()),
+            hidden_at_ms: 1,
+        }]);
+        for character in "archie response".chars() {
+            app.push_input(character);
+        }
+        let backend = TestBackend::new(80, 16);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(rendered.contains("archie response"), "{rendered}");
+        assert!(
+            !rendered.contains("search  archie"),
+            "the find field should not label itself search: {rendered}"
+        );
+        assert!(rendered.contains("esc clear"), "{rendered}");
     }
 
     #[test]
