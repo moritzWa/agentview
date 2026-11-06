@@ -397,7 +397,10 @@ pub fn run_dashboard(
     let mut last_queue_second = 0;
     let mut terminal = TerminalSession::enter()?;
     let initial_size = terminal.terminal.size()?;
-    app.set_session_page_size(session_page_size_for_terminal(initial_size.height));
+    app.set_session_page_size(session_page_size_for_terminal(
+        initial_size.height,
+        app.usage.len(),
+    ));
     app.set_hidden_picker_rows(hidden_picker_rows_for_height(initial_size.height));
     let mut last_refresh = Instant::now();
     let mut current_request = request.clone();
@@ -1471,7 +1474,10 @@ pub fn run_dashboard(
                         }
                     }
                     Event::Resize(_, height) => {
-                        app.set_session_page_size(session_page_size_for_terminal(height));
+                        app.set_session_page_size(session_page_size_for_terminal(
+                            height,
+                            app.usage.len(),
+                        ));
                         app.set_hidden_picker_rows(hidden_picker_rows_for_height(height));
                         needs_draw = true;
                     }
@@ -1603,8 +1609,8 @@ fn toggle_voice(app: &mut App, voice: &crate::voice::VoiceService) {
     }
 }
 
-fn session_page_size_for_terminal(height: u16) -> usize {
-    let header_height = if height < 16 { 2 } else { 4 };
+fn session_page_size_for_terminal(height: u16, usage_rows: usize) -> usize {
+    let header_height = crate::ui::header_height(height, usage_rows);
     let list_height = height.saturating_sub(header_height + 3 + 1);
     // Reserve a heading, a Show-more row, and a little separation so the
     // pagination control does not start just below the viewport.
@@ -3593,12 +3599,16 @@ mod tests {
 
     #[test]
     fn terminal_height_keeps_the_show_more_control_in_view() {
-        assert_eq!(session_page_size_for_terminal(8), 1);
-        assert_eq!(session_page_size_for_terminal(18), 7);
-        assert_eq!(session_page_size_for_terminal(28), 17);
-        assert_eq!(session_page_size_for_terminal(34), 23);
-        assert_eq!(session_page_size_for_terminal(36), SESSION_PAGE_SIZE);
-        assert_eq!(session_page_size_for_terminal(u16::MAX), SESSION_PAGE_SIZE);
+        assert_eq!(session_page_size_for_terminal(8, 2), 1);
+        assert_eq!(session_page_size_for_terminal(18, 2), 7);
+        assert_eq!(session_page_size_for_terminal(28, 2), 17);
+        assert_eq!(session_page_size_for_terminal(34, 2), 23);
+        assert_eq!(session_page_size_for_terminal(36, 2), SESSION_PAGE_SIZE);
+        assert_eq!(session_page_size_for_terminal(u16::MAX, 2), SESSION_PAGE_SIZE);
+        assert_eq!(
+            session_page_size_for_terminal(28, 2),
+            session_page_size_for_terminal(28, 3) + 1
+        );
     }
 
     fn app() -> App {

@@ -53,7 +53,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
             .min(area.height.saturating_sub(5)),
         _ => 3,
     };
-    let header_height = if area.height < 16 { 2 } else { 4 };
+    let header_height = header_height(area.height, app.usage.len());
     let queue_height = if app.overlay == Overlay::None {
         let spare = area
             .height
@@ -1345,6 +1345,15 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
             .alignment(Alignment::Left),
         area,
     );
+}
+
+/// Title, one row per subscription, and a spare line above the session list.
+/// Two subscriptions keep the old 4-line header. A third needs the spare back.
+pub fn header_height(terminal_height: u16, usage_rows: usize) -> u16 {
+    if terminal_height < 16 {
+        return 2;
+    }
+    4 + u16::from(usage_rows >= 3)
 }
 
 /// Two concise subscription rows; very short terminals keep only the title.
