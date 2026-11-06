@@ -8,6 +8,13 @@ and released versions are intended to follow Semantic Versioning.
 
 ## [Unreleased]
 
+### Fixed
+
+- A session waiting on a background shell no longer flips to "Needs input" when
+  one poll of the OpenCode server fails or times out (as happens under memory
+  pressure). A shell the server listed in the last two minutes still counts, and
+  a failed managed-session list no longer skips holds and background shells.
+
 ### Added
 
 - Voice session reads include bounded running-shell progress: command excerpt,

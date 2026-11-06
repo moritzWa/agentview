@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
@@ -141,6 +141,37 @@ pub struct OpenCodeController {
     /// Sessions this controller starts in OpenCode's own interface where no
     /// managed server exists, listed without `--include-external`.
     ownership: Option<Arc<OpenCodeOwnership>>,
+    /// Background shells the server reported recently, so one failed or slow
+    /// poll does not flip a waiting session to "Needs input".
+    shells_seen: Mutex<BTreeMap<String, (Instant, String)>>,
+}
+
+/// How long a shell the server listed earlier still counts when the server
+/// cannot be asked (a timeout under memory pressure, a restart).
+const SHELL_GRACE: Duration = Duration::from_secs(120);
+
+/// Shells to apply now: the server's answer when it gave one, else those it
+/// listed within `SHELL_GRACE`. A successful answer replaces what was seen.
+fn shells_with_memory(
+    seen: &mut BTreeMap<String, (Instant, String)>,
+    listed: Result<BTreeMap<String, String>>,
+    now: Instant,
+) -> BTreeMap<String, String> {
+    match listed {
+        Ok(shells) => {
+            *seen = shells
+                .iter()
+                .map(|(session, command)| (session.clone(), (now, command.clone())))
+                .collect();
+            shells
+        }
+        Err(_) => {
+            seen.retain(|_, (at, _)| now.duration_since(*at) < SHELL_GRACE);
+            seen.iter()
+                .map(|(session, (_, command))| (session.clone(), command.clone()))
+                .collect()
+        }
+    }
 }
 
 impl OpenCodeController {
@@ -151,6 +182,7 @@ impl OpenCodeController {
             executable,
             supervisor: None,
             ownership: None,
+            shells_seen: Mutex::default(),
         }
     }
 
@@ -161,6 +193,7 @@ impl OpenCodeController {
             executable,
             supervisor: Some(supervisor),
             ownership: None,
+            shells_seen: Mutex::default(),
         }
     }
 
@@ -261,15 +294,16 @@ impl ProviderController for OpenCodeController {
         let Some(supervisor) = &self.supervisor else {
             return;
         };
-        let managed = match supervisor.list_recent(MANAGED_LIST_SHARED_FOR) {
-            Ok(managed) => managed,
-            Err(error) => {
+        // A failed list skips only the managed overlay: holds and background
+        // shells still apply, or every waiting session would read idle.
+        let managed = supervisor
+            .list_recent(MANAGED_LIST_SHARED_FOR)
+            .unwrap_or_else(|error| {
                 snapshot
                     .warnings
                     .push(format!("OpenCode managed control: {error:#}"));
-                return;
-            }
-        };
+                Vec::new()
+            });
         let managed: BTreeMap<_, _> = managed
             .into_iter()
             .map(|session| (session.id.clone(), session))
@@ -305,15 +339,20 @@ impl ProviderController for OpenCodeController {
             .map(|session| session.cwd.clone())
             .collect::<BTreeSet<_>>();
         if !directories.is_empty() {
-            match supervisor.running_shells(&directories) {
-                Ok(shells) => apply_native_shells(
-                    snapshot.sessions.iter_mut().filter(|session| idle(session)),
-                    &shells,
-                ),
-                Err(error) => snapshot
+            let listed = supervisor.running_shells(&directories);
+            if let Err(error) = &listed {
+                snapshot
                     .warnings
-                    .push(format!("OpenCode background shells: {error:#}")),
+                    .push(format!("OpenCode background shells: {error:#}"));
             }
+            let shells = {
+                let mut seen = self.shells_seen.lock().unwrap_or_else(|e| e.into_inner());
+                shells_with_memory(&mut seen, listed, Instant::now())
+            };
+            apply_native_shells(
+                snapshot.sessions.iter_mut().filter(|session| idle(session)),
+                &shells,
+            );
         }
         if let Some(shells) = &self.source.background_shells {
             let running = with_subagent_parents(&self.source.invocation.program, shells.last());
@@ -2402,6 +2441,32 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_shell_poll_keeps_a_recently_seen_shell_for_a_while() {
+        let start = Instant::now();
+        let mut seen = BTreeMap::new();
+        let listed = BTreeMap::from([("ses_wait".to_owned(), "until ok; do sleep 60; done".to_owned())]);
+        assert_eq!(shells_with_memory(&mut seen, Ok(listed.clone()), start), listed);
+
+        let failed = || Err(anyhow::anyhow!("timed out"));
+        let soon = start + Duration::from_secs(30);
+        assert_eq!(shells_with_memory(&mut seen, failed(), soon), listed);
+        let late = start + SHELL_GRACE + Duration::from_secs(1);
+        assert!(shells_with_memory(&mut seen, failed(), late).is_empty());
+    }
+
+    #[test]
+    fn a_successful_poll_that_lists_nothing_forgets_the_shell() {
+        let start = Instant::now();
+        let mut seen = BTreeMap::new();
+        let listed = BTreeMap::from([("ses_wait".to_owned(), "sleep 600".to_owned())]);
+        shells_with_memory(&mut seen, Ok(listed), start);
+        let after = start + Duration::from_secs(5);
+        assert!(shells_with_memory(&mut seen, Ok(BTreeMap::new()), after).is_empty());
+        let failed = Err(anyhow::anyhow!("timed out"));
+        assert!(shells_with_memory(&mut seen, failed, after).is_empty());
+    }
+
+    #[test]
     fn a_native_background_shell_keeps_its_idle_session_working() {
         let managed = |id: &str, state| ManagedOpenCodeSession {
             id: id.into(),
@@ -2720,6 +2785,7 @@ mod tests {
             source,
             supervisor: None,
             ownership: None,
+            shells_seen: Mutex::default(),
         };
 
         assert_eq!(
