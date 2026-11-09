@@ -1078,13 +1078,19 @@ impl OpenCodeSupervisor {
         if record.api != ApiVersion::V2 {
             return Ok(shells);
         }
-        for directory in directories {
-            let listed = self.request_json(
+        for directory in directories.iter().filter(|path| path.is_dir()) {
+            let listed = match self.request_json(
                 &record,
                 "GET",
                 &with_directory_query("/shell", directory),
                 None,
-            )?;
+            ) {
+                Ok(listed) => listed,
+                // A directory that vanished between the check and the request
+                // runs no shells, and must not hide everyone else's.
+                Err(error) if is_missing_location(&error) => continue,
+                Err(error) => return Err(error),
+            };
             for shell in listed.as_array().into_iter().flatten() {
                 if shell["status"] != "running" {
                     continue;
@@ -2313,6 +2319,12 @@ pub struct OpenCodeStopReport {
     pub saved: Vec<String>,
     /// Sessions that were blocked on a question or permission prompt.
     pub awaiting_input: Vec<String>,
+}
+
+/// The server answers a request for a directory that no longer exists (a
+/// deleted temp or worktree folder some old session ran in) with a 404.
+fn is_missing_location(error: &anyhow::Error) -> bool {
+    format!("{error:#}").contains("LocationNotFoundError")
 }
 
 /// A subagent runs as its own session. The dashboard row is the top-level
@@ -4589,6 +4601,20 @@ mod tests {
             state_while_subagent_runs(SessionState::Completed, "managed_server", false),
             (SessionState::Completed, "managed_server")
         );
+    }
+
+    #[test]
+    fn only_a_missing_directory_error_is_skipped_when_listing_shells() {
+        let missing = anyhow::anyhow!(
+            "OpenCode HTTP status 404: {{\"_tag\":\"LocationNotFoundError\",\"message\":\"Location not found: /tmp/gone\"}}"
+        );
+        assert!(super::is_missing_location(&missing));
+        assert!(!super::is_missing_location(&anyhow::anyhow!(
+            "OpenCode HTTP status 500: boom"
+        )));
+        assert!(!super::is_missing_location(&anyhow::anyhow!(
+            "request timed out"
+        )));
     }
 
     #[test]

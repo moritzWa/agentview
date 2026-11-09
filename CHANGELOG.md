@@ -10,6 +10,10 @@ and released versions are intended to follow Semantic Versioning.
 
 ### Fixed
 
+- A session waiting on a background shell no longer reads "Needs input" because
+  an old session ran in a folder that has since been deleted. The server's 404
+  for that folder failed the whole shell listing, so every waiting session
+  looked idle once the two-minute memory ran out.
 - A session waiting on a background shell no longer flips to "Needs input" when
   one poll of the OpenCode server fails or times out (as happens under memory
   pressure). A shell the server listed in the last two minutes still counts, and
