@@ -116,6 +116,17 @@ function meter(media) {
 }
 let ticks = 0;
 
+// Which microphone the call opened, and which one the system default is now, so a call that keeps an old mic shows in the log.
+async function reportInput(media, why) {
+  try {
+    const track = media.getAudioTracks()[0];
+    const inputs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "audioinput");
+    const system = inputs.find((d) => d.deviceId === "default");
+    post({ type: "input", why, using: track?.label, system_default: system?.label, state: track?.readyState });
+  } catch {}
+}
+navigator.mediaDevices.addEventListener("devicechange", () => { if (stream) reportInput(stream, "devices changed"); });
+
 function applyMute() {
   stream?.getAudioTracks().forEach((t) => { t.enabled = !muted; });
   $("mute").textContent = muted ? "Unmute" : "Mute";
@@ -132,7 +143,7 @@ async function begin() {
     post({ type: "ended", reason: `the microphone is blocked (${e.name}). On a Mac, allow your terminal or browser under System Settings, Privacy & Security, Microphone` });
     return;
   }
-  ready = true; $("enable").hidden = true; muted = false; applyMute(); meter(stream);
+  ready = true; $("enable").hidden = true; muted = false; applyMute(); meter(stream); reportInput(stream, "opened");
   setState("connecting call", "busy");
   pc = new RTCPeerConnection();
   stream.getTracks().forEach((t) => pc.addTrack(t, stream));
@@ -230,7 +241,7 @@ async function beginXai() {
     post({ type: "ended", reason: `the microphone is blocked (${e.name}). On a Mac, allow your terminal or browser under System Settings, Privacy & Security, Microphone` });
     return;
   }
-  ready = true; $("enable").hidden = true; muted = false; applyMute(); meter(stream);
+  ready = true; $("enable").hidden = true; muted = false; applyMute(); meter(stream); reportInput(stream, "opened");
   setState("connecting call", "busy");
   ctx = new AudioContext({ sampleRate: 24000 });
   await ctx.resume().catch(() => {});
