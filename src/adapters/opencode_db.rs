@@ -1158,6 +1158,44 @@ mod tests {
     }
 
     #[test]
+    fn memory_housekeeping_children_do_not_count_as_background_work() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE session_v2(id TEXT PRIMARY KEY, title TEXT, project_id TEXT,
+                directory TEXT, parent_id TEXT, fork_session_id TEXT,
+                time_created INTEGER, time_updated INTEGER, time_archived INTEGER);
+            CREATE TABLE session_message(id TEXT PRIMARY KEY, session_id TEXT, type TEXT,
+                seq INTEGER, time_created INTEGER, time_updated INTEGER, data TEXT);
+            INSERT INTO session_v2 VALUES
+              ('a', 'A', 'p', '/work', NULL, NULL, 1, 2, NULL),
+              ('a_mem', 'opencode-memory extraction', 'p', '/work', 'a', NULL, 3, 4, NULL),
+              ('b', 'B', 'p', '/work', NULL, NULL, 1, 2, NULL),
+              ('b_mem', 'opencode-memory recall selector', 'p', '/work', 'b', NULL, 3, 4, NULL),
+              ('b_task', 'Research', 'p', '/work', 'b', NULL, 5, 6, NULL);
+            INSERT INTO session_message VALUES
+              ('a1', 'a', 'idle', 1, 2, 2, '{}'),
+              ('am1', 'a_mem', 'assistant', 1, 4, 4, '{"content":[]}'),
+              ('b1', 'b', 'idle', 1, 2, 2, '{}'),
+              ('bm1', 'b_mem', 'assistant', 1, 4, 4, '{"content":[]}'),
+              ('bt1', 'b_task', 'assistant', 1, 6, 6, '{"content":[]}');
+            "#,
+        )
+        .unwrap();
+        install_compatibility_views(&conn).unwrap();
+        let child = |id: &str| -> Option<u64> {
+            let sql = format!(
+                "{} AND s.id = '{id}'",
+                super::super::opencode::GLOBAL_SESSION_ROWS
+            );
+            let record: String = conn.query_row(&sql, [], |row| row.get(0)).unwrap();
+            serde_json::from_str::<serde_json::Value>(&record).unwrap()["child"].as_u64()
+        };
+        assert_eq!(child("a"), None);
+        assert_eq!(child("b"), Some(6));
+    }
+
+    #[test]
     fn turns_pair_what_was_asked_with_how_the_agent_ended_without_tool_noise() {
         let dir = tempfile::tempdir().unwrap();
         let conn = Connection::open(dir.path().join("t.db")).unwrap();
