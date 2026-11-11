@@ -35,7 +35,8 @@ const SYSTEM_PROMPT: &str =
 INPUT: the agent's last message waits on the user: it asks a question, asks for a choice, \
 approval, credentials, or clarification, or says it is blocked.\n\
 DONE: the agent finished or reported results without needing anything; optional offers \
-like 'let me know if you want more' are DONE.";
+like 'let me know if you want more' are DONE. So is waiting on its own background job, CI run \
+or scheduled check.";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Verdict {
@@ -140,9 +141,11 @@ impl TurnClassifier {
             let turn = turn_hash(session);
             match cache.verdicts.get(&session.id) {
                 Some(labelled) if labelled.turn == turn => {
-                    session.state = match labelled.verdict {
-                        Verdict::NeedsInput => SessionState::NeedsInput,
-                        Verdict::Done => SessionState::Completed,
+                    session.state = match (labelled.verdict, held(session)) {
+                        (Verdict::NeedsInput, _) => SessionState::NeedsInput,
+                        // Its background work still runs, so it stays Background.
+                        (Verdict::Done, true) => SessionState::Working,
+                        (Verdict::Done, false) => SessionState::Completed,
                     };
                 }
                 _ if cache.in_flight.contains(&session.id)
@@ -210,13 +213,24 @@ impl TurnClassifier {
     }
 }
 
+/// An idle session shown as Working only because background work (a shell,
+/// a monitor, a wake-later) is attached to it. Its last message may still ask
+/// the user something, and the hold must not hide that.
+fn held(session: &AgentSession) -> bool {
+    session.state == SessionState::Working
+        && session
+            .raw_state
+            .as_deref()
+            .is_some_and(|raw| raw.starts_with("background: ") || raw == "background work")
+}
+
 /// Idle sessions whose provider cannot tell a finished turn from a question.
 /// Permission and question prompts are already known to need input.
 fn eligible(session: &AgentSession, now: SystemTime) -> bool {
     let idle = match session.state {
         SessionState::Completed => true,
         SessionState::NeedsInput => session.raw_state.as_deref() == Some("waiting at prompt"),
-        _ => false,
+        _ => held(session),
     };
     idle && session.provider != Provider::Terminal
         && (session.capabilities.contains(&Capability::Inspect)
@@ -411,6 +425,53 @@ mod tests {
             sessions,
             warnings: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_background_hold_does_not_hide_a_question_but_a_running_turn_is_left_alone() {
+        let asked = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&asked);
+        let classifier = TurnClassifier::new(
+            |session| Ok(session.summary.clone()),
+            move |tail| {
+                counter.fetch_add(1, Ordering::SeqCst);
+                Ok(if tail.ends_with('?') {
+                    Verdict::NeedsInput
+                } else {
+                    Verdict::Done
+                })
+            },
+        );
+        let sessions = vec![
+            idle(
+                "ask",
+                SessionState::Working,
+                "background: shell: next dev",
+                "Which one?",
+            ),
+            idle(
+                "watch",
+                SessionState::Working,
+                "background: wake-later Mon 09:00",
+                "Nothing needs you.",
+            ),
+            idle("running", SessionState::Working, "busy", "Which one?"),
+        ];
+        classifier.apply(&mut snapshot(sessions.clone()));
+        classifier.wait_for_idle();
+
+        let mut next = snapshot(sessions);
+        classifier.apply(&mut next);
+        let states = next.sessions.iter().map(|s| s.state).collect::<Vec<_>>();
+        assert_eq!(
+            states,
+            [
+                SessionState::NeedsInput,
+                SessionState::Working,
+                SessionState::Working
+            ]
+        );
+        assert_eq!(asked.load(Ordering::SeqCst), 2);
     }
 
     #[test]

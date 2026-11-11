@@ -2117,6 +2117,11 @@ fn apply_native_shells<'a>(
 /// turn, keeps an idle or closed session working. A question or permission
 /// prompt still needs the user first.
 fn apply_hold(session: &mut AgentSession, reason: &str) {
+    // A running turn is Working already; marking it held would make it look
+    // idle underneath.
+    if session.state == SessionState::Working {
+        return;
+    }
     if session.state == SessionState::NeedsInput
         && !matches!(
             session.raw_state.as_deref(),
