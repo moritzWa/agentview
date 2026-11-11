@@ -482,7 +482,31 @@ pub(crate) fn subagent_parents(executable: &str, ids: &BTreeSet<String>) -> BTre
     let Some(db) = open_history(executable) else {
         return BTreeSet::new();
     };
-    ancestor_roots(&db, ids)
+    working_subagent_parents(&db, ids)
+}
+
+/// Parents kept working by `ids`, leaving out the memory plugin's
+/// housekeeping sessions: the plugin forks one after nearly every turn to save
+/// a memory, and that is not work the user is waiting on. Their titles start
+/// with `opencode-memory ` (the same prefix as the listing query's `child`).
+fn working_subagent_parents(db: &Connection, ids: &BTreeSet<String>) -> BTreeSet<String> {
+    let working = ids
+        .iter()
+        .filter(|id| !is_memory_housekeeping(db, id))
+        .cloned()
+        .collect();
+    ancestor_roots(db, &working)
+}
+
+fn is_memory_housekeeping(db: &Connection, id: &str) -> bool {
+    ["session_v2", "session"].into_iter().any(|table| {
+        db.query_row(
+            &format!("SELECT COALESCE(title, '') LIKE 'opencode-memory %' FROM {table} WHERE id=?1"),
+            [id],
+            |row| row.get::<_, bool>(0),
+        )
+        .unwrap_or(false)
+    })
 }
 
 /// `id -> root` for every id in `ids` that is a subagent. The root is the
@@ -1448,6 +1472,27 @@ mod tests {
         assert_eq!(by_id.get("grandchild").map(String::as_str), Some("root"));
         assert!(!by_id.contains_key("other"));
         assert!(!by_id.contains_key("missing"));
+    }
+
+    #[test]
+    fn running_memory_housekeeping_does_not_keep_its_parent_working() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE session_v2(id TEXT PRIMARY KEY, title TEXT, parent_id TEXT);
+             INSERT INTO session_v2 VALUES
+                ('a', 'A', NULL),
+                ('a_mem', 'opencode-memory extraction', 'a'),
+                ('b', 'B', NULL),
+                ('b_mem', 'opencode-memory recall selector', 'b'),
+                ('b_task', 'Research', 'b');",
+        )
+        .unwrap();
+        let ids = |ids: &[&str]| ids.iter().map(|id| id.to_string()).collect::<BTreeSet<_>>();
+        assert_eq!(working_subagent_parents(&db, &ids(&["a_mem"])), ids(&[]));
+        assert_eq!(
+            working_subagent_parents(&db, &ids(&["a_mem", "b_mem", "b_task"])),
+            ids(&["b"])
+        );
     }
 
     #[test]
