@@ -33,7 +33,7 @@ use crate::process::{CancellableProcessRunner, CommandRequest, CommandRunner};
 // read through the (session_id, time_created) index, which live state needs;
 // `child` is when the newest unfinished turn of a subagent session began,
 // leaving out the memory plugin's housekeeping sessions (`opencode-memory ...`).
-pub(super) const GLOBAL_SESSION_ROWS: &str = "SELECT json_object('id', s.id, 'title', s.title, 'created', s.time_created, 'updated', s.time_updated, 'projectId', s.project_id, 'directory', s.directory, 'last', json((SELECT json_object('role', json_extract(m.data, '$.role'), 'created', m.time_created, 'completed', json_extract(m.data, '$.time.completed'), 'question', EXISTS (SELECT 1 FROM part p WHERE p.message_id = m.id AND json_extract(p.data, '$.tool') = 'question' AND json_extract(p.data, '$.state.status') IN ('pending', 'running'))) FROM message m WHERE m.session_id = s.id ORDER BY m.time_created DESC, m.id DESC LIMIT 1)), 'child', (SELECT MAX(m.time_created) FROM session c JOIN message m ON m.id = (SELECT m2.id FROM message m2 WHERE m2.session_id = c.id ORDER BY m2.time_created DESC, m2.id DESC LIMIT 1) WHERE c.parent_id = s.id AND COALESCE(c.title, '') NOT LIKE 'opencode-memory %' AND (json_extract(m.data, '$.role') = 'user' OR json_extract(m.data, '$.time.completed') IS NULL))) AS record FROM session s WHERE s.parent_id IS NULL";
+pub(super) const GLOBAL_SESSION_ROWS: &str = "SELECT json_object('id', s.id, 'title', s.title, 'created', s.time_created, 'updated', s.time_updated, 'projectId', s.project_id, 'directory', s.directory, 'last', json((SELECT json_object('role', json_extract(m.data, '$.role'), 'created', m.time_created, 'completed', json_extract(m.data, '$.time.completed'), 'midTurn', json_extract(m.data, '$.midTurn'), 'question', EXISTS (SELECT 1 FROM part p WHERE p.message_id = m.id AND json_extract(p.data, '$.tool') = 'question' AND json_extract(p.data, '$.state.status') IN ('pending', 'running'))) FROM message m WHERE m.session_id = s.id ORDER BY m.time_created DESC, m.id DESC LIMIT 1)), 'child', (SELECT MAX(m.time_created) FROM session c JOIN message m ON m.id = (SELECT m2.id FROM message m2 WHERE m2.session_id = c.id ORDER BY m2.time_created DESC, m2.id DESC LIMIT 1) WHERE c.parent_id = s.id AND COALESCE(c.title, '') NOT LIKE 'opencode-memory %' AND (json_extract(m.data, '$.role') = 'user' OR json_extract(m.data, '$.time.completed') IS NULL))) AS record FROM session s WHERE s.parent_id IS NULL";
 const MODEL_DISCOVERY_TIMEOUT_SECS: u64 = 30;
 const MAX_MODEL_CATALOG_BYTES: usize = 4 * 1024 * 1024;
 const LAUNCH_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(8);
@@ -1734,9 +1734,13 @@ impl OpenCodeSource {
         if let Some(activity) = activity {
             server_run.extend(activity.running.iter().cloned());
         }
+        let interrupted = activity
+            .map(|_| interrupted_sessions(&records, &server_run, opencode_live::now_ms()))
+            .unwrap_or_default();
         let mut sessions = self.normalize_with_live_state(records, holders, &server_run);
         if let Some(activity) = activity {
             apply_server_activity(&mut sessions, activity, owned);
+            apply_interrupted(&mut sessions, &interrupted);
         }
         sessions
     }
@@ -1977,6 +1981,52 @@ fn apply_server_activity(
     }
 }
 
+/// A server that stops a turn midway (a crash, a full disk, a lost stream)
+/// leaves it unfinished and reports the session idle. Written this long ago
+/// the turn is not about to continue, and written longer ago than a day it is
+/// old history.
+const INTERRUPTED_AFTER_MS: u64 = 60 * 1_000;
+const INTERRUPTED_WITHIN_MS: u64 = 24 * 60 * 60 * 1_000;
+
+/// Sessions with an unfinished turn that the live server is not running.
+fn interrupted_sessions(
+    records: &[OpenCodeRecord],
+    running: &BTreeSet<String>,
+    now_ms: u64,
+) -> BTreeMap<String, bool> {
+    records
+        .iter()
+        .filter(|record| !running.contains(&record.id) && record.child.is_none())
+        .filter(|record| opencode_live::is_interrupted(record.last.as_ref()))
+        .filter(|record| {
+            let age = now_ms.saturating_sub(record.updated);
+            (INTERRUPTED_AFTER_MS..=INTERRUPTED_WITHIN_MS).contains(&age)
+        })
+        .map(|record| {
+            let asked = record.last.as_ref().is_some_and(|last| last.question != 0);
+            (record.id.clone(), asked)
+        })
+        .collect()
+}
+
+/// Such a session was not finished, so it is not Done: it waits for someone to
+/// tell it to continue. `asked` is whether it stopped on a question.
+fn apply_interrupted(sessions: &mut [AgentSession], interrupted: &BTreeMap<String, bool>) {
+    for session in sessions
+        .iter_mut()
+        .filter(|session| session.state == SessionState::Completed)
+    {
+        if let Some(asked) = interrupted.get(&session.provider_session_id) {
+            session.state = SessionState::NeedsInput;
+            session.raw_state = Some(if *asked {
+                "question asked".into()
+            } else {
+                "turn interrupted".into()
+            });
+        }
+    }
+}
+
 /// The state the TUI this dashboard holds for `session` shows now, for the
 /// dashboard to apply between discoveries.
 pub(super) fn background_screen_state(
@@ -2068,7 +2118,10 @@ fn apply_native_shells<'a>(
 /// prompt still needs the user first.
 fn apply_hold(session: &mut AgentSession, reason: &str) {
     if session.state == SessionState::NeedsInput
-        && session.raw_state.as_deref() != Some("waiting at prompt")
+        && !matches!(
+            session.raw_state.as_deref(),
+            Some("waiting at prompt" | "turn interrupted")
+        )
     {
         return;
     }
@@ -2445,8 +2498,14 @@ mod tests {
     fn a_failed_shell_poll_keeps_a_recently_seen_shell_for_a_while() {
         let start = Instant::now();
         let mut seen = BTreeMap::new();
-        let listed = BTreeMap::from([("ses_wait".to_owned(), "until ok; do sleep 60; done".to_owned())]);
-        assert_eq!(shells_with_memory(&mut seen, Ok(listed.clone()), start), listed);
+        let listed = BTreeMap::from([(
+            "ses_wait".to_owned(),
+            "until ok; do sleep 60; done".to_owned(),
+        )]);
+        assert_eq!(
+            shells_with_memory(&mut seen, Ok(listed.clone()), start),
+            listed
+        );
 
         let failed = || Err(anyhow::anyhow!("timed out"));
         let soon = start + Duration::from_secs(30);
@@ -2659,6 +2718,70 @@ mod tests {
             unfinished_directories(&records),
             ["/running", "/sent", "/child"].map(PathBuf::from).into()
         );
+    }
+
+    #[test]
+    fn a_turn_the_server_stopped_midway_is_not_done_but_a_hold_still_wins() {
+        const MINUTE: u64 = 60_000;
+        let now = 10_000 * MINUTE;
+        let record = |id: &str, updated: u64, last: &str, child: &str| -> OpenCodeRecord {
+            serde_json::from_str(&format!(
+                r#"{{"id": "{id}", "title": "t", "updated": {updated}, "created": 1,
+                "projectId": "g", "directory": "/work", "last": {last}{child}}}"#
+            ))
+            .unwrap()
+        };
+        let open = r#"{"role": "assistant", "created": 5}"#;
+        let step = r#"{"role": "assistant", "created": 5, "completed": 6, "midTurn": 1}"#;
+        let ended = r#"{"role": "assistant", "created": 5, "completed": 6, "midTurn": 0}"#;
+        let ask = r#"{"role": "assistant", "created": 5, "question": 1}"#;
+        let records = vec![
+            record("open", now - 10 * MINUTE, open, ""),
+            record("step", now - 10 * MINUTE, step, ""),
+            record("ended", now - 10 * MINUTE, ended, ""),
+            record("ask", now - 10 * MINUTE, ask, ""),
+            record("running", now - 10 * MINUTE, open, ""),
+            record("just_now", now - 5_000, open, ""),
+            record("old", now - 3 * 24 * 60 * MINUTE, open, ""),
+            record("child", now - 10 * MINUTE, open, r#", "child": 7"#),
+        ];
+        let running: BTreeSet<String> = ["running".to_owned()].into();
+        let interrupted = interrupted_sessions(&records, &running, now);
+        assert_eq!(
+            interrupted,
+            BTreeMap::from([
+                ("open".to_owned(), false),
+                ("step".to_owned(), false),
+                ("ask".to_owned(), true),
+            ])
+        );
+
+        let mut sessions = records
+            .into_iter()
+            .map(|record| normalize_record(record, Runtime::Host))
+            .collect::<Vec<_>>();
+        apply_interrupted(&mut sessions, &interrupted);
+        let state = |id: &str| {
+            sessions
+                .iter()
+                .find(|session| session.provider_session_id == id)
+                .map(|session| (session.state, session.raw_state.clone().unwrap_or_default()))
+                .unwrap()
+        };
+        assert_eq!(
+            state("open"),
+            (SessionState::NeedsInput, "turn interrupted".into())
+        );
+        assert_eq!(
+            state("ask"),
+            (SessionState::NeedsInput, "question asked".into())
+        );
+        assert_eq!(state("ended").0, SessionState::Completed);
+        assert_eq!(state("old").0, SessionState::Completed);
+
+        let mut held = sessions.remove(0);
+        apply_hold(&mut held, "wake-later");
+        assert_eq!(held.state, SessionState::Working);
     }
 
     #[test]

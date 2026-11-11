@@ -62,6 +62,11 @@ pub(super) struct LastMessage {
     pub created: u64,
     #[serde(default)]
     pub completed: Option<u64>,
+    /// V2 only: the newest message is one step of a turn, which ends with its
+    /// own `idle` message. A server that stops running a turn leaves a step
+    /// with `completed` set and no `idle` after it.
+    #[serde(default, rename = "midTurn")]
+    pub mid_turn: Option<u8>,
     /// A `question` tool call in this message is still waiting for an answer.
     #[serde(default)]
     pub question: u8,
@@ -521,6 +526,17 @@ pub(super) fn is_active(
     unfinished && now_ms.saturating_sub(updated_ms) <= ACTIVE_WINDOW_MS
 }
 
+/// A turn the server stopped running without ending it: the newest message is
+/// a user prompt, an unfinished reply, or a V2 step with no closing `idle`
+/// message. Only meaningful for a session the server reports not running.
+pub(super) fn is_interrupted(last: Option<&LastMessage>) -> bool {
+    last.is_some_and(|last| match last.role.as_deref() {
+        Some("user") => true,
+        Some("assistant") => last.completed.is_none() || last.mid_turn == Some(1),
+        _ => false,
+    })
+}
+
 fn canonical(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned())
 }
@@ -838,6 +854,7 @@ mod tests {
             role: Some("assistant".into()),
             created: 1_000,
             completed: None,
+            mid_turn: None,
             question: 0,
         };
         let done = LastMessage {
@@ -921,6 +938,7 @@ mod tests {
             role: Some("assistant".into()),
             created: 10_000,
             completed: Some(11_000),
+            mid_turn: None,
             question: 0,
         };
         assert_eq!(
@@ -979,6 +997,7 @@ mod tests {
             role: Some(role.into()),
             created,
             completed,
+            mid_turn: None,
             question,
         };
         assert_eq!(

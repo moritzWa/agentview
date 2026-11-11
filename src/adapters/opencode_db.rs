@@ -719,6 +719,7 @@ fn install_views(db: &Connection, projection: Projection) -> Result<Views> {
                json_set(data, '$.role', CASE type WHEN 'idle' THEN 'assistant'
                         WHEN 'shell' THEN 'assistant' WHEN 'compaction' THEN 'assistant'
                         WHEN 'synthetic' THEN 'user' ELSE type END,
+                        '$.midTurn', CASE WHEN type='assistant' THEN 1 ELSE 0 END,
                         '$.time.completed', CASE WHEN type='idle' THEN time_created
                         WHEN type IN ('shell','compaction') AND json_extract(data,'$.status') NOT IN ('running','pending') THEN time_updated
                         ELSE json_extract(data, '$.time.completed') END) AS data,
@@ -1193,6 +1194,51 @@ mod tests {
         };
         assert_eq!(child("a"), None);
         assert_eq!(child("b"), Some(6));
+    }
+
+    #[test]
+    fn a_v2_step_with_no_closing_idle_message_is_an_interrupted_turn() {
+        use super::super::opencode_live::{is_interrupted, LastMessage};
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE session_v2(id TEXT PRIMARY KEY, title TEXT, project_id TEXT,
+                directory TEXT, parent_id TEXT, fork_session_id TEXT,
+                time_created INTEGER, time_updated INTEGER, time_archived INTEGER);
+            CREATE TABLE session_message(id TEXT PRIMARY KEY, session_id TEXT, type TEXT,
+                seq INTEGER, time_created INTEGER, time_updated INTEGER, data TEXT);
+            INSERT INTO session_v2 VALUES
+              ('ended', 'E', 'p', '/work', NULL, NULL, 1, 2, NULL),
+              ('step', 'S', 'p', '/work', NULL, NULL, 1, 2, NULL),
+              ('open', 'O', 'p', '/work', NULL, NULL, 1, 2, NULL),
+              ('asked', 'A', 'p', '/work', NULL, NULL, 1, 2, NULL);
+            INSERT INTO session_message VALUES
+              ('e1', 'ended', 'assistant', 1, 2, 2, '{"time":{"completed":2},"content":[]}'),
+              ('e2', 'ended', 'idle', 2, 3, 3, '{}'),
+              ('s1', 'step', 'assistant', 1, 2, 2, '{"time":{"completed":2},"content":[]}'),
+              ('o1', 'open', 'assistant', 1, 2, 2, '{"time":{},"content":[]}'),
+              ('a1', 'asked', 'assistant', 1, 2, 2,
+               '{"time":{},"content":[{"type":"tool","name":"question","state":{"status":"running"}}]}');
+            "#,
+        )
+        .unwrap();
+        install_compatibility_views(&conn).unwrap();
+        let last = |id: &str| -> LastMessage {
+            let sql = format!(
+                "{} AND s.id = '{id}'",
+                super::super::opencode::GLOBAL_SESSION_ROWS
+            );
+            let record: String = conn.query_row(&sql, [], |row| row.get(0)).unwrap();
+            serde_json::from_value(
+                serde_json::from_str::<serde_json::Value>(&record).unwrap()["last"].clone(),
+            )
+            .unwrap()
+        };
+        assert!(!is_interrupted(Some(&last("ended"))));
+        assert!(is_interrupted(Some(&last("step"))));
+        assert!(is_interrupted(Some(&last("open"))));
+        assert_eq!(last("asked").question, 1);
+        assert!(is_interrupted(Some(&last("asked"))));
     }
 
     #[test]
