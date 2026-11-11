@@ -38,6 +38,13 @@ DONE: the agent finished or reported results without needing anything; optional 
 like 'let me know if you want more' are DONE. So is waiting on its own background job, CI run \
 or scheduled check.";
 
+/// Added for a session whose background work is still running: it carries on
+/// by itself when that ends, so only a real blocker is INPUT.
+const HELD_NOTE: &str =
+    "\nThis agent still has a background job running and will carry on by itself when it ends, \
+so it is not blocked: answer INPUT only if the message asks something it cannot proceed without. \
+Offers, options to stop early, cost notes and status are DONE.";
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Verdict {
     NeedsInput,
@@ -45,7 +52,8 @@ pub enum Verdict {
 }
 
 type Inspect = dyn Fn(&AgentSession) -> Result<String> + Send + Sync;
-type Ask = dyn Fn(&str) -> Result<Verdict> + Send + Sync;
+/// The transcript tail, and whether background work is still running.
+type Ask = dyn Fn(&str, bool) -> Result<Verdict> + Send + Sync;
 
 #[derive(Clone)]
 pub struct TurnClassifier {
@@ -76,7 +84,7 @@ struct Labelled {
 impl TurnClassifier {
     pub fn new(
         inspect: impl Fn(&AgentSession) -> Result<String> + Send + Sync + 'static,
-        ask: impl Fn(&str) -> Result<Verdict> + Send + Sync + 'static,
+        ask: impl Fn(&str, bool) -> Result<Verdict> + Send + Sync + 'static,
     ) -> Self {
         Self {
             inspect: Arc::new(inspect),
@@ -112,7 +120,7 @@ impl TurnClassifier {
         let control = control.clone();
         let classifier = Self::new(
             move |session| control.inspect(session),
-            move |tail| ask_openrouter(&key, &model, tail),
+            move |tail, held| ask_openrouter(&key, &model, tail, held),
         );
         Some(match default_store_path() {
             Some(path) => classifier.with_store(path),
@@ -138,7 +146,8 @@ impl TurnClassifier {
             if !eligible(session, now) {
                 continue;
             }
-            let turn = turn_hash(session);
+            let is_held = held(session);
+            let turn = turn_hash(session, is_held);
             match cache.verdicts.get(&session.id) {
                 Some(labelled) if labelled.turn == turn => {
                     session.state = match (labelled.verdict, held(session)) {
@@ -151,7 +160,7 @@ impl TurnClassifier {
                 _ if cache.in_flight.contains(&session.id)
                     || cache.failed.get(&session.id) == Some(&turn) => {}
                 _ if cache.in_flight.len() + pending.len() < MAX_IN_FLIGHT => {
-                    pending.push((session.clone(), turn));
+                    pending.push((session.clone(), turn, is_held));
                 }
                 _ => {}
             }
@@ -161,17 +170,17 @@ impl TurnClassifier {
                 .warnings
                 .push(format!("needs-input classifier: {error}"));
         }
-        for (session, _) in &pending {
+        for (session, _, _) in &pending {
             cache.in_flight.insert(session.id.clone());
         }
         drop(cache);
 
-        for (session, turn) in pending {
+        for (session, turn, is_held) in pending {
             let classifier = self.clone();
             thread::spawn(move || {
                 let result = crate::last_message::get(&session.id)
                     .map_or_else(|| (classifier.inspect)(&session), Ok)
-                    .and_then(|transcript| (classifier.ask)(tail(&transcript, TAIL_CHARS)))
+                    .and_then(|transcript| (classifier.ask)(tail(&transcript, TAIL_CHARS), is_held))
                     .map(|verdict| Labelled {
                         turn,
                         verdict,
@@ -239,16 +248,27 @@ fn eligible(session: &AgentSession, now: SystemTime) -> bool {
         && session.age(now).is_some_and(|age| age <= RECENT)
 }
 
-/// Some summaries stay the thread's first prompt across turns, so the latest
-/// reply identifies the turn too. FNV-1a, because stored verdicts must match
-/// across builds and `DefaultHasher` is free to change between Rust releases.
-fn turn_hash(session: &AgentSession) -> u64 {
+/// Some summaries stay the thread's first prompt or title across turns, so the
+/// latest reply identifies the turn too, and when no reply is known the time
+/// of the last activity does. A verdict given while background work ran is
+/// kept apart: it was asked with a different prompt. FNV-1a, because stored
+/// verdicts must match across builds and `DefaultHasher` is free to change
+/// between Rust releases.
+fn turn_hash(session: &AgentSession, held: bool) -> u64 {
     let reply = crate::last_message::get(&session.id).unwrap_or_default();
+    let activity = match (reply.is_empty(), session.updated_at) {
+        (true, Some(at)) => at
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_secs()),
+        _ => 0,
+    };
     session
         .summary
         .bytes()
         .chain([0])
         .chain(reply.bytes())
+        .chain(activity.to_le_bytes().into_iter().filter(|_| activity != 0))
+        .chain([1].into_iter().filter(|_| held))
         .fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
             (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
         })
@@ -317,14 +337,19 @@ fn openrouter_api_key() -> Option<String> {
     (!key.is_empty()).then(|| key.to_owned())
 }
 
-fn ask_openrouter(key: &str, model: &str, transcript_tail: &str) -> Result<Verdict> {
+fn ask_openrouter(key: &str, model: &str, transcript_tail: &str, held: bool) -> Result<Verdict> {
+    let system = if held {
+        format!("{SYSTEM_PROMPT}{HELD_NOTE}")
+    } else {
+        SYSTEM_PROMPT.to_owned()
+    };
     let body = json!({
         "model": model,
         "temperature": 0,
         "max_tokens": 16,
         "reasoning": { "enabled": false },
         "messages": [
-            { "role": "system", "content": SYSTEM_PROMPT },
+            { "role": "system", "content": system },
             {
                 "role": "user",
                 "content": format!(
@@ -433,7 +458,7 @@ mod tests {
         let counter = Arc::clone(&asked);
         let classifier = TurnClassifier::new(
             |session| Ok(session.summary.clone()),
-            move |tail| {
+            move |tail, _held| {
                 counter.fetch_add(1, Ordering::SeqCst);
                 Ok(if tail.ends_with('?') {
                     Verdict::NeedsInput
@@ -480,7 +505,7 @@ mod tests {
         let counter = Arc::clone(&asked);
         let classifier = TurnClassifier::new(
             |session| Ok(session.summary.clone()),
-            move |tail| {
+            move |tail, _held| {
                 counter.fetch_add(1, Ordering::SeqCst);
                 Ok(if tail.ends_with('?') {
                     Verdict::NeedsInput
@@ -537,7 +562,7 @@ mod tests {
         let counter = Arc::clone(&asked);
         let classifier = TurnClassifier::new(
             |session| Ok(session.summary.clone()),
-            move |tail| {
+            move |tail, _held| {
                 counter.fetch_add(1, Ordering::SeqCst);
                 if tail == "boom" {
                     bail!("no key")
@@ -558,6 +583,74 @@ mod tests {
     }
 
     #[test]
+    fn a_session_titled_summary_is_labelled_again_when_it_has_a_new_turn() {
+        let asked = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&asked);
+        let classifier = TurnClassifier::new(
+            |session| Ok(session.summary.clone()),
+            move |_, _| {
+                // The first turn asked a question, the second one did not.
+                Ok(if counter.fetch_add(1, Ordering::SeqCst) == 0 {
+                    Verdict::NeedsInput
+                } else {
+                    Verdict::Done
+                })
+            },
+        );
+        let now = SystemTime::now();
+        let turn = |secs_ago: u64| {
+            let mut session = idle("one", SessionState::Completed, "", "linkedin-outreach");
+            session.updated_at = Some(now - Duration::from_secs(secs_ago));
+            snapshot(vec![session])
+        };
+        classifier.apply(&mut turn(2_000));
+        classifier.wait_for_idle();
+        classifier.apply(&mut turn(1_000));
+        classifier.wait_for_idle();
+        let mut shown = turn(1_000);
+        classifier.apply(&mut shown);
+        assert_eq!(shown.sessions[0].state, SessionState::Completed);
+        assert_eq!(asked.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn a_held_turn_is_asked_with_the_hold_and_not_given_the_verdict_of_an_unheld_one() {
+        let now = SystemTime::now();
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let log = Arc::clone(&asked);
+        let classifier = TurnClassifier::new(
+            |session| Ok(session.summary.clone()),
+            move |_, held| {
+                log.lock().unwrap().push(held);
+                Ok(if held {
+                    Verdict::Done
+                } else {
+                    Verdict::NeedsInput
+                })
+            },
+        );
+        let turn = |state: SessionState, raw: &str| {
+            let mut session = idle("one", state, raw, "Say so if you want me to stop.");
+            session.updated_at = Some(now - Duration::from_secs(1_000));
+            snapshot(vec![session])
+        };
+        // The turn ended before the background shell was registered.
+        classifier.apply(&mut turn(SessionState::Completed, "idle"));
+        classifier.wait_for_idle();
+        let mut shown = turn(SessionState::Completed, "idle");
+        classifier.apply(&mut shown);
+        assert_eq!(shown.sessions[0].state, SessionState::NeedsInput);
+
+        let held = || turn(SessionState::Working, "background: shell: python3 judge.py");
+        classifier.apply(&mut held());
+        classifier.wait_for_idle();
+        let mut shown = held();
+        classifier.apply(&mut shown);
+        assert_eq!(shown.sessions[0].state, SessionState::Working);
+        assert_eq!(*asked.lock().unwrap(), [false, true]);
+    }
+
+    #[test]
     fn a_restarted_dashboard_reuses_stored_verdicts() {
         let dir = std::env::temp_dir().join(format!("av-verdicts-{}", std::process::id()));
         let path = dir.join("turn-verdicts.json");
@@ -567,7 +660,7 @@ mod tests {
             let counter = Arc::clone(asked);
             TurnClassifier::new(
                 |session| Ok(session.summary.clone()),
-                move |_| {
+                move |_, _| {
                     counter.fetch_add(1, Ordering::SeqCst);
                     Ok(Verdict::NeedsInput)
                 },
@@ -593,7 +686,7 @@ mod tests {
     fn a_recorded_last_message_is_labelled_without_transcript_access() {
         let classifier = TurnClassifier::new(
             |_| bail!("no transcript access"),
-            |tail| {
+            |tail, _held| {
                 Ok(if tail.ends_with("Which branch?") {
                     Verdict::NeedsInput
                 } else {
