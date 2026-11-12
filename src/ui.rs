@@ -686,11 +686,14 @@ fn render_tree_session_row(
     children: ChildActivity,
     queued: Option<&str>,
 ) -> Line<'static> {
+    let soft_ask = session.state == SessionState::NeedsInput
+        && session.raw_state.as_deref() == Some(crate::turn_classifier::ASKED_IN_MESSAGE);
     let waiting = view_mode == ViewMode::Directory
-        && !matches!(
-            session.state,
-            SessionState::Working | SessionState::NeedsInput
-        )
+        && (soft_ask
+            || !matches!(
+                session.state,
+                SessionState::Working | SessionState::NeedsInput
+            ))
         && children != ChildActivity::default();
     let shown_state = if waiting {
         SessionState::Working
@@ -3384,6 +3387,38 @@ mod tests {
             0,
         );
         assert_eq!(completed.spans[0].content, " • ");
+    }
+
+    #[test]
+    fn a_parent_the_model_judged_to_ask_still_reads_waiting_while_children_run() {
+        let children = ChildActivity {
+            working: 3,
+            needs_input: 0,
+        };
+        let row_text = |raw_state: &str| {
+            let mut item = session("manager", SessionState::NeedsInput);
+            item.raw_state = Some(raw_state.into());
+            render_tree_session_row(
+                &item,
+                ViewMode::Directory,
+                120,
+                true,
+                false,
+                true,
+                None,
+                0,
+                children,
+                None,
+            )
+            .spans
+            .iter()
+            .map(|span| span.content.to_string())
+            .collect::<String>()
+        };
+        let soft = row_text(crate::turn_classifier::ASKED_IN_MESSAGE);
+        assert!(soft.contains("Waiting · 3 working"), "{soft}");
+        let hard = row_text("question asked");
+        assert!(hard.contains("Needs input"), "{hard}");
     }
 
     #[test]

@@ -29,6 +29,10 @@ const ENDPOINT: &str = "https://openrouter.ai/api/v1/chat/completions";
 const RECENT: Duration = Duration::from_secs(24 * 60 * 60);
 const MAX_IN_FLIGHT: usize = 4;
 const TAIL_CHARS: usize = 2_000;
+/// `raw_state` of a session the model, rather than the provider, judged to be
+/// asking. Unlike a permission or question prompt it is a soft call, so a
+/// manager whose sub-sessions are still running reads as waiting on them.
+pub const ASKED_IN_MESSAGE: &str = "asked in last message";
 
 const SYSTEM_PROMPT: &str =
     "You label a coding agent's latest turn. Reply with exactly one word.\n\
@@ -150,6 +154,11 @@ impl TurnClassifier {
             let turn = turn_hash(session, is_held);
             match cache.verdicts.get(&session.id) {
                 Some(labelled) if labelled.turn == turn => {
+                    if labelled.verdict == Verdict::NeedsInput
+                        && session.state == SessionState::Completed
+                    {
+                        session.raw_state = Some(ASKED_IN_MESSAGE.into());
+                    }
                     session.state = match (labelled.verdict, held(session)) {
                         (Verdict::NeedsInput, _) => SessionState::NeedsInput,
                         // Its background work still runs, so it stays Background.
