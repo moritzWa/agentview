@@ -161,6 +161,11 @@ impl TurnClassifier {
                         session.raw_state = Some(ASKED_IN_MESSAGE.into());
                     }
                     session.state = match (labelled.verdict, held(session)) {
+                        // A status the model calls input must not hide a live
+                        // shell. A real question still does.
+                        (Verdict::NeedsInput, true) if !message_asks(session) => {
+                            SessionState::Working
+                        }
                         (Verdict::NeedsInput, _) => SessionState::NeedsInput,
                         // Its background work still runs, so it stays Background.
                         (Verdict::Done, true) => SessionState::Working,
@@ -241,6 +246,18 @@ fn held(session: &AgentSession) -> bool {
             .raw_state
             .as_deref()
             .is_some_and(|raw| raw.starts_with("background: ") || raw == "background work")
+}
+
+/// Whether the last message asks the user something. A hold stays visible
+/// unless it does: the classifier sometimes labels a status ("I'm checking
+/// every few minutes") as waiting on the user, and that must not hide the shell.
+fn message_asks(session: &AgentSession) -> bool {
+    let text = crate::last_message::facts_for(&session.id)
+        .map(|facts| facts.tail)
+        .filter(|tail| !tail.trim().is_empty())
+        .or_else(|| crate::last_message::get(&session.id))
+        .unwrap_or_else(|| session.summary.clone());
+    text.contains('?')
 }
 
 /// Idle sessions whose provider cannot tell a finished turn from a question.
@@ -658,6 +675,34 @@ mod tests {
         classifier.apply(&mut shown);
         assert_eq!(shown.sessions[0].state, SessionState::Working);
         assert_eq!(*asked.lock().unwrap(), [false, true]);
+    }
+
+    #[test]
+    fn a_held_status_the_model_calls_input_stays_background() {
+        let classifier = TurnClassifier::new(
+            |session| Ok(session.summary.clone()),
+            |_, _| Ok(Verdict::NeedsInput),
+        );
+        let session = idle(
+            "poll",
+            SessionState::Working,
+            "background: shell: poll.sh",
+            "Two Ramp expenses were missing receipts…",
+        );
+        crate::last_message::remember_facts(
+            &session.id,
+            1,
+            "I'm checking Ramp every few minutes and will submit the receipts as soon as they appear.",
+        );
+        let mut shown = snapshot(vec![session]);
+        classifier.apply(&mut shown);
+        classifier.wait_for_idle();
+        classifier.apply(&mut shown);
+        assert_eq!(shown.sessions[0].state, SessionState::Working);
+        assert_eq!(
+            shown.sessions[0].raw_state.as_deref(),
+            Some("background: shell: poll.sh")
+        );
     }
 
     #[test]
