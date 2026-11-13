@@ -136,7 +136,7 @@ fn tightest(groups: &[Vec<(usize, usize)>]) -> Option<TextHit> {
             continue;
         }
         let distance = (span_end - span_start) as u32;
-        if best.as_ref().is_none_or(|hit| distance < hit.distance) {
+        if !best.as_ref().is_some_and(|hit| distance >= hit.distance) {
             best = Some(TextHit {
                 start: span_start,
                 end: span_end,
@@ -448,9 +448,9 @@ impl HistoryIndex {
             } else {
                 format!("opencode:host:{root}")
             };
-            let replace = best
+            let replace = !best
                 .get(&id)
-                .is_none_or(|previous: &SearchHit| hit.distance < previous.distance);
+                .is_some_and(|previous: &SearchHit| hit.distance >= previous.distance);
             if !replace {
                 continue;
             }
