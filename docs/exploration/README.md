@@ -54,3 +54,6 @@ Return to the [documentation index](../README.md), or use the
 [real-TTY validation guide](../tui-validation.md) to repeat the reference and
 agentview probes without treating this historical notebook as current
 release evidence.
+- [`voice-session-context-and-completion.md`](voice-session-context-and-completion.md)
+  — how Voice Mode picks the session you mean, how it learns a session is
+  done, options and a recommendation.
