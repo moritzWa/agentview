@@ -501,7 +501,9 @@ fn working_subagent_parents(db: &Connection, ids: &BTreeSet<String>) -> BTreeSet
 fn is_memory_housekeeping(db: &Connection, id: &str) -> bool {
     ["session_v2", "session"].into_iter().any(|table| {
         db.query_row(
-            &format!("SELECT COALESCE(title, '') LIKE 'opencode-memory %' FROM {table} WHERE id=?1"),
+            &format!(
+                "SELECT COALESCE(title, '') LIKE 'opencode-memory %' FROM {table} WHERE id=?1"
+            ),
             [id],
             |row| row.get::<_, bool>(0),
         )

@@ -2345,10 +2345,19 @@ fn handle_key(app: &mut App, key: KeyEvent) -> AppAction {
         return AppAction::ToggleVoice;
     }
     if key.modifiers.contains(KeyModifiers::SUPER)
-        && key.code == KeyCode::Char('p')
+        && key.code == KeyCode::Char('g')
         && matches!(app.overlay, Overlay::None | Overlay::Peek)
     {
         return app.toggle_pause();
+    }
+    if key.modifiers.contains(KeyModifiers::SUPER) && key.code == KeyCode::Char('p') {
+        match app.overlay {
+            Overlay::None | Overlay::Composer(ComposerMode::NewSession) => {
+                return AppAction::BrowseHidden
+            }
+            Overlay::HiddenPicker => return app.close_hidden_picker(),
+            _ => {}
+        }
     }
     if key.modifiers.contains(KeyModifiers::SUPER) && key.code == KeyCode::Char('o') {
         return match app.overlay {
@@ -3778,7 +3787,7 @@ mod tests {
     }
 
     #[test]
-    fn control_p_pauses_the_selected_session_and_super_p_does_the_same() {
+    fn control_p_pauses_the_selected_session_and_super_g_does_the_same() {
         let mut app = app();
         assert_eq!(
             handle_key(&mut app, control_key('p')),
@@ -3792,7 +3801,7 @@ mod tests {
         assert_eq!(
             handle_key(
                 &mut app,
-                modified_key(KeyCode::Char('p'), KeyModifiers::SUPER)
+                modified_key(KeyCode::Char('g'), KeyModifiers::SUPER)
             ),
             AppAction::SetPaused {
                 session_id: "worker".into(),
@@ -3816,6 +3825,14 @@ mod tests {
         assert_eq!(
             handle_key(&mut app, control_key('g')),
             AppAction::BrowseHidden
+        );
+        assert_eq!(
+            handle_key(
+                &mut app,
+                modified_key(KeyCode::Char('p'), KeyModifiers::SUPER)
+            ),
+            AppAction::BrowseHidden,
+            "cmd+p opens the picker like ctrl+g"
         );
         app.open_hidden_picker(vec![crate::hidden::HiddenSessionRecord {
             id: "cursor:host:abc".into(),

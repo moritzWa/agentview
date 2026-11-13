@@ -260,10 +260,7 @@ impl UsageWatcher {
         thread::Builder::new()
             .name("subscription-usage".into())
             .spawn(move || loop {
-                for usage in fetch_claude_accounts()
-                    .into_iter()
-                    .chain(fetch_codex())
-                {
+                for usage in fetch_claude_accounts().into_iter().chain(fetch_codex()) {
                     if tx.send(usage).is_err() {
                         return;
                     }
@@ -378,10 +375,7 @@ fn fetch_claude_accounts() -> Vec<Usage> {
             }
             let path = entry.path();
             let text = path.to_str()?;
-            Some(format!(
-                "Claude Code-credentials-{}",
-                sha256_prefix(text)?
-            ))
+            Some(format!("Claude Code-credentials-{}", sha256_prefix(text)?))
         })
         .collect::<Vec<_>>();
     extras.sort();
@@ -706,12 +700,7 @@ fn read_keychain_service(service: &str) -> Option<String> {
 fn save_keychain_service(service: &str, credentials: &str) -> Option<()> {
     #[cfg(target_os = "macos")]
     {
-        return update_keychain_password(
-            service,
-            &std::env::var("USER").ok()?,
-            credentials,
-            None,
-        );
+        return update_keychain_password(service, &std::env::var("USER").ok()?, credentials, None);
     }
     #[cfg(not(target_os = "macos"))]
     {
