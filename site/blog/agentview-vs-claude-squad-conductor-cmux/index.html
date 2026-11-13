@@ -207,11 +207,13 @@
 
 <h3>agentview</h3>
 <p>Pick it if you use more than one harness and want one list. It reads the sessions your harnesses already keep, so you do not change how you work. Rows are grouped by what needs you, and Enter opens the harness's own screen. Two features go beyond the list. <kbd>Ctrl+K</kbd> starts a <a href="https://github.com/moritzWa/agentview/blob/main/docs/voice.md">voice call</a> across your sessions, and it shows the <a href="https://github.com/moritzWa/agent-bouncer">agent-bouncer</a> queue above the input, so you can see which sessions are stuck behind a full machine.</p>
+<p>The header also shows rate-limit windows and reset times for Claude and Codex. If you keep a second Claude subscription in a <code>~/.claude-*</code> profile, it gets its own row next to the first. On macOS, agentview reads those logins from the Keychain.</p>
 <p>Where it is weaker:</p>
 <ul>
   <li>It does not create worktrees, review diffs or open pull requests. Pair it with one of the tools above for that.</li>
   <li>Voice works with OpenCode sessions only.</li>
   <li>Replying and approving from the list depends on the harness. For Claude Code rows, you still reply in Claude's own screen. The <a href="https://github.com/moritzWa/agentview#compare-feature-support-by-harness">README</a> has the full table.</li>
+  <li>Rows are not labelled by Claude account. Claude sessions come from the one config directory agentview runs under, so a second account shows up in the usage header only.</li>
   <li>It is terminal only.</li>
 </ul>
 

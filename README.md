@@ -92,8 +92,10 @@ own interface.
   history takes about 0.1 s, and Cursor about 3 ms.
 - **Light and dark themes** that follow the terminal and the OS. Force one with
   `--theme`.
-- **Subscription usage at a glance:** two concise header lines show Claude and
-  Codex rate-limit windows, resets, and pace when space allows. `/usage` shows the full breakdown.
+- **Subscription usage at a glance:** concise header lines show Claude and
+  Codex rate-limit windows, resets, and pace when space allows. A second Claude
+  subscription in a `~/.claude-*` profile gets its own line (macOS). `/usage`
+  shows the full breakdown.
 - **Heavy-job queue:** with [agent-bouncer](https://github.com/moritzWa/agent-bouncer)
   installed, a panel above the input lists the builds and test runs that are
   running or waiting, with how long each has been at it and when the queue
