@@ -8,6 +8,7 @@ use anyhow::{bail, Result};
 use serde_json::{json, Value};
 
 use super::digest::{self, Handles, Info, Known, Seen};
+use super::log::log;
 use crate::domain::SessionState;
 
 /// One exchange of a session, as the voice reads it: what the developer
@@ -77,10 +78,20 @@ struct Watch {
     registered: u64,
     /// The session was just given work and may not show as busy yet.
     expects_busy: bool,
+    /// How the session's last reply ended when the watch began: a different
+    /// ending means it answered, even if the watch never saw it busy.
+    tail: String,
+    /// Registered by the voice itself after it gave the session work, not on
+    /// the model's request. Such a watch is dropped after `AUTO_WATCH_MS`.
+    auto: bool,
 }
 
 /// How many sessions list_sessions names as the last ones messaged.
 const LAST_DISCUSSED: usize = 3;
+/// How long a watch the voice set up by itself keeps the call open.
+const AUTO_WATCH_MS: u64 = 15 * 60_000;
+/// Sessions kept in the short history of what was on screen.
+const VIEWED_KEPT: usize = 5;
 /// How long after a message the session may still show as idle.
 const SETTLE_MS: u64 = 60_000;
 /// How long a watch waits to see work start before it calls it already done.
@@ -97,6 +108,9 @@ pub struct Tools {
     focus: Mutex<Option<String>>,
     /// The session on the developer's screen: selected in the dashboard, or open.
     viewing: Mutex<Option<String>>,
+    /// The sessions that were on screen during the call, newest last, and when
+    /// each came on screen: "the one I was just looking at".
+    viewed: Mutex<Vec<(String, u64)>>,
     /// When recent `read_session` calls ran, to stop one request reading everything.
     reads: Mutex<Vec<u64>>,
     /// When each session was last given work by a tool.
@@ -181,6 +195,7 @@ impl Tools {
             watches: Mutex::default(),
             focus: Mutex::default(),
             viewing: Mutex::default(),
+            viewed: Mutex::default(),
             reads: Mutex::default(),
             touched: Mutex::default(),
             roots: Vec::new(),
@@ -216,7 +231,84 @@ impl Tools {
             ),
             other => Err(anyhow::anyhow!("there is no tool called {other}")),
         };
-        result.unwrap_or_else(|error| json!({"error": format!("{error:#}")}))
+        let mut value = result.unwrap_or_else(|error| json!({"error": format!("{error:#}")}));
+        if matches!(
+            name,
+            "read_session"
+                | "send_message"
+                | "interrupt_session"
+                | "edit_last_message"
+                | "start_session"
+                | "send_draft"
+                | "watch_session"
+        ) {
+            if let (Some(context), Some(object)) = (self.context(), value.as_object_mut()) {
+                object.insert("context".into(), context);
+            }
+        }
+        value
+    }
+
+    /// Where the call stands, restated with every result that acts on a
+    /// session: the model should not have to remember it from the start of
+    /// the call. It names what is on screen, which session this result is
+    /// about when that is another one, what is being watched, and what was on
+    /// screen shortly before.
+    fn context(&self) -> Option<Value> {
+        let infos = self.host.infos();
+        let title = |id: &str| {
+            infos
+                .iter()
+                .find(|info| info.id == id)
+                .map(|info| info.title.clone())
+        };
+        let viewing = self.viewing.lock().unwrap().clone();
+        let focus = self.focus.lock().unwrap().clone();
+        let mut context = json!({});
+        let on_screen = viewing.as_deref().and_then(title);
+        if let Some(on_screen) = &on_screen {
+            context["on_screen"] = json!(on_screen);
+        }
+        if let (Some(acted), true) = (focus.as_deref().and_then(title), focus != viewing) {
+            context["this_result_is_about"] = json!(acted);
+            if let Some(on_screen) = &on_screen {
+                context["warning"] = json!(format!(
+                    "The developer is looking at \"{on_screen}\", but this is about \"{acted}\". If they named it, carry on. If they said \"the session\", \"it\" or \"that one\", check they meant this one, or ask which."
+                ));
+            }
+        }
+        let mut watched: Vec<String> = Vec::new();
+        for watch in self.watches.lock().unwrap().iter() {
+            if let Some(name) = title(&watch.id) {
+                if !watched.contains(&name) {
+                    watched.push(name);
+                }
+            }
+        }
+        if !watched.is_empty() {
+            context["watching"] = json!(watched);
+        }
+        let now = (self.clock)();
+        let before: Vec<Value> = self
+            .viewed
+            .lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .filter(|(id, _)| viewing.as_deref() != Some(id.as_str()))
+            .filter_map(|(id, at)| {
+                title(id)
+                    .map(|name| json!({"title": name, "came_on_screen": digest::ago(now, *at)}))
+            })
+            .take(2)
+            .collect();
+        if !before.is_empty() {
+            context["earlier_on_screen"] = json!(before);
+        }
+        context
+            .as_object()
+            .is_some_and(|object| !object.is_empty())
+            .then_some(context)
     }
 
     fn touch(&self, id: &str) {
@@ -407,6 +499,9 @@ impl Tools {
         if let Some(info) = info {
             out["title"] = json!(info.title);
             out["state"] = json!(info.state_word());
+            if !info.can_message {
+                out["cannot_message"] = json!(true);
+            }
             let awaiting_new_reply = self
                 .touched
                 .lock()
@@ -480,6 +575,7 @@ impl Tools {
         self.host.send_draft(&session, &text)?;
         *self.draft.lock().unwrap() = None;
         self.touch(&session);
+        self.watch_for(&session, Until::Done, true);
         Ok(json!({"ok": true, "note": "sent to the session and the input box is empty again"}))
     }
 
@@ -494,6 +590,7 @@ impl Tools {
         let id = self.resolve(args)?;
         self.host.send(&id, &Self::text(args, "text")?)?;
         self.touch(&id);
+        self.watch_for(&id, Until::Done, true);
         Ok(json!({"ok": true, "note": "sent; a busy session queues it"}))
     }
 
@@ -507,6 +604,7 @@ impl Tools {
         let id = self.resolve(args)?;
         self.host.edit_last(&id, &Self::text(args, "text")?)?;
         self.touch(&id);
+        self.watch_for(&id, Until::Done, true);
         Ok(
             json!({"ok": true, "note": "stopped it if it was running, rewound to before the last message and sent the corrected one"}),
         )
@@ -519,6 +617,7 @@ impl Tools {
         let id = self.host.start(&cwd, &task)?;
         let handle = self.handles.lock().unwrap().handle(&id);
         self.touch(&id);
+        self.watch_for(&id, Until::Done, true);
         *self.focus.lock().unwrap() = Some(id);
         Ok(json!({
             "ok": true,
@@ -534,6 +633,13 @@ impl Tools {
             Some("needs_you") => Until::NeedsYou,
             _ => Until::Done,
         };
+        Ok(self.watch_for(&id, until, false))
+    }
+
+    /// Starts watching a session. `auto` is the voice doing it by itself after
+    /// it gave the session work, so a finished answer is never missed because
+    /// the model forgot to ask.
+    fn watch_for(&self, id: &str, until: Until, auto: bool) -> Value {
         let infos = self.host.infos();
         let info = infos.iter().find(|info| info.id == id);
         let now = (self.clock)();
@@ -541,31 +647,39 @@ impl Tools {
             .touched
             .lock()
             .unwrap()
-            .get(&id)
+            .get(id)
             .is_some_and(|at| now.saturating_sub(*at) < SETTLE_MS);
         match (info, until) {
             (Some(info), Until::Done) if !info.busy() && !just_given_work => {
-                return Ok(
-                    json!({"already": true, "note": format!("it is already {}", info.state_word())}),
-                );
+                return json!({"already": true, "note": format!("it is already {}", info.state_word())});
             }
             (Some(info), Until::NeedsYou) if info.needs_you() => {
-                return Ok(json!({"already": true, "note": "it already needs the developer"}));
+                return json!({"already": true, "note": "it already needs the developer"});
             }
             _ => {}
         }
         let mut watches = self.watches.lock().unwrap();
+        // A watch the model asks for replaces the one made for it.
         watches.retain(|watch| !(watch.id == id && watch.until == until));
         watches.push(Watch {
-            id,
+            id: id.to_owned(),
             until,
             was_busy: info.is_some_and(Info::busy),
             registered: now,
             expects_busy: just_given_work,
+            tail: info.map(|info| info.tail.clone()).unwrap_or_default(),
+            auto,
         });
-        Ok(
-            json!({"ok": true, "watching": true, "note": "watch registered, not completed. Wait for the completion notification before reading and relaying the answer"}),
-        )
+        log(
+            "watch",
+            json!({
+                "event": "registered",
+                "title": info.map(|info| info.title.as_str()),
+                "until": if until == Until::Done { "done" } else { "needs_you" },
+                "auto": auto,
+            }),
+        );
+        json!({"ok": true, "watching": true, "note": "watch registered, not completed. Wait for the completion notification before reading and relaying the answer"})
     }
 
     /// Turns a spoken folder into a directory.
@@ -668,8 +782,28 @@ impl Tools {
         let infos = self.host.infos();
         let mut polled = Polled::default();
         let now = (self.clock)();
+        // The sessions this call is about: what the model last heard of them
+        // decides whether a change since is news.
+        let mut in_call: HashSet<String> = self.touched.lock().unwrap().keys().cloned().collect();
+        in_call.extend(self.viewing.lock().unwrap().clone());
+        let before: std::collections::HashMap<String, SessionState> = {
+            let known = self.known.lock().unwrap();
+            infos
+                .iter()
+                .filter_map(|info| {
+                    known
+                        .state_of(&info.id)
+                        .map(|state| (info.id.clone(), state))
+                })
+                .collect()
+        };
         let mut watches = self.watches.lock().unwrap();
+        in_call.extend(watches.iter().map(|watch| watch.id.clone()));
         watches.retain_mut(|watch| {
+            if watch.auto && now.saturating_sub(watch.registered) >= AUTO_WATCH_MS {
+                log("watch", json!({"event": "expired", "id": watch.id}));
+                return false;
+            }
             let Some(info) = infos.iter().find(|info| info.id == watch.id) else {
                 return true;
             };
@@ -682,7 +816,13 @@ impl Tools {
                         && !watch.was_busy
                         && !busy
                         && now.saturating_sub(watch.registered) >= NEVER_BUSY_MS;
-                    (watch.was_busy && !busy) || never_seen_busy
+                    // Or it answered in between: its last reply now ends differently.
+                    let answered_between_looks = watch.expects_busy
+                        && !watch.was_busy
+                        && !busy
+                        && !info.tail.is_empty()
+                        && info.tail != watch.tail;
+                    (watch.was_busy && !busy) || never_seen_busy || answered_between_looks
                 }
                 Until::NeedsYou => info.needs_you(),
             };
@@ -704,8 +844,6 @@ impl Tools {
             }
             !fired
         });
-        let spoken_ids: HashSet<&str> = watches.iter().map(|w| w.id.as_str()).collect();
-        let _ = spoken_ids;
         let recent: Vec<Info> = digest::recent(&infos, (self.clock)())
             .0
             .into_iter()
@@ -716,6 +854,26 @@ impl Tools {
                 continue;
             }
             polled.quiet.push(change.text);
+        }
+        // A session starting work is not news in general, but it is for one
+        // this call is about: the model's last word on it said it was idle.
+        for info in &recent {
+            if info.state == SessionState::Working
+                && in_call.contains(&info.id)
+                && before
+                    .get(&info.id)
+                    .is_some_and(|state| *state != SessionState::Working)
+            {
+                polled
+                    .quiet
+                    .push(format!("\"{}\" started working.", info.title));
+            }
+        }
+        if !polled.spoken.is_empty() || !polled.quiet.is_empty() {
+            log(
+                "poll",
+                json!({"spoken": polled.spoken, "quiet": polled.quiet}),
+            );
         }
         polled
     }
@@ -792,6 +950,11 @@ impl Tools {
         }
         if let Some(id) = &id {
             *self.focus.lock().unwrap() = Some(id.clone());
+            let mut viewed = self.viewed.lock().unwrap();
+            viewed.retain(|(seen, _)| seen != id);
+            viewed.push((id.clone(), (self.clock)()));
+            let excess = viewed.len().saturating_sub(VIEWED_KEPT);
+            viewed.drain(..excess);
         }
         let infos = self.host.infos();
         match id {
@@ -1615,5 +1778,167 @@ mod tests {
             .unwrap()
             .iter()
             .any(|l| l.starts_with("start")));
+    }
+
+    #[test]
+    fn a_result_about_another_session_than_the_one_on_screen_carries_a_warning() {
+        let (_, tools) = tools(two());
+        tools.set_viewing(Some("opencode:host:a".into()));
+        tools.run("list_sessions", &json!({}));
+        let on_screen = tools.run("read_session", &json!({"id": "this"}));
+        assert_eq!(on_screen["context"]["on_screen"], "semantic search");
+        assert!(on_screen["context"].get("warning").is_none());
+        assert!(on_screen["context"].get("this_result_is_about").is_none());
+        let other = tools.run("read_session", &json!({"id": "s2"}));
+        assert_eq!(other["context"]["on_screen"], "semantic search");
+        assert_eq!(other["context"]["this_result_is_about"], "voice mode");
+        let warning = other["context"]["warning"].as_str().unwrap();
+        assert!(warning.contains("semantic search") && warning.contains("voice mode"));
+    }
+
+    #[test]
+    fn the_context_names_what_was_on_screen_before_and_what_is_watched() {
+        let (_, tools, clock) = timed(two());
+        tools.set_viewing(Some("opencode:host:a".into()));
+        clock.fetch_add(90_000, std::sync::atomic::Ordering::SeqCst);
+        tools.set_viewing(Some("opencode:host:b".into()));
+        clock.fetch_add(30_000, std::sync::atomic::Ordering::SeqCst);
+        tools.run("list_sessions", &json!({}));
+        let sent = tools.run("send_message", &json!({"id": "this", "text": "go"}));
+        let context = &sent["context"];
+        assert_eq!(context["on_screen"], "voice mode");
+        let earlier = context["earlier_on_screen"].as_array().unwrap();
+        assert_eq!(earlier.len(), 1);
+        assert_eq!(earlier[0]["title"], "semantic search");
+        assert_eq!(earlier[0]["came_on_screen"], "2 min ago");
+        assert_eq!(context["watching"], json!(["voice mode"]));
+    }
+
+    #[test]
+    fn nothing_but_session_tools_carry_a_context() {
+        let (_, tools) = tools(two());
+        tools.set_viewing(Some("opencode:host:a".into()));
+        assert!(tools
+            .run("list_sessions", &json!({}))
+            .get("context")
+            .is_none());
+        assert!(tools
+            .run("search_history", &json!({"query": "x"}))
+            .get("context")
+            .is_none());
+    }
+
+    #[test]
+    fn a_session_that_cannot_be_messaged_says_so_when_read() {
+        let mut infos = two();
+        infos[0].can_message = false;
+        let (_, tools) = tools(infos);
+        tools.run("list_sessions", &json!({}));
+        assert_eq!(
+            tools.run("read_session", &json!({"id": "s1"}))["cannot_message"],
+            true
+        );
+        assert!(tools
+            .run("read_session", &json!({"id": "s2"}))
+            .get("cannot_message")
+            .is_none());
+    }
+
+    #[test]
+    fn a_session_the_voice_messages_is_watched_without_being_asked() {
+        let (host, tools) = tools(two());
+        tools.run("list_sessions", &json!({}));
+        assert!(!tools.watching());
+        tools.run("send_message", &json!({"id": "s1", "text": "go"}));
+        assert!(tools.watching());
+        // It starts work, then ends.
+        host.infos.lock().unwrap()[0].state = SessionState::Working;
+        assert!(tools.poll().spoken.is_empty());
+        {
+            let mut infos = host.infos.lock().unwrap();
+            infos[0].state = SessionState::Completed;
+            infos[0].tail = "All set.".into();
+        }
+        let polled = tools.poll();
+        assert_eq!(polled.spoken.len(), 1);
+        assert!(
+            polled.spoken[0].contains("semantic search finished")
+                || polled.spoken[0].contains("\"semantic search\" finished")
+        );
+        assert!(!tools.watching());
+    }
+
+    #[test]
+    fn a_session_the_voice_starts_or_edits_is_watched_too() {
+        let (_, tools) = tools(two());
+        tools.run("list_sessions", &json!({}));
+        tools.run("edit_last_message", &json!({"id": "s2", "text": "fix"}));
+        assert!(tools.watching());
+        let (_, started) = tools_after_start();
+        assert!(started.watching());
+    }
+
+    fn tools_after_start() -> (Arc<FakeHost>, Tools) {
+        let (host, tools) = tools(two());
+        tools.run("start_session", &json!({"folder": "arca", "task": "look"}));
+        (host, tools)
+    }
+
+    #[test]
+    fn work_that_finished_between_two_looks_is_still_announced() {
+        let (host, tools, clock) = timed(two());
+        host.infos.lock().unwrap()[0].state = SessionState::Completed;
+        host.infos.lock().unwrap()[0].tail = "Old answer.".into();
+        tools.run("list_sessions", &json!({}));
+        tools.run("send_message", &json!({"id": "s1", "text": "again"}));
+        // Never shown as working, but its reply ends differently now.
+        clock.fetch_add(5_000, std::sync::atomic::Ordering::SeqCst);
+        assert!(tools.poll().spoken.is_empty());
+        host.infos.lock().unwrap()[0].tail = "New answer.".into();
+        let polled = tools.poll();
+        assert_eq!(polled.spoken.len(), 1);
+        assert!(polled.spoken[0].contains("New answer."));
+    }
+
+    #[test]
+    fn a_watch_the_voice_made_by_itself_does_not_keep_the_call_open_forever() {
+        let (host, tools, clock) = timed(two());
+        host.infos.lock().unwrap()[1].state = SessionState::Working;
+        tools.run("list_sessions", &json!({}));
+        tools.run("send_message", &json!({"id": "s2", "text": "go"}));
+        assert!(tools.watching());
+        clock.fetch_add(AUTO_WATCH_MS + 1_000, std::sync::atomic::Ordering::SeqCst);
+        assert!(tools.poll().spoken.is_empty());
+        assert!(!tools.watching());
+        // One the model asked for stays.
+        tools.run("watch_session", &json!({"id": "s2"}));
+        clock.fetch_add(AUTO_WATCH_MS + 1_000, std::sync::atomic::Ordering::SeqCst);
+        tools.poll();
+        assert!(tools.watching());
+    }
+
+    #[test]
+    fn a_session_the_call_is_about_that_starts_working_is_noted_quietly() {
+        let (host, tools) = tools(two());
+        tools.set_viewing(Some("opencode:host:a".into()));
+        tools.prime();
+        assert!(tools.poll().quiet.is_empty());
+        host.infos.lock().unwrap()[0].state = SessionState::Working;
+        let polled = tools.poll();
+        assert!(polled.spoken.is_empty());
+        assert_eq!(polled.quiet, ["\"semantic search\" started working."]);
+        // Said once.
+        assert!(tools.poll().quiet.is_empty());
+    }
+
+    #[test]
+    fn a_session_the_call_is_not_about_starting_work_stays_unmentioned() {
+        let mut infos = two();
+        infos[1].state = SessionState::Completed;
+        let (host, tools) = tools(infos);
+        tools.set_viewing(Some("opencode:host:a".into()));
+        tools.prime();
+        host.infos.lock().unwrap()[1].state = SessionState::Working;
+        assert!(tools.poll().quiet.is_empty());
     }
 }

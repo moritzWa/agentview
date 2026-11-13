@@ -20,6 +20,21 @@ same folder" uses its folder. A call keeps working while you are inside a
 session: it asks for fresh session data itself, because the dashboard is not
 refreshing then.
 
+Every result that acts on a session (read, send, start, watch, edit, stop)
+restates where the call stands: what is on screen, which sessions are watched,
+what was on screen a moment ago, and a warning when the result is about another
+session than the one on screen. The voice starts an answer with the session's
+title when it switches sessions, and asks "the data leads one or the website
+one?" when "the session" could mean two.
+
+Sessions the voice starts or sends words to are watched automatically, so
+"it finished" is said even if nobody asked to be told. That watch is dropped
+after 15 minutes so it cannot keep a call open. A session that answered between
+two looks still counts as finished. Watch registrations, firings and the notes
+sent to the voice are written to `last-call.log` (kinds `watch` and `poll`).
+While something is watched, session data is refreshed every 4 seconds instead
+of 8.
+
 ## What you can say
 
 - "Which sessions need me?" The voice already knows the state of the sessions

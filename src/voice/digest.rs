@@ -235,6 +235,11 @@ pub struct Known {
 }
 
 impl Known {
+    /// The state the model last heard of a session.
+    pub fn state_of(&self, id: &str) -> Option<SessionState> {
+        self.seen.get(id).map(|(state, _)| *state)
+    }
+
     /// The model has been told how this session looks now: no change to report.
     pub fn record(&mut self, info: &Info) {
         self.seen

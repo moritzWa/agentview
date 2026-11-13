@@ -851,7 +851,8 @@ impl Inner {
                 if now.duration_since(active.last_poll) >= POLL_EVERY {
                     active.last_poll = now;
                     active.polls += 1;
-                    let refresh = active.polls % 4 == 0;
+                    // Watching a session: look at the sessions more often.
+                    let refresh = active.polls % if tools.watching() { 2 } else { 4 } == 0;
                     drop(state);
                     // The host and the tools can take a moment: not under the lock.
                     if refresh {

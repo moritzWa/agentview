@@ -201,7 +201,7 @@
   {
     "type": "function",
     "name": "watch_session",
-    "description": "Tell the developer when a session finishes or needs them.",
+    "description": "Tell the developer when a session finishes or needs them. Sessions you start or send to are already watched.",
     "parameters": {
       "type": "object",
       "properties": {
