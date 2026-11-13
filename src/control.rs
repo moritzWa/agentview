@@ -511,6 +511,13 @@ impl ControlHub {
         self.fixture_demo = Some(Arc::new(demo));
     }
 
+    pub fn fixture_voice(&self) -> Vec<crate::adapters::FixtureVoiceLine> {
+        self.fixture_demo
+            .as_ref()
+            .map(|demo| demo.voice.clone())
+            .unwrap_or_default()
+    }
+
     pub fn fixture_usage(&self) -> Option<Vec<crate::usage::Usage>> {
         self.fixture_demo.as_ref().map(|demo| demo.usage())
     }

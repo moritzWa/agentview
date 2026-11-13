@@ -58,7 +58,7 @@ pub use cursor_history::{
 #[cfg(target_os = "linux")]
 pub use cursor_managed::{default_cursor_state_dir, CursorSource, CursorSupervisor};
 pub use docker::DockerTarget;
-pub use fixture::{FixtureDemo, FixtureSource};
+pub use fixture::{FixtureDemo, FixtureSource, FixtureVoiceLine};
 pub use kimi::{
     default_kimi_data_root, default_kimi_ownership_path, KimiController, KimiInvocation,
     KimiOwnership, KimiSource,

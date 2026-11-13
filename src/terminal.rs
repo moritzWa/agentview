@@ -393,6 +393,8 @@ pub fn run_dashboard(
         install_voice_hook(voice);
     }
     let mut voice_notice: Option<String> = None;
+    let demo_voice = control.fixture_voice();
+    let mut demo_call_started: Option<Instant> = None;
     let mut usage_minute = 0;
     let mut last_queue_second = 0;
     let mut terminal = TerminalSession::enter()?;
@@ -949,6 +951,12 @@ pub fn run_dashboard(
                 app.voice = status;
                 needs_draw = true;
             }
+        } else if !demo_voice.is_empty() {
+            let status = demo_call_status(&demo_voice, demo_call_started);
+            if status != app.voice {
+                app.voice = status;
+                needs_draw = true;
+            }
         }
         if needs_draw {
             watchdog::set_phase(watchdog::Phase::Draw);
@@ -1098,6 +1106,12 @@ pub fn run_dashboard(
                                 }
                                 match &voice {
                                     Some(voice) => toggle_voice(&mut app, voice),
+                                    None if !demo_voice.is_empty() => {
+                                        demo_call_started = match demo_call_started {
+                                            Some(_) => None,
+                                            None => Some(Instant::now()),
+                                        };
+                                    }
                                     None => app
                                         .set_notice("voice mode needs a live provider connection"),
                                 }
@@ -1531,6 +1545,44 @@ pub fn run_dashboard(
     drop(refresh_tx);
     crate::native_session::shutdown_all();
     result
+}
+
+/// The footer of a fixture's scripted call: connecting for a moment, then live
+/// with the lines whose time has come.
+fn demo_call_status(
+    script: &[crate::adapters::FixtureVoiceLine],
+    started: Option<Instant>,
+) -> crate::voice::PanelStatus {
+    use crate::voice::{Line, PanelStatus, Phase, Who};
+    const CONNECT_MS: u64 = 800;
+    let Some(started) = started else {
+        return PanelStatus::idle();
+    };
+    let elapsed = started.elapsed().as_millis() as u64;
+    if elapsed < CONNECT_MS {
+        return PanelStatus {
+            phase: Phase::Connecting,
+            ..PanelStatus::idle()
+        };
+    }
+    let lines = script
+        .iter()
+        .filter(|line| line.at_ms + CONNECT_MS <= elapsed)
+        .map(|line| Line {
+            who: if line.who == "you" {
+                Who::You
+            } else {
+                Who::Agent
+            },
+            text: line.text.clone(),
+        })
+        .collect();
+    PanelStatus {
+        phase: Phase::Live,
+        seconds: (elapsed - CONNECT_MS) / 1000,
+        lines,
+        ..PanelStatus::idle()
+    }
 }
 
 /// Lets a provider's own view start and end a call with the voice key, and say
@@ -3480,6 +3532,39 @@ impl Drop for TerminalSession {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn scripted_demo_call_connects_then_reveals_lines_by_time() {
+        use crate::adapters::FixtureVoiceLine;
+        use crate::voice::{Phase, Who};
+        use std::time::{Duration, Instant};
+        let script = vec![
+            FixtureVoiceLine {
+                at_ms: 0,
+                who: "you".into(),
+                text: "hello".into(),
+            },
+            FixtureVoiceLine {
+                at_ms: 5000,
+                who: "agent".into(),
+                text: "hi".into(),
+            },
+        ];
+        assert_eq!(super::demo_call_status(&script, None).phase, Phase::Idle);
+        let now = Instant::now();
+        assert_eq!(
+            super::demo_call_status(&script, Some(now)).phase,
+            Phase::Connecting
+        );
+        let live = super::demo_call_status(&script, Some(now - Duration::from_millis(2000)));
+        assert_eq!(live.phase, Phase::Live);
+        assert_eq!(live.lines.len(), 1);
+        assert_eq!(live.lines[0].who, Who::You);
+        let later = super::demo_call_status(&script, Some(now - Duration::from_millis(7000)));
+        assert_eq!(later.lines.len(), 2);
+        assert_eq!(later.lines[1].who, Who::Agent);
+        assert_eq!(later.seconds, 6);
+    }
+
     #[test]
     fn parked_voice_has_no_opencode_badge_but_live_voice_keeps_speed_controls() {
         let mut status = crate::voice::PanelStatus::idle();

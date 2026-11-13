@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ways to run many coding agents at once, compared (November 2026)</title>
+<meta name="description" content="agentview, Claude Code's agent view, claude-squad, Conductor, cmux, Paradev, OpenCode, Cursor, Codex and tmux with git worktrees, checked against each tool's own docs on 13 November 2026.">
+<link rel="canonical" href="https://agent-view.app/blog/agentview-vs-claude-squad-conductor-cmux/">
+<meta property="og:title" content="Ways to run many coding agents at once, compared">
+<meta property="og:description" content="Ten ways to manage many coding agents, checked against each tool's own docs, with a table and where each one is the better pick.">
+<meta property="og:type" content="article">
+<meta property="og:url" content="https://agent-view.app/blog/agentview-vs-claude-squad-conductor-cmux/">
+<meta property="og:image" content="https://agent-view.app/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="article:published_time" content="2026-11-13">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://agent-view.app/og.png">
+<link rel="icon" href="/favicon.svg">
+<link rel="stylesheet" href="/blog/style.css">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"BlogPosting","headline":"Ways to run many coding agents at once, compared","datePublished":"2026-11-13","author":{"@type":"Person","name":"Moritz Wallawitsch"},"mainEntityOfPage":"https://agent-view.app/blog/agentview-vs-claude-squad-conductor-cmux/"}</script>
+</head>
+<body>
+<div class="page wide">
+
+<header>
+  <a class="brand" href="/"><img src="/favicon.svg" alt="">agentview</a>
+  <nav>
+    <a href="/blog/">Blog</a>
+    <a href="https://github.com/moritzWa/agentview/blob/main/docs/cli.md">Docs</a>
+    <a href="https://github.com/moritzWa/agentview">GitHub</a>
+  </nav>
+</header>
+
+<article>
+<div style="max-width: 760px;">
+<div class="label">Comparison</div>
+<h1>Ways to run many coding agents at once, compared</h1>
+<div class="meta"><time datetime="2026-11-13">13 November 2026</time></div>
+
+<p class="lede">Ten tools for running more than two coding agents, what each one is built for, and when to pick it over the others.</p>
+
+<p>I build agentview, so read this with that in mind. I checked every claim below against the tool's own repo, docs or pricing page on 13 November 2026. Where I could not confirm something, the table says so.</p>
+
+<h2>What you need at ten agents</h2>
+
+<p>Three problems show up once you run more than two agents.</p>
+<ol>
+  <li>You do not know which agent is waiting for you.</li>
+  <li>Agents edit the same files and step on each other.</li>
+  <li>Several agents start a build at once and the machine grinds to a halt.</li>
+</ol>
+<p>Each tool below solves a different slice. Some give every task its own git worktree. Some only show you a list. Some are whole apps with their own agent inside. Almost none address the third problem.</p>
+</div>
+
+<h2>The table</h2>
+
+<div class="table-wrap">
+<table>
+  <thead>
+    <tr>
+      <th>Tool</th><th>What it manages</th><th>Agents it runs</th><th>Interface</th><th>Open source</th><th>Platforms</th><th>Price</th><th>Voice</th><th>Resource control</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr class="us">
+      <td>agentview</td>
+      <td>Sessions you already have, in one list. It does not create worktrees.</td>
+      <td>18 harnesses plus shell jobs, including Claude Code, Codex, OpenCode, Cursor and Pi</td>
+      <td>Terminal</td>
+      <td>Yes, MIT</td>
+      <td>macOS, Linux, Windows x64 (some features need WSL 2)</td>
+      <td>Free</td>
+      <td>Voice call on OpenAI GPT-Live or Grok, for OpenCode sessions. About 5 cents a minute on OpenAI.</td>
+      <td>Shows the agent-bouncer queue. Does not run it.</td>
+    </tr>
+    <tr>
+      <td><a href="https://code.claude.com/docs/en/agent-view">Claude Code agent view</a></td>
+      <td>Background Claude Code sessions. Each dispatched session moves into its own git worktree.</td>
+      <td>Claude only</td>
+      <td>Terminal (<code>claude agents</code>), desktop app</td>
+      <td>No</td>
+      <td>macOS, Linux, Windows</td>
+      <td>Included in paid Claude plans, from $17 a month</td>
+      <td>Dictation only</td>
+      <td>No cap on sessions. When memory is low it stops idle ones.</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/smtg-ai/claude-squad">claude-squad</a></td>
+      <td>One tmux session and git worktree per task</td>
+      <td>Claude Code, Codex, Gemini, Aider, OpenCode, Amp and other local CLIs</td>
+      <td>Terminal (needs tmux and gh)</td>
+      <td>Yes, AGPL-3.0</td>
+      <td>macOS, Linux, Windows builds</td>
+      <td>Free</td>
+      <td>None documented</td>
+      <td>None documented</td>
+    </tr>
+    <tr>
+      <td><a href="https://www.conductor.build/docs">Conductor</a></td>
+      <td>One git worktree workspace per task, with diff, review and pull requests</td>
+      <td>Claude Code, Codex, Cursor, OpenCode</td>
+      <td>Desktop app</td>
+      <td>No</td>
+      <td>macOS only</td>
+      <td>Its pricing page now redirects. Current price not confirmed.</td>
+      <td>Experimental dictation</td>
+      <td>None found</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/manaflow-ai/cmux">cmux</a></td>
+      <td>A terminal with vertical tabs, agent notifications and a browser pane. No worktree management found.</td>
+      <td>Any CLI agent</td>
+      <td>Desktop terminal app (built on Ghostty)</td>
+      <td>Yes, GPL-3.0-or-later</td>
+      <td>macOS 14 or later</td>
+      <td>Free. Pro is $50 a month for cloud VMs.</td>
+      <td>Dictation in the iOS beta only</td>
+      <td>Monitoring only (<code>cmux top</code>)</td>
+    </tr>
+    <tr>
+      <td><a href="https://github.com/ParadevAI/Paradev">Paradev</a> (formerly Superset)</td>
+      <td>One worktree per task, with diff review, pull requests and a browser preview</td>
+      <td>Claude Code, Codex, OpenCode, Cursor Agent, Copilot, Gemini and others, plus custom CLIs</td>
+      <td>Desktop app, CLI, iOS</td>
+      <td>Yes, MIT</td>
+      <td>macOS. Linux is experimental. No Windows yet.</td>
+      <td>Free. Pro is $20 a month.</td>
+      <td>Dictation on mobile</td>
+      <td>Monitoring only (CPU and RAM per workspace)</td>
+    </tr>
+    <tr>
+      <td><a href="https://opencode.ai/docs/cli/tui/">OpenCode TUI and web</a></td>
+      <td>OpenCode sessions on one shared server, with tabs, unread jumps and subagent trees</td>
+      <td>OpenCode only</td>
+      <td>Terminal, web, phone through a pairing link</td>
+      <td>Yes, MIT</td>
+      <td>Not checked</td>
+      <td>Free. You pay your model providers.</td>
+      <td>None found</td>
+      <td>None documented</td>
+    </tr>
+    <tr>
+      <td><a href="https://cursor.com/docs/agent/agents-window">Cursor</a></td>
+      <td>Cloud agents in their own VMs, and an Agents Window with parallel agents and worktrees</td>
+      <td>Cursor's own agent, with models from several vendors</td>
+      <td>Desktop, web, iOS, CLI</td>
+      <td>Not stated in the docs</td>
+      <td>macOS, Windows, Linux</td>
+      <td>Paid plans from $8 to $200 a month. Cloud agents are not on Free or Plus.</td>
+      <td>Voice chat on Grok Voice</td>
+      <td>Cloud VMs. Local worktrees default to a cap of 25.</td>
+    </tr>
+    <tr>
+      <td><a href="https://developers.openai.com/codex/app">Codex app</a></td>
+      <td>Parallel tasks in worktrees, cloud tasks and subagents</td>
+      <td>Codex only</td>
+      <td>Desktop app, CLI, web, mobile</td>
+      <td>The CLI is Apache-2.0</td>
+      <td>macOS, Windows, Linux</td>
+      <td>Limited on Free and Go. Plus is $20 a month.</td>
+      <td>ChatGPT Voice starts, checks and steers tasks</td>
+      <td>A cap on spawned-agent threads per session</td>
+    </tr>
+    <tr>
+      <td>tmux and <code>git worktree</code></td>
+      <td>Whatever you script</td>
+      <td>Any CLI agent</td>
+      <td>Terminal</td>
+      <td>Yes</td>
+      <td>macOS, Linux</td>
+      <td>Free</td>
+      <td>None</td>
+      <td>None</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<div style="max-width: 760px;">
+
+<h2>Where each one is the better pick</h2>
+
+<h3>Claude Code's agent view</h3>
+<p>If Claude Code is the only agent you use, start here. It is built in, so there is nothing to install. Each session you dispatch from <code>claude agents</code> moves into its own git worktree before it edits files, and you can peek, reply and attach from one screen. Anthropic still calls it a research preview. The docs say it runs Claude sessions only, and that ten agents in parallel use your quota about ten times as fast as one. See the <a href="https://code.claude.com/docs/en/agent-view">agent view docs</a>.</p>
+
+<h3>claude-squad</h3>
+<p>Pick it if you want a terminal tool that gives each task its own worktree and works with several CLI agents. It is open source and free. It needs tmux and gh, and the last release (v1.0.20) came out in August, though the repo had a commit on the day I checked. See the <a href="https://github.com/smtg-ai/claude-squad">repo</a>.</p>
+
+<h3>Conductor</h3>
+<p>Pick it if you are on a Mac and want a polished app that handles the whole loop: a workspace per task, diff review, pull request, merge. Two cautions. It is closed source and Mac only. Its future is also unclear. On 4 November the team announced it was joining Meta and that Conductor Cloud would shut down. The announcement page now strikes through the shutdown paragraph and says, "We'll still be developing Conductor." See the <a href="https://www.conductor.build/announcement">announcement</a>.</p>
+
+<h3>cmux</h3>
+<p>Pick it if you live in a terminal and want it to be fast and native on a Mac. It is a Ghostty-based terminal with vertical tabs, a ring around the pane that needs you, and a scriptable browser. It runs any CLI agent. It is not a worktree manager, and its own README calls it "a primitive, not a solution". See the <a href="https://github.com/manaflow-ai/cmux">repo</a>.</p>
+
+<h3>Paradev, formerly Superset</h3>
+<p>Pick it for worktree-per-task feature work with review built in: a Changes pane, pull requests with checks, and a browser preview per workspace. It also has automations, remote hosts and an iPhone app. The Superset repo was renamed Paradev in late October, and the CLI is still called <code>superset</code>. See the <a href="https://github.com/ParadevAI/Paradev">README</a>.</p>
+
+<h3>OpenCode's own TUI and web UI</h3>
+<p>If you already use OpenCode, you may not need another tool. All its clients attach to one shared server. The TUI has session tabs, a jump to the next unread tab, and parent and child sessions for subagents. A pairing link opens the web UI on your phone. It only manages OpenCode sessions. See the <a href="https://opencode.ai/docs/cli/tui/">TUI docs</a>.</p>
+
+<h3>Cursor and the Codex app</h3>
+<p>Pick these if most of your work already happens in them. Both run their own agent. Cursor's cloud agents run in isolated VMs, so you can start many without loading your machine. Both now have voice that hands work to the agent. ChatGPT Voice in the Codex app can start tasks, check progress and steer them, and Cursor's voice chat does the same inside a chat. See <a href="https://cursor.com/docs/agent/voice-chat">Cursor voice chat</a> and <a href="https://learn.chatgpt.com/docs/features/voice.md">ChatGPT Voice</a>.</p>
+
+<h3>tmux and git worktrees</h3>
+<p>Pick this for full control and any agent. <code>git worktree</code> gives each agent its own checkout, and tmux or Zellij holds the sessions. Nothing here knows what an agent is, so you write your own status and notifications. <a href="https://github.com/max-sixty/worktrunk">Worktrunk</a> is a small CLI that adds worktree commands built for agents. Claude Code also has <code>claude --worktree</code>, which creates one for you (<a href="https://code.claude.com/docs/en/worktrees">docs</a>).</p>
+
+<h3>agentview</h3>
+<p>Pick it if you use more than one harness and want one list. It reads the sessions your harnesses already keep, so you do not change how you work. Rows are grouped by what needs you, and Enter opens the harness's own screen. Two features go beyond the list. <kbd>Ctrl+K</kbd> starts a <a href="https://github.com/moritzWa/agentview/blob/main/docs/voice.md">voice call</a> across your sessions, and it shows the <a href="https://github.com/moritzWa/agent-bouncer">agent-bouncer</a> queue above the input, so you can see which sessions are stuck behind a full machine.</p>
+<p>Where it is weaker:</p>
+<ul>
+  <li>It does not create worktrees, review diffs or open pull requests. Pair it with one of the tools above for that.</li>
+  <li>Voice works with OpenCode sessions only.</li>
+  <li>Replying and approving from the list depends on the harness. For Claude Code rows, you still reply in Claude's own screen. The <a href="https://github.com/moritzWa/agentview#compare-feature-support-by-harness">README</a> has the full table.</li>
+  <li>It is terminal only.</li>
+</ul>
+
+<h2>Voice is no longer rare</h2>
+<p>Codex and Cursor both have a voice call that hands work to their own agents. Claude Code and Conductor have dictation. agentview's call is different in one way: it spans sessions from your whole list, searches your history, and starts sessions in other folders. It is also narrower: it only reaches OpenCode sessions today.</p>
+
+<h2>Resource control is almost empty</h2>
+<p>cmux and Paradev show CPU and memory per workspace. Three tools go further. Claude Code's agent view stops idle sessions when memory is low. The Codex app caps how many spawned-agent threads one session can open. Xum (formerly Mux, by Coder) sets a CPU and memory limit for all local agent commands, but only on Linux, through cgroup v2 (<a href="https://xum.cdr.dev/config/agent-resource-limits.md">docs</a>).</p>
+<p>As far as their docs say, none of these holds a heavy job in line until the machine has room for it. That is what agent-bouncer does, on macOS and Linux. The <a href="/blog/running-ten-agents-without-freezing-your-machine/">second post</a> explains how.</p>
+
+<h2>Names and status that changed</h2>
+<ul>
+  <li>Crystal was deprecated in February 2026 and replaced by <a href="https://github.com/Nimbalyst/nimbalyst">Nimbalyst</a>, an MIT-licensed desktop app for Claude Code and Codex, with OpenCode and Copilot in alpha.</li>
+  <li>Superset became Paradev in late October 2026.</li>
+  <li>Mux became Xum after a trademark concern.</li>
+  <li>Vibe Kanban's company shut down in April 2026. The repo is Apache-2.0, is not archived, and had a commit on 12 November, but the last tagged release was in April. See the <a href="https://www.vibekanban.com/blog/shutdown">shutdown post</a>.</li>
+  <li><a href="https://github.com/generalaction/emdash">Emdash</a> (Apache-2.0, worktree per task, 35 agent CLIs by its docs) says new development has moved to a cloud-first 2.0.</li>
+</ul>
+
+<h2>What I could not confirm</h2>
+<ul>
+  <li>Conductor's current pricing, since its pricing page redirects to the home page.</li>
+  <li>Whether Cursor's agents are open source. The docs I read do not say.</li>
+  <li>Platforms for OpenCode, and voice or resource features for tools where I found none. "None found" means I searched the docs, not that the feature cannot exist.</li>
+  <li>Prices change often. Check each pricing page before you buy.</li>
+</ul>
+
+<p>If I got something wrong, <a href="https://github.com/moritzWa/agentview/issues">open an issue</a> and I will fix it.</p>
+
+</div>
+</article>
+
+<footer>
+  <span>MIT License · <a href="/blog/">Blog</a></span>
+  <a href="https://github.com/moritzWa/agentview">github.com/moritzWa/agentview</a>
+</footer>
+
+</div>
+</body>
+</html>
