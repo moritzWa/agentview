@@ -2,7 +2,7 @@
   {
     "type": "function",
     "name": "list_sessions",
-    "description": "List the developer's coding sessions with state (working, needs_you, done), folder, when they last wrote to it, what it is doing and a preview of what it last said. By default only the sessions they are actively working in. Use scope \"all\" or a query to find an older one.",
+    "description": "List the developer's coding sessions with state (working, needs_you, done), folder, when they last wrote to it, what it is doing and a preview of what it last said. last_discussed, when present, names the sessions you last sent a message to this call, newest first; it only points at rows and does not repeat them. By default only the sessions they are actively working in. Use scope \"all\" or a query to find an older one.",
     "parameters": {
       "type": "object",
       "properties": {

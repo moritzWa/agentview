@@ -79,6 +79,8 @@ struct Watch {
     expects_busy: bool,
 }
 
+/// How many sessions list_sessions names as the last ones messaged.
+const LAST_DISCUSSED: usize = 3;
 /// How long after a message the session may still show as idle.
 const SETTLE_MS: u64 = 60_000;
 /// How long a watch waits to see work start before it calls it already done.
@@ -318,6 +320,10 @@ impl Tools {
             })
             .collect();
         let mut out = json!({ "sessions": sessions });
+        let last_discussed = self.last_discussed(&infos, &mut handles, now);
+        if !last_discussed.is_empty() {
+            out["last_discussed"] = json!(last_discussed);
+        }
         if parked.count > 0 {
             out["parked"] = json!(parked.count);
             out["parked_needing_you"] = json!(parked.needing_you);
@@ -325,6 +331,34 @@ impl Tools {
                 json!("parked sessions are older ones; use scope all or a query to find one");
         }
         Ok(out)
+    }
+
+    /// The sessions this call last sent words to, newest first. Only a handle,
+    /// the title and when: the row itself, with its preview, stays in
+    /// `sessions`, and one that is not listed (older, or started a moment ago)
+    /// is still named here so "that session" can be matched to it.
+    fn last_discussed(&self, infos: &[Info], handles: &mut Handles, now: u64) -> Vec<Value> {
+        let mut sent: Vec<(String, u64)> = self
+            .touched
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(id, at)| (id.clone(), *at))
+            .collect();
+        sent.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        sent.into_iter()
+            .take(LAST_DISCUSSED)
+            .map(|(id, at)| {
+                let mut entry = json!({
+                    "id": handles.handle(&id),
+                    "messaged": digest::ago(now, at),
+                });
+                if let Some(info) = infos.iter().find(|info| info.id == id) {
+                    entry["title"] = json!(info.title);
+                }
+                entry
+            })
+            .collect()
     }
 
     fn read(&self, args: &Value) -> Result<Value> {
@@ -1471,5 +1505,115 @@ mod tests {
         tools.run("watch_session", &json!({"id": "s2", "until": "needs_you"}));
         host.infos.lock().unwrap()[1].state = SessionState::NeedsInput;
         assert!(tools.poll().spoken[0].contains("needs the developer"));
+    }
+
+    fn ticking(host: Arc<FakeHost>) -> (Tools, Arc<std::sync::atomic::AtomicU64>) {
+        let now = Arc::new(std::sync::atomic::AtomicU64::new(1_100_000));
+        let clock = now.clone();
+        let tools = Tools::with_clock(
+            host,
+            Arc::new(move || clock.load(std::sync::atomic::Ordering::Relaxed)),
+        );
+        (tools, now)
+    }
+
+    #[test]
+    fn nothing_is_last_discussed_before_the_voice_sends_anything() {
+        let (_, tools) = tools(two());
+        let listed = tools.run("list_sessions", &json!({}));
+        assert!(listed.get("last_discussed").is_none());
+        tools.run("read_session", &json!({"id": "s1"}));
+        assert!(tools
+            .run("list_sessions", &json!({}))
+            .get("last_discussed")
+            .is_none());
+    }
+
+    #[test]
+    fn list_sessions_ranks_the_sessions_last_messaged_without_repeating_their_rows() {
+        let mut infos = two();
+        infos[1].tail = "Benchmarks are running.".into();
+        let (tools, now) = ticking(FakeHost::with(infos));
+        let first = tools.run("list_sessions", &json!({}));
+        let (a, b) = (
+            first["sessions"][0]["id"].as_str().unwrap().to_owned(),
+            first["sessions"][1]["id"].as_str().unwrap().to_owned(),
+        );
+        tools.run("send_message", &json!({"id": a, "text": "go"}));
+        now.fetch_add(180_000, std::sync::atomic::Ordering::Relaxed);
+        tools.run("edit_last_message", &json!({"id": b, "text": "fix"}));
+        now.fetch_add(30_000, std::sync::atomic::Ordering::Relaxed);
+
+        let listed = tools.run("list_sessions", &json!({}));
+        let section = listed["last_discussed"].as_array().unwrap();
+        assert_eq!(section.len(), 2);
+        assert_eq!(section[0]["id"], b.as_str());
+        assert_eq!(section[0]["title"], "voice mode");
+        assert_eq!(section[0]["messaged"], "just now");
+        assert_eq!(section[1]["id"], a.as_str());
+        assert_eq!(section[1]["messaged"], "3 min ago");
+        // Pointers only: the preview and state stay on the session's own row.
+        assert!(section[0].get("last_said").is_none() && section[0].get("state").is_none());
+        let rows = listed["sessions"].as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|row| row.get("messaged").is_none()));
+        let row = rows.iter().find(|row| row["id"] == b.as_str()).unwrap();
+        assert_eq!(row["title"], "voice mode");
+        assert!(row["last_said"].as_str().is_some());
+        // The section comes before the rows in what the model reads.
+        let text = listed.to_string();
+        assert!(text.find("last_discussed").unwrap() < text.find("\"sessions\"").unwrap());
+    }
+
+    #[test]
+    fn only_the_last_few_messaged_sessions_are_named_and_a_resend_moves_one_up() {
+        let infos: Vec<Info> = (0..5)
+            .map(|n| {
+                info(
+                    &format!("opencode:host:{n}"),
+                    &format!("session {n}"),
+                    "arca",
+                    SessionState::Completed,
+                )
+            })
+            .collect();
+        let (tools, now) = ticking(FakeHost::with(infos));
+        let listed = tools.run("list_sessions", &json!({"scope": "all"}));
+        let ids: Vec<String> = listed["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["id"].as_str().unwrap().to_owned())
+            .collect();
+        for id in &ids {
+            tools.run("send_message", &json!({"id": id, "text": "hi"}));
+            now.fetch_add(60_000, std::sync::atomic::Ordering::Relaxed);
+        }
+        tools.run("send_message", &json!({"id": ids[0], "text": "again"}));
+        let listed = tools.run("list_sessions", &json!({"scope": "all"}));
+        let named: Vec<&str> = listed["last_discussed"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(named, [ids[0].as_str(), ids[4].as_str(), ids[3].as_str()]);
+    }
+
+    #[test]
+    fn a_session_just_started_is_named_even_before_it_is_listed() {
+        let (host, tools) = tools(two());
+        let started = tools.run("start_session", &json!({"folder": "arca", "task": "look"}));
+        let handle = started["id"].as_str().unwrap().to_owned();
+        let listed = tools.run("list_sessions", &json!({}));
+        let section = listed["last_discussed"].as_array().unwrap();
+        assert_eq!(section[0]["id"], handle.as_str());
+        assert!(section[0].get("title").is_none());
+        assert!(host
+            .log
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|l| l.starts_with("start")));
     }
 }
