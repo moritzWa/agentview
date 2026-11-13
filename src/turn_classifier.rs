@@ -35,7 +35,8 @@ const TAIL_CHARS: usize = 2_000;
 pub const ASKED_IN_MESSAGE: &str = "asked in last message";
 
 const SYSTEM_PROMPT: &str =
-    "You label a coding agent's latest turn. Reply with exactly one word.\n\
+    "You label a coding agent's latest turn. Only the agent's final message counts; earlier \
+messages, including the user's, are context. Reply with exactly one word.\n\
 INPUT: the agent's last message waits on the user: it asks a question, asks for a choice, \
 approval, credentials, or clarification, or says it is blocked.\n\
 DONE: the agent finished or reported results without needing anything; optional offers \
