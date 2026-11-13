@@ -115,14 +115,14 @@ read, never a `send_message`.
   seconds later it read `working`. Nothing told the voice in between, because a
   session starting work is not announced, even quietly.
 - **State and permission disagree.** The voice saw `working` and tried to send;
-  the refusal came from the capability. Inference, not reproduced: the turn
-  classifier and hold overlays rewrite `state` after the adapter has granted
-  capabilities, and nothing recomputes them. Start-of-call `needs_you` fits a
-  capability that was never refreshed. `cannot_message` appears in list rows but
-  not in `read_session`, and the error text is raw ("reply authority") rather than
-  something the voice can act on. The dashboard's own Peek overlay shows the same
-  "read-only; reply authority was not granted" notice, so the mismatch is not
-  voice-specific.
+  the refusal came from the capability, not the state. A parallel note,
+  [`voice-reply-authority.md`](voice-reply-authority.md), traced it: the session
+  was not owned by the supervisor, so it never got `Reply`, and the voice host
+  does not adopt such sessions before sending. (My first guess, that the turn
+  classifier rewrites state after capabilities are granted, is ruled out there.)
+  For this note the relevant part is the signal: `cannot_message` appears in list
+  rows but not in `read_session`, the row says nothing about why, and the error
+  text is raw ("reply authority") rather than something the voice can act on.
 - **Polling.** Eight `read_session` calls in nine minutes; seven were on
   data-leads. Each followed a developer question, not a status poll, but while the
   session works each read returns the same last completed turns plus
@@ -151,8 +151,9 @@ read, never a `send_message`.
   looks.
 - Log registrations, firings and every commentary and quiet note.
 - Hold a spoken notice until the developer stops talking.
-- Recompute capabilities after the classifier and hold overlays, and let the
-  voice's `send` queue to a session shown as `working`.
+- Adopt an unowned session before sending (the fix in
+  [`voice-reply-authority.md`](voice-reply-authority.md)), so a `working` row is
+  also a messageable one.
 
 **B. Subscribe to the server's event stream.** Medium, touches the supervisor.
 Agent View keeps one SSE connection per OpenCode server and turns events into
@@ -178,9 +179,9 @@ is noise, and the voice is meant to be a quiet relay.
 Do A and C now, in one change. They fix every failure in the call without new
 infrastructure, and the new logging shows whether snapshot lag still loses
 completions. Do B only if the logs show missed or late completions after that,
-since it is the largest change and mostly pays off for latency. First step of A:
-reproduce the refused send against a real working session whose last turn asked a
-question, to confirm the capability mismatch before changing it.
+since it is the largest change and mostly pays off for latency. The refused-send
+fix is its own change (see the reply-authority note) and should land first,
+because auto-watch depends on being able to message the sessions it watches.
 
 ## Open points
 
