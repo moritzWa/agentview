@@ -460,6 +460,9 @@ mod tests {
     use crate::domain::{Runtime, SessionKind};
 
     fn idle(id: &str, state: SessionState, raw_state: &str, summary: &str) -> AgentSession {
+        // Snapshots of unchanged test turns share their activity timestamp.
+        // Tests exercising a new activity time set updated_at explicitly.
+        static ACTIVITY: std::sync::OnceLock<SystemTime> = std::sync::OnceLock::new();
         AgentSession {
             id: id.into(),
             provider_session_id: id.into(),
@@ -473,7 +476,7 @@ mod tests {
             raw_state: Some(raw_state.into()),
             pid: None,
             started_at: None,
-            updated_at: Some(SystemTime::now()),
+            updated_at: Some(*ACTIVITY.get_or_init(SystemTime::now)),
             pull_requests: None,
             capabilities: BTreeSet::from([Capability::Inspect]),
         }
