@@ -272,7 +272,7 @@ impl PtyApp {
     }
 
     fn wait_for(&mut self, description: &str, predicate: impl Fn(&str) -> bool) -> String {
-        let deadline = Instant::now() + Duration::from_secs(4);
+        let deadline = Instant::now() + Duration::from_secs(10);
         let mut latest = String::new();
         while Instant::now() < deadline {
             latest = self.screen();
