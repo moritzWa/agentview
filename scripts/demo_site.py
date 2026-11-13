@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Record the landing page video: a Voice Mode call and agent-bouncer's queue.
+"""Record the landing page video: Voice Mode, agent-bouncer's queue and two Claude accounts.
 
 Run from the repo root after `cargo build --release`:
 
@@ -98,6 +98,14 @@ def build_fixture(work: Path, stage: int) -> dict:
             "pull_requests": None,
             "capabilities": ["inspect"],
         })
+    # A second Claude subscription, as agentview shows for a ~/.claude-* profile.
+    document["demo"]["usage"].append({
+        "provider": "claude2",
+        "windows": [
+            {"label": "5h", "percent": 71, "resets_in_secs": 3900},
+            {"label": "week", "percent": 58, "resets_in_secs": 439200},
+        ],
+    })
     document["demo"]["restorable"] = []
     document["demo"]["voice"] = [
         {"at_ms": at, "who": who, "text": text} for at, who, text in VOICE

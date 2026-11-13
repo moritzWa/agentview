@@ -115,6 +115,8 @@ impl FixtureDemo {
             .filter_map(|entry| {
                 let provider = match entry.provider.as_str() {
                     "claude" => "claude",
+                    "claude2" => "claude2",
+                    "claude3" => "claude3",
                     "codex" => "codex",
                     _ => return None,
                 };
@@ -220,6 +222,7 @@ mod tests {
                 "usage": [
                     {"provider": "codex", "windows": [{"label": "week", "percent": 44, "resets_in_secs": 60}]},
                     {"provider": "claude", "windows": [{"label": "5h", "percent": 38}, {"label": "fortnight", "percent": 1}]},
+                    {"provider": "claude2", "windows": [{"label": "5h", "percent": 71}]},
                     {"provider": "unknown", "windows": [{"label": "5h", "percent": 1}]}
                 ],
                 "restorable": [
@@ -256,9 +259,9 @@ mod tests {
                 .iter()
                 .map(|entry| (entry.provider, entry.windows.len()))
                 .collect::<Vec<_>>(),
-            vec![("claude", 1), ("codex", 1)]
+            vec![("claude", 1), ("claude2", 1), ("codex", 1)]
         );
-        assert!(usage[1].windows[0].resets_at.unwrap() >= crate::usage::now() + 59);
+        assert!(usage[2].windows[0].resets_at.unwrap() >= crate::usage::now() + 59);
 
         let past = demo.restorable_sessions();
         assert_eq!(

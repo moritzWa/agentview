@@ -183,12 +183,12 @@
   </div>
 
   <div class="demo">
-    <video autoplay muted loop playsinline preload="auto" poster="/demo-poster.png" width="1280" height="720" aria-label="agentview in light mode: a voice call asks which sessions need you and answers one of them, while two heavy jobs run and two wait in the agent-bouncer queue">
+    <video autoplay muted loop playsinline preload="auto" poster="/demo-poster.png" width="1280" height="720" aria-label="agentview in light mode: two Claude subscriptions in the header, a voice call that answers a waiting session, and two heavy jobs running while two wait in the agent-bouncer queue">
       <source src="/demo.mp4" type="video/mp4">
     </video>
   </div>
 
-  <p class="demo-caption">A voice call (<kbd>Ctrl+K</kbd>) answers a waiting session and starts a new one, while agent-bouncer lines up four heavy jobs, two at a time. The footer shows the call.</p>
+  <p class="demo-caption">A voice call (<kbd>Ctrl+K</kbd>) answers a waiting session and starts a new one, while agent-bouncer lines up four heavy jobs, two at a time. The footer shows the call, and the header shows two Claude subscriptions and Codex, each with its own limits.</p>
 
   <section>
     <div class="label">Why</div>
@@ -214,7 +214,7 @@
       <div><b>Grouped by status</b>Waiting for input, working, completed. The harness is shown on every row.</div>
       <div><b>Jump in and back out</b>Open a native session while its work keeps running, then return to the list.</div>
       <div><b>Find the conversation you remember</b><kbd>Ctrl+G</kbd> searches message text across Claude Code, Codex, and OpenCode, with matching snippets. Resume the exact session, even if it no longer appears in your recent history.</div>
-      <div><b>See subscription usage at a glance</b>Claude and Codex rate-limit windows and reset times appear in the header. Open <code>/usage</code> for the full breakdown.</div>
+      <div><b>See subscription usage at a glance</b>Claude and Codex rate-limit windows and reset times appear in the header. Keep a second Claude subscription in a <code>~/.claude-*</code> profile and it gets its own row (macOS). Open <code>/usage</code> for the full breakdown.</div>
       <div><b>Keep parent and child sessions together</b>OpenCode sub-sessions appear beneath the session that started them. Follow delegated work without losing track of the original task.</div>
       <div><b>Start in any folder</b><code>/cd</code> or <kbd>Ctrl+O</kbd>. Multi-line tasks, pastes, and clipboard images stay one draft.</div>
       <div><b>Migrate a conversation</b>Move a session to another harness with <code>/migrate</code>, or to another folder with <kbd>Ctrl+M</kbd>, via <a href="https://session-migrate.github.io/">session-migrate</a>.</div>

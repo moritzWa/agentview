@@ -604,7 +604,6 @@ mod tests {
     }
 
     fn host_with(controller: Arc<OwnedOnly>, rows: &[AgentSession]) -> Arc<DashboardHost> {
-        use std::os::unix::fs::PermissionsExt;
         static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let dir = std::env::temp_dir().join(format!(
             "agentview-voice-host-{}-{}",
@@ -612,7 +611,11 @@ mod tests {
             NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
         let mut control = ControlHub::new(crate::control::ControlHubConfig {
             claude_enabled: false,
             codex_enabled: false,
