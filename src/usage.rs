@@ -362,7 +362,7 @@ fn fetch_claude_accounts() -> Vec<Usage> {
     let Some(home) = home() else {
         return usages;
     };
-    let Ok(entries) = std::fs::read_dir(&home) else {
+    let Ok(entries) = std::fs::read_dir(home) else {
         return usages;
     };
     let mut extras = entries
@@ -530,6 +530,7 @@ fn update_keychain_password(
 /// every poll. A new dashboard can retry after the user repairs/unlocks Keychain.
 static KEYCHAIN_UNAVAILABLE: AtomicBool = AtomicBool::new(false);
 
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn keychain_output(mut command: Command, input: Option<&[u8]>) -> Option<std::process::Output> {
     use std::io::Write;
     if KEYCHAIN_UNAVAILABLE.load(Ordering::Relaxed) {
@@ -961,6 +962,7 @@ mod tests {
         assert_eq!(credentials, before);
     }
 
+    #[cfg(unix)]
     #[test]
     fn config_dir_suffix_matches_claude_code() {
         assert_eq!(sha256_prefix("abc").as_deref(), Some("ba7816bf"));

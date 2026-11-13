@@ -4849,7 +4849,7 @@ mod tests {
             created_at_ms: 1,
             sessions: BTreeMap::new(),
         };
-        let cwd = Path::new("/work");
+        let cwd = Path::new(if cfg!(windows) { "C:\\work" } else { "/work" });
         assert!(add_owned(&mut record, "ses_x", cwd, "title", "summary", 5).unwrap());
         assert!(!add_owned(&mut record, "ses_x", cwd, "other", "other", 9).unwrap());
         let owned = &record.sessions["ses_x"];
