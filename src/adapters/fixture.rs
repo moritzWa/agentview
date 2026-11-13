@@ -23,6 +23,19 @@ pub struct FixtureDemo {
     /// Past sessions the restore picker (Ctrl+G) can search and bring back.
     #[serde(default)]
     pub restorable: Vec<FixtureRestorable>,
+    /// A scripted Voice Mode call. Ctrl+K starts it, and each line shows in the
+    /// footer once its time has passed. Nothing is heard or sent anywhere.
+    #[serde(default)]
+    pub voice: Vec<FixtureVoiceLine>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct FixtureVoiceLine {
+    /// Milliseconds after the call starts.
+    pub at_ms: u64,
+    /// `you` or `agent`.
+    pub who: String,
+    pub text: String,
 }
 
 #[derive(Debug, Deserialize)]

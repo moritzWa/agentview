@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Running ten coding agents without freezing your machine</title>
+<meta name="description" content="Ten agents that each start a build or a test run can use up your RAM. agent-bouncer lets in only the jobs the machine has room for, and agentview shows the line.">
+<link rel="canonical" href="https://agent-view.app/blog/running-ten-agents-without-freezing-your-machine/">
+<meta property="og:title" content="Running ten coding agents without freezing your machine">
+<meta property="og:description" content="agent-bouncer lets in only the heavy jobs the machine has room for. The rest wait in line, and agentview shows the line.">
+<meta property="og:type" content="article">
+<meta property="og:url" content="https://agent-view.app/blog/running-ten-agents-without-freezing-your-machine/">
+<meta property="og:image" content="https://agent-view.app/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="article:published_time" content="2026-11-13">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://agent-view.app/og.png">
+<link rel="icon" href="/favicon.svg">
+<link rel="stylesheet" href="/blog/style.css">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"BlogPosting","headline":"Running ten coding agents without freezing your machine","datePublished":"2026-11-13","author":{"@type":"Person","name":"Moritz Wallawitsch"},"mainEntityOfPage":"https://agent-view.app/blog/running-ten-agents-without-freezing-your-machine/"}</script>
+</head>
+<body>
+<div class="page">
+
+<header>
+  <a class="brand" href="/"><img src="/favicon.svg" alt="">agentview</a>
+  <nav>
+    <a href="/blog/">Blog</a>
+    <a href="https://github.com/moritzWa/agentview/blob/main/docs/cli.md">Docs</a>
+    <a href="https://github.com/moritzWa/agentview">GitHub</a>
+  </nav>
+</header>
+
+<article>
+<div class="label">Guide</div>
+<h1>Running ten coding agents without freezing your machine</h1>
+<div class="meta"><time datetime="2026-11-13">13 November 2026</time></div>
+
+<p class="lede">Ten agents can each start a build, a test suite or a headless browser at the same moment. The machine runs out of RAM and everything slows down.</p>
+
+<h2>The problem</h2>
+
+<p>One agent running <code>cargo test</code> is fine. Ten agents each running a build, a test suite or a Playwright run are not. Each job may need several gigabytes. When free RAM runs out, macOS starts compressing memory and writing it to swap. Your editor lags, and the agents slow down too.</p>
+<p>The agents do not know about each other. Each one thinks it has the machine to itself.</p>
+
+<h2>What agent-bouncer does</h2>
+
+<p><a href="https://github.com/moritzWa/agent-bouncer">agent-bouncer</a> is a small command I wrote for this. Agents call it in front of a heavy command:</p>
+<pre><code>agent-bouncer run --wait -- cargo test
+agent-bouncer run --wait -- pnpm playwright test</code></pre>
+<p>It lets a job start only when the machine has room for it. Other jobs wait in line, first come, first served. A job that waits is not a failed job. It starts as soon as there is room.</p>
+
+<p>It decides in three steps.</p>
+<ol>
+  <li>It predicts what the job will need. A cheap model (Gemini Flash Lite through OpenRouter, about a second per call) reads the command, the folder and the measured peak RAM and cores of the 15 closest past runs. With no key set, it uses past runs alone.</li>
+  <li>It checks that the job fits. Free RAM must stay above 3 GB after every running job reaches its peak. The expected cores of all running jobs must fit the machine. The one-minute load must be under 1.5 per core, and CPU must be under 90 percent.</li>
+  <li>It runs the job in its own process group, measures the real peaks every 2 seconds, and stops leftover dev servers and headless browsers when the job ends.</li>
+</ol>
+<p>It never kills a running job. When the machine is full, it stops letting new jobs in and does nothing else.</p>
+
+<h2>A real queue</h2>
+
+<pre><code>$ agent-bouncer status
+2 running   cores 10/18 expected   free RAM 9.4 GB   swap 3.7 GB   CPU 41%
+
+running
+   4m12s   2.1 GB of ~2.4 GB   3.0 cores  cargo test            ~/Code/agentview
+    48s    1.1 GB of ~5.3 GB   7.0 cores  pnpm playwright test  ~/Code/arca
+
+waiting
+  1.  0m31s   cargo build --release   ~/Code/agentview   (the running jobs are already expected to use all the CPU cores)</code></pre>
+
+<p>There is no daemon. The processes share a small folder of lock files, so a crashed job cannot leak its place in line.</p>
+
+<h2>Seeing the line in agentview</h2>
+
+<p>A queue you cannot see is hard to trust. When agent-bouncer is installed, agentview reads <code>agent-bouncer status --json</code> every couple of seconds and shows a panel above the input. It lists the running and waiting jobs, how long each has been at it, and when the queue should clear. A session whose own run is stuck in line says so on its row, for example <code>#1 in line for lint + typecheck · all slots in use</code>.</p>
+
+<figure>
+  <video autoplay muted loop playsinline preload="metadata" poster="/demo-poster.png" width="1280" height="720" aria-label="agentview with four heavy jobs in the agent-bouncer queue, two running and two waiting, while a voice call answers a session">
+    <source src="/demo.mp4" type="video/mp4">
+  </video>
+  <figcaption>The queue panel above the input. Two jobs run and two wait. Rows for sessions stuck in line say which place they hold. The footer shows a scripted voice call. The sessions and jobs are made up.</figcaption>
+</figure>
+
+<p>agentview only reads the queue. It never starts, stops or reorders jobs.</p>
+
+<h2>Set it up</h2>
+
+<pre><code>curl -fsSL https://raw.githubusercontent.com/moritzWa/agent-bouncer/main/install.sh | bash</code></pre>
+<p>It works on macOS and Linux. Then tell your agents to put it in front of heavy commands. A line in your <code>AGENTS.md</code> or <code>CLAUDE.md</code> is enough: "Run builds, test suites and browser tests as <code>agent-bouncer run --wait -- &lt;command&gt;</code>."</p>
+<p>Run <code>agent-bouncer doctor</code> to test the model and key. If you do not want anything to leave your machine, set <code>AGENT_BOUNCER_MODEL=off</code>. With a key set, each job sends its command line, directory, the package.json script it runs, machine load and a few similar past runs to OpenRouter. <code>agent-bouncer predict --show -- &lt;command&gt;</code> prints exactly what would be sent.</p>
+
+<h2>Where it falls short</h2>
+
+<ul>
+  <li>Peak RAM is sampled every 2 seconds, so it misses short spikes.</li>
+  <li>It does not see memory used outside the job's process group, such as Docker or virtual machines.</li>
+  <li>Early predictions are only as good as the history. Tools that skip the bouncer still load the machine.</li>
+  <li>It only helps with jobs that go through it. The agents themselves, and the model calls they make, are not limited.</li>
+</ul>
+
+<h2>How other tools handle load</h2>
+
+<p>Claude Code's agent view stops idle sessions when memory is low. The Codex app caps spawned-agent threads per session. Xum, Coder's agent app, sets a CPU and memory limit for all local agent commands through Linux cgroups, which does not apply on macOS. cmux and Paradev show CPU and memory per workspace. I compared them in <a href="/blog/agentview-vs-claude-squad-conductor-cmux/">the full comparison</a>.</p>
+
+<p>agent-bouncer is <a href="https://github.com/moritzWa/agent-bouncer">MIT licensed</a>. The <a href="https://moritzwa.github.io/agent-bouncer/how-it-works.html">how-it-works page</a> has the diagrams.</p>
+
+</article>
+
+<footer>
+  <span>MIT License · <a href="/blog/">Blog</a></span>
+  <a href="https://github.com/moritzWa/agentview">github.com/moritzWa/agentview</a>
+</footer>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,77 @@
+:root {
+  color-scheme: light;
+  --gray: #6e6e73;
+  --ink: #1d1d1f;
+  --rule: #d2d2d7;
+  --link: #506cf7;
+  --bg: #fff;
+  --code-bg: #f5f5f7;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-size: 16px;
+  line-height: 1.65;
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.page { max-width: 760px; margin: 0 auto; padding: 56px 32px 48px; }
+.wide { max-width: 1100px; }
+
+header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 56px; }
+.brand { display: flex; align-items: center; gap: 10px; color: var(--ink); font-weight: 700; letter-spacing: -0.01em; font-size: 20px; }
+.brand:hover { text-decoration: none; }
+.brand img { width: 32px; height: 40px; }
+nav { display: flex; gap: 24px; font-size: 13px; }
+nav a { color: #7d8fa3; }
+nav a:hover { color: var(--ink); text-decoration: none; }
+
+.label { font-size: 11px; letter-spacing: 0.09em; text-transform: uppercase; color: var(--gray); font-weight: 600; margin-bottom: 10px; }
+h1 { font-size: 38px; line-height: 1.15; font-weight: 700; letter-spacing: -0.01em; margin: 0 0 16px; }
+h2 { font-size: 24px; line-height: 1.25; font-weight: 700; letter-spacing: -0.01em; margin: 52px 0 12px; }
+h3 { font-size: 17px; margin: 32px 0 6px; }
+p { margin: 0 0 16px; }
+.meta { color: var(--gray); font-size: 13px; margin-bottom: 32px; }
+.lede { color: var(--gray); font-size: 18px; margin-bottom: 28px; }
+ul, ol { padding-left: 22px; margin: 0 0 16px; }
+li { margin-bottom: 6px; }
+code { font: 13.5px ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+pre { background: var(--code-bg); border: 1px solid var(--rule); border-radius: 8px; padding: 14px 16px; overflow-x: auto; font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; margin: 0 0 20px; }
+pre code { background: none; padding: 0; font-size: inherit; }
+kbd { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; border: 1px solid var(--rule); border-radius: 4px; padding: 1px 6px; background: var(--code-bg); }
+.note { border-left: 3px solid var(--rule); padding: 2px 0 2px 16px; color: var(--gray); margin: 0 0 20px; }
+
+video, figure img { display: block; width: 100%; height: auto; border: 1px solid var(--rule); border-radius: 10px; }
+figure { margin: 28px 0; }
+figcaption { color: var(--gray); font-size: 13px; margin-top: 8px; }
+
+.table-wrap { overflow-x: auto; margin: 24px 0 28px; border: 1px solid var(--rule); border-radius: 8px; }
+table { border-collapse: collapse; width: 100%; min-width: 1000px; font-size: 13px; line-height: 1.45; }
+th, td { text-align: left; vertical-align: top; padding: 10px 12px; border-bottom: 1px solid var(--rule); }
+th { font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--gray); background: var(--code-bg); position: sticky; top: 0; }
+tr:last-child td { border-bottom: none; }
+td:first-child, th:first-child { position: sticky; left: 0; background: var(--bg); font-weight: 600; min-width: 130px; }
+th:first-child { background: var(--code-bg); }
+tr.us td { background: #f3f5ff; }
+tr.us td:first-child { background: #f3f5ff; }
+
+.posts { list-style: none; padding: 0; margin: 0; }
+.posts li { padding: 22px 0; border-bottom: 1px solid var(--rule); margin: 0; }
+.posts a.title { font-size: 20px; font-weight: 700; color: var(--ink); letter-spacing: -0.01em; }
+.posts a.title:hover { color: var(--link); text-decoration: none; }
+.posts .meta { margin: 4px 0 8px; }
+.posts p { margin: 0; color: var(--gray); }
+
+footer { margin-top: 72px; padding-top: 16px; border-top: 1px solid var(--rule); display: flex; justify-content: space-between; color: var(--gray); font-size: 12px; }
+footer a { color: var(--gray); }
+
+@media (max-width: 640px) {
+  .page { padding: 32px 20px; }
+  header { margin-bottom: 40px; }
+  h1 { font-size: 29px; }
+  h2 { font-size: 21px; }
+}
