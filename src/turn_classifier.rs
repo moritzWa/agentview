@@ -592,6 +592,14 @@ mod tests {
 
     #[test]
     fn a_new_turn_is_labelled_again_and_failures_are_not_retried() {
+        // Repeated snapshots describe the same turn, even across a wall-clock
+        // second boundary on a slow runner. Activity time is part of its hash.
+        let updated_at = SystemTime::now();
+        let turn = |summary| {
+            let mut session = idle("one", SessionState::Completed, "", summary);
+            session.updated_at = Some(updated_at);
+            snapshot(vec![session])
+        };
         let asked = Arc::new(AtomicUsize::new(0));
         let counter = Arc::clone(&asked);
         let classifier = TurnClassifier::new(
@@ -605,11 +613,11 @@ mod tests {
             },
         );
         for summary in ["boom", "boom", "Ready?", "Ready?"] {
-            let mut next = snapshot(vec![idle("one", SessionState::Completed, "", summary)]);
+            let mut next = turn(summary);
             classifier.apply(&mut next);
             classifier.wait_for_idle();
         }
-        let mut last = snapshot(vec![idle("one", SessionState::Completed, "", "Ready?")]);
+        let mut last = turn("Ready?");
         classifier.apply(&mut last);
         assert_eq!(last.sessions[0].state, SessionState::NeedsInput);
         assert!(last.warnings.is_empty());
