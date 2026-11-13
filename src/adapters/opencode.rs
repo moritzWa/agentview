@@ -2067,11 +2067,13 @@ fn apply_holds<'a>(
         return;
     };
     for session in sessions {
-        if let Some(reason) =
-            crate::holds::live_hold(root, "opencode", &session.provider_session_id)
-        {
+        let direct = crate::holds::live_hold(root, "opencode", &session.provider_session_id);
+        let child = inherited.get(&session.provider_session_id);
+        if let Some(reason) = child.filter(|reason| !reason.starts_with("wake-later ")) {
+            apply_hold(session, reason);
+        } else if let Some(reason) = direct {
             apply_hold(session, &reason);
-        } else if let Some(reason) = inherited.get(&session.provider_session_id) {
+        } else if let Some(reason) = child {
             apply_hold(session, reason);
         }
     }
@@ -2148,7 +2150,11 @@ fn apply_hold(session: &mut AgentSession, reason: &str) {
     {
         return;
     }
-    session.state = SessionState::Working;
+    session.state = if reason.starts_with("wake-later ") {
+        SessionState::Scheduled
+    } else {
+        SessionState::Working
+    };
     session.raw_state = Some(if reason.is_empty() {
         "background work".into()
     } else {
@@ -2269,7 +2275,7 @@ fn grant_managed_capabilities(session: &mut AgentSession, managed: &ManagedOpenC
             session.capabilities.insert(Capability::Reply);
             session.capabilities.insert(Capability::Interrupt);
         }
-        SessionState::Completed | SessionState::ReadyForReview => {
+        SessionState::Completed | SessionState::ReadyForReview | SessionState::Scheduled => {
             session.capabilities.insert(Capability::Reply);
         }
         SessionState::NeedsInput if managed.raw_state == "turn failed" => {
@@ -2587,6 +2593,16 @@ mod tests {
         );
         assert_eq!(sessions[1].state, SessionState::Completed);
         // A question still needs the user first.
+        assert_eq!(sessions[2].state, SessionState::NeedsInput);
+        // A future reminder is separate from a live shell and never wins over it.
+        sessions[0].state = SessionState::Completed;
+        apply_hold(&mut sessions[0], "wake-later Sat 07:00: Check traffic");
+        assert_eq!(sessions[0].state, SessionState::Scheduled);
+        apply_native_shells(sessions.iter_mut(), &shells);
+        assert_eq!(sessions[0].state, SessionState::Working);
+        apply_hold(&mut sessions[0], "wake-later Sat 07:00: Check traffic");
+        assert_eq!(sessions[0].state, SessionState::Working);
+        apply_hold(&mut sessions[2], "wake-later Sat 07:00: Check traffic");
         assert_eq!(sessions[2].state, SessionState::NeedsInput);
     }
 

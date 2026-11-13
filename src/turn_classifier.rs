@@ -164,10 +164,15 @@ impl TurnClassifier {
                         // A status the model calls input must not hide a live
                         // shell. A real question still does.
                         (Verdict::NeedsInput, true) if !message_asks(session) => {
-                            SessionState::Working
+                            if session.is_scheduled() {
+                                SessionState::Scheduled
+                            } else {
+                                SessionState::Working
+                            }
                         }
                         (Verdict::NeedsInput, _) => SessionState::NeedsInput,
                         // Its background work still runs, so it stays Background.
+                        (Verdict::Done, true) if session.is_scheduled() => SessionState::Scheduled,
                         (Verdict::Done, true) => SessionState::Working,
                         (Verdict::Done, false) => SessionState::Completed,
                     };
@@ -241,11 +246,13 @@ impl TurnClassifier {
 /// a monitor, a wake-later) is attached to it. Its last message may still ask
 /// the user something, and the hold must not hide that.
 fn held(session: &AgentSession) -> bool {
-    session.state == SessionState::Working
-        && session
-            .raw_state
-            .as_deref()
-            .is_some_and(|raw| raw.starts_with("background: ") || raw == "background work")
+    matches!(
+        session.state,
+        SessionState::Working | SessionState::Scheduled
+    ) && session
+        .raw_state
+        .as_deref()
+        .is_some_and(|raw| raw.starts_with("background: ") || raw == "background work")
 }
 
 /// Whether the last message asks the user something. A hold stays visible

@@ -682,7 +682,10 @@ fn grant_managed_capabilities(session: &mut AgentSession, managed: &ManagedPiSes
         SessionState::Working => {
             session.capabilities.insert(Capability::Reply);
         }
-        SessionState::Completed | SessionState::ReadyForReview | SessionState::Unknown => {
+        SessionState::Completed
+        | SessionState::ReadyForReview
+        | SessionState::Unknown
+        | SessionState::Scheduled => {
             session.capabilities.insert(Capability::Reply);
         }
         SessionState::NeedsInput => match managed.pending.as_ref().map(|request| &request.kind) {

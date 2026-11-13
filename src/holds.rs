@@ -55,11 +55,17 @@ pub fn live_hold(root: &Path, harness: &str, session_id: &str) -> Option<String>
         })
         .collect::<Vec<_>>();
     entries.sort();
-    entries.into_iter().find_map(|path| {
-        let hold = serde_json::from_slice::<Hold>(&std::fs::read(path).ok()?).ok()?;
-        let current = hold.expires_ms.map_or(true, |expires| now_ms < expires);
-        (current && process_alive(hold.pid)).then_some(hold.reason)
-    })
+    let mut live = entries
+        .into_iter()
+        .filter_map(|path| {
+            let hold = serde_json::from_slice::<Hold>(&std::fs::read(path).ok()?).ok()?;
+            let current = hold.expires_ms.map_or(true, |expires| now_ms < expires);
+            (current && process_alive(hold.pid)).then_some(hold.reason)
+        })
+        .collect::<Vec<_>>();
+    // Live work wins over a future reminder on the same session.
+    live.sort_by_key(|reason| reason.starts_with("wake-later "));
+    live.into_iter().next()
 }
 
 /// Every session under `harness` that has a live hold, with that hold's reason.
@@ -139,6 +145,29 @@ mod tests {
         );
         assert_eq!(live_hold(root.path(), "opencode", "ses_2"), None);
         assert_eq!(live_hold(root.path(), "opencode", "../opencode"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn live_work_takes_precedence_over_a_reminder() {
+        let root = tempfile::tempdir().unwrap();
+        let pid = std::process::id();
+        write_hold(
+            root.path(),
+            "ses_both",
+            "a.json",
+            &format!(r#"{{"pid":{pid},"reason":"wake-later Sat 07:00"}}"#),
+        );
+        write_hold(
+            root.path(),
+            "ses_both",
+            "z.json",
+            &format!(r#"{{"pid":{pid},"reason":"CI running"}}"#),
+        );
+        assert_eq!(
+            live_hold(root.path(), "opencode", "ses_both").as_deref(),
+            Some("CI running")
+        );
     }
 
     #[cfg(unix)]

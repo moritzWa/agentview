@@ -150,17 +150,19 @@ pub enum SessionState {
     ReadyForReview,
     NeedsInput,
     Working,
+    Scheduled,
     Completed,
     Unknown,
 }
 
 impl SessionState {
-    pub const DISPLAY_ORDER: [Self; 5] = [
+    pub const DISPLAY_ORDER: [Self; 6] = [
         Self::ReadyForReview,
         Self::NeedsInput,
         Self::Working,
         Self::Completed,
         Self::Unknown,
+        Self::Scheduled,
     ];
 
     pub fn heading(self) -> &'static str {
@@ -168,6 +170,7 @@ impl SessionState {
             Self::ReadyForReview => "Ready for review",
             Self::NeedsInput => "Needs input",
             Self::Working => "Working",
+            Self::Scheduled => "Scheduled",
             Self::Completed => "Completed",
             Self::Unknown => "Unknown",
         }
@@ -236,6 +239,11 @@ mod optional_system_time_millis {
 }
 
 impl AgentSession {
+    /// Idle with only a future wake-up attached, rather than a live job.
+    pub fn is_scheduled(&self) -> bool {
+        self.state == SessionState::Scheduled
+    }
+
     /// OpenCode stops a running turn, not its shared client. Other providers
     /// may still need to stop an idle managed transport before removing it.
     pub fn can_interrupt(&self) -> bool {
