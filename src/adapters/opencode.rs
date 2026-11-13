@@ -427,17 +427,35 @@ impl ProviderController for OpenCodeController {
         if session.provider != Provider::OpenCode {
             bail!("the OpenCode controller cannot adopt another provider's session");
         }
-        self.ownership
-            .as_ref()
-            .context("bringing OpenCode sessions back is not configured")?
-            .inner
-            .record(
+        if self.ownership.is_none() && self.supervisor.is_none() {
+            bail!("bringing OpenCode sessions back is not configured");
+        }
+        if let Some(ownership) = &self.ownership {
+            if !ownership.inner.owns(&session.provider_session_id) {
+                ownership.inner.record(
+                    &session.provider_session_id,
+                    &session.cwd,
+                    &session.name,
+                    None,
+                    "OpenCode",
+                )?;
+            }
+        }
+        // Replying needs the supervisor's own record: the listing above only
+        // keeps the session in the list. With no server running the listing is
+        // all there is to record, and a reply reports the missing server.
+        if let Some(supervisor) = &self.supervisor {
+            let claimed = supervisor.adopt(
                 &session.provider_session_id,
                 &session.cwd,
                 &session.name,
-                None,
-                "OpenCode",
-            )
+                &session.name,
+            );
+            if self.ownership.is_none() {
+                claimed?;
+            }
+        }
+        Ok(())
     }
 
     fn inspect(&self, session: &AgentSession) -> Result<String> {

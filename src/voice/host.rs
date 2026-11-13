@@ -143,6 +143,39 @@ impl DashboardHost {
         }
         self.session(id)
     }
+
+    /// The session to send words to. Agent View writes only to OpenCode
+    /// sessions it owns, and a row it lists without owning has no `Reply`.
+    /// The developer asking the voice to message that one session is the
+    /// consent, so it is adopted here, when asked, and not up front: every
+    /// owned session is read on each refresh. The supervisor still decides
+    /// whether the reply goes through, for example not while OpenCode waits on
+    /// a question or permission prompt.
+    fn messageable(&self, id: &str) -> Result<AgentSession> {
+        let mut session = self.controllable(id)?;
+        if session.capabilities.contains(&Capability::Reply)
+            || session.provider != Provider::OpenCode
+            || session.runtime != Runtime::Host
+            || matches!(
+                session.raw_state.as_deref(),
+                Some("question asked" | "permission requested")
+            )
+        {
+            return Ok(session);
+        }
+        self.control.adopt(&RestorableSession {
+            id: session.id.clone(),
+            provider_session_id: session.provider_session_id.clone(),
+            provider: session.provider.clone(),
+            name: session.name.clone(),
+            cwd: session.cwd.clone(),
+            updated_at_ms: millis(session.updated_at),
+            transcript: String::new(),
+        })?;
+        session.capabilities.insert(Capability::Reply);
+        self.refresh();
+        Ok(session)
+    }
 }
 
 /// The provider's reason, in words the voice can say.
@@ -423,7 +456,7 @@ impl VoiceHost for DashboardHost {
     }
 
     fn send(&self, id: &str, text: &str) -> Result<()> {
-        let session = self.controllable(id)?;
+        let session = self.messageable(id)?;
         self.control.reply(&session, text).map(|_| ())
     }
 
@@ -433,7 +466,7 @@ impl VoiceHost for DashboardHost {
     }
 
     fn edit_last(&self, id: &str, text: &str) -> Result<()> {
-        let session = self.controllable(id)?;
+        let session = self.messageable(id)?;
         self.control.edit_last_message(&session, text).map(|_| ())
     }
 
@@ -504,6 +537,162 @@ fn search_words(query: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An OpenCode controller that replies only to sessions adopted first, as
+    /// the real one does for sessions its supervisor does not own.
+    struct OwnedOnly {
+        adopted: Mutex<Vec<String>>,
+        replies: Mutex<Vec<String>>,
+        adopt_fails: bool,
+    }
+
+    impl crate::control::ProviderController for OwnedOnly {
+        fn provider(&self) -> Provider {
+            Provider::OpenCode
+        }
+
+        fn adopt(&self, session: &RestorableSession) -> Result<()> {
+            if self.adopt_fails {
+                bail!("OpenCode supervisor has no live owned server");
+            }
+            self.adopted
+                .lock()
+                .unwrap()
+                .push(session.provider_session_id.clone());
+            Ok(())
+        }
+
+        fn reply(
+            &self,
+            session: &AgentSession,
+            prompt: &str,
+        ) -> Result<crate::control::ControlOutcome> {
+            if !self
+                .adopted
+                .lock()
+                .unwrap()
+                .contains(&session.provider_session_id)
+            {
+                bail!("refusing to control an OpenCode session not created by this supervisor");
+            }
+            self.replies.lock().unwrap().push(prompt.to_owned());
+            Ok(crate::control::ControlOutcome {
+                message: "sent".into(),
+                provider_session_hint: None,
+            })
+        }
+    }
+
+    fn external_row(id: &str, state: SessionState, raw_state: Option<&str>) -> AgentSession {
+        AgentSession {
+            id: format!("opencode:host:{id}"),
+            provider_session_id: id.into(),
+            provider: Provider::OpenCode,
+            runtime: Runtime::Host,
+            kind: SessionKind::Interactive,
+            name: "ads research".into(),
+            cwd: "/work".into(),
+            state,
+            summary: String::new(),
+            raw_state: raw_state.map(str::to_owned),
+            pid: None,
+            started_at: None,
+            updated_at: None,
+            pull_requests: None,
+            capabilities: BTreeSet::from([Capability::Inspect]),
+        }
+    }
+
+    fn host_with(controller: Arc<OwnedOnly>, rows: &[AgentSession]) -> Arc<DashboardHost> {
+        use std::os::unix::fs::PermissionsExt;
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "agentview-voice-host-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut control = ControlHub::new(crate::control::ControlHubConfig {
+            claude_enabled: false,
+            codex_enabled: false,
+            claude_bin: String::new(),
+            codex_bin: String::new(),
+            docker_bin: String::new(),
+            launch_provider: Provider::OpenCode,
+            launch_cwd: dir.clone(),
+            provider_io_enabled: true,
+            yolo: false,
+        })
+        .unwrap();
+        control.register_controller(controller).unwrap();
+        let host = DashboardHost::new(
+            control,
+            crate::paused::PausedSessions::load(dir.join("paused.json")).unwrap(),
+            crate::hidden::HiddenSessions::load(dir.join("hidden.json")).unwrap(),
+        );
+        host.publish(rows);
+        host
+    }
+
+    fn controller(adopt_fails: bool) -> Arc<OwnedOnly> {
+        Arc::new(OwnedOnly {
+            adopted: Mutex::default(),
+            replies: Mutex::default(),
+            adopt_fails,
+        })
+    }
+
+    #[test]
+    fn sending_to_a_listed_session_agent_view_does_not_own_adopts_it_first() {
+        for state in [SessionState::NeedsInput, SessionState::Working] {
+            let fake = controller(false);
+            let host = host_with(fake.clone(), &[external_row("ses_a", state, None)]);
+            host.send("opencode:host:ses_a", "yes, go ahead").unwrap();
+            assert_eq!(*fake.adopted.lock().unwrap(), ["ses_a"]);
+            assert_eq!(*fake.replies.lock().unwrap(), ["yes, go ahead"]);
+        }
+    }
+
+    #[test]
+    fn sessions_the_voice_does_not_message_are_not_adopted() {
+        let fake = controller(false);
+        let host = host_with(
+            fake.clone(),
+            &[
+                external_row("ses_a", SessionState::Completed, None),
+                external_row("ses_b", SessionState::Completed, None),
+            ],
+        );
+        host.send("opencode:host:ses_a", "hi").unwrap();
+        assert_eq!(*fake.adopted.lock().unwrap(), ["ses_a"]);
+    }
+
+    #[test]
+    fn a_session_waiting_on_an_opencode_prompt_is_not_adopted() {
+        let fake = controller(false);
+        let host = host_with(
+            fake.clone(),
+            &[external_row(
+                "ses_a",
+                SessionState::NeedsInput,
+                Some("question asked"),
+            )],
+        );
+        let error = host.send("opencode:host:ses_a", "yes").unwrap_err();
+        assert!(format!("{error:#}").contains("reply authority was not granted"));
+        assert!(fake.adopted.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_failed_adoption_reports_its_own_error() {
+        let host = host_with(
+            controller(true),
+            &[external_row("ses_a", SessionState::Completed, None)],
+        );
+        let error = host.send("opencode:host:ses_a", "yes").unwrap_err();
+        assert!(format!("{error:#}").contains("no live owned server"));
+    }
 
     #[test]
     fn one_query_word_hit_does_not_count_for_other_words_or_sessions() {

@@ -1,6 +1,6 @@
 # Voice `send_message`: "reply authority was not granted for this session"
 
-Research note, 2026-11-12. No code changed.
+Research note, 2026-11-12. Fix 1 is implemented (see the end).
 
 ## Summary
 
@@ -178,3 +178,25 @@ ownership gap.
 ## Effort
 
 Fix 1 plus tests: about one agent-hour. Fixes 2 to 4: another half hour.
+
+## Implemented: adopt on demand (fix 1)
+
+- `DashboardHost::messageable` (`src/voice/host.rs`), used by `send` and
+  `edit_last`, adopts a listed OpenCode row that lacks `Reply` right before the
+  send. Rows blocked on `question asked` or `permission requested` are left
+  alone, so the controller's refusal stands. `stop` is unchanged.
+- The note's plan was not enough on its own: `ControlHub::adopt` only wrote
+  `opencode-owned.json` (keeps the row listed), while `Reply` and the
+  controller's `require_owned` read the supervisor's own record
+  (`opencode/server.json`). A history row adopted by the voice or the restore
+  picker was therefore listed but still refused. `OpenCodeController::adopt` now
+  also calls the new `OpenCodeSupervisor::adopt`, which records the session in
+  the live server's record (idempotent; best effort when no server runs and the
+  ownership file exists, so the restore picker still works).
+- Ownership stays on demand, not for every open session. Each owned session
+  costs the supervisor a status read per refresh, a 20-message read when its
+  server time moves, and the V2 question/permission queries per folder. The
+  record is never pruned and already holds about 700 sessions. The voice adopts
+  only the session the developer asked it to message, which is also the set the
+  completion-watch note wants auto-watched (sessions the voice starts or sends
+  to). `watch_session` reads the dashboard snapshot and needs no ownership.

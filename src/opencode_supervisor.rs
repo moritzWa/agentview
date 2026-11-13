@@ -740,6 +740,23 @@ impl OpenCodeSupervisor {
         parse_config_providers(&catalog).map(Some)
     }
 
+    /// Take over a session this supervisor did not create, so it can be
+    /// replied to and edited. Every owned session costs the server a status
+    /// read on each refresh and, when it moved, a message read, so this is for
+    /// a session the developer asked to act on, never for the whole list.
+    /// Returns whether the session was newly recorded; recording one that is
+    /// already owned changes nothing.
+    pub fn adopt(&self, session_id: &str, cwd: &Path, title: &str, summary: &str) -> Result<bool> {
+        validate_cwd(cwd)?;
+        let _lock = StateLock::acquire(&self.lock_path)?;
+        let mut record = self.required_live_record_locked()?;
+        if !add_owned(&mut record, session_id, cwd, title, summary, now_millis())? {
+            return Ok(false);
+        }
+        save_record(&self.record_path, &record)?;
+        Ok(true)
+    }
+
     pub fn reply(&self, session_id: &str, prompt: &str) -> Result<()> {
         let prompt = prompt.trim();
         if prompt.is_empty() {
@@ -3426,6 +3443,43 @@ fn base64_encode(input: &[u8]) -> String {
     output
 }
 
+fn add_owned(
+    record: &mut ServerRecord,
+    session_id: &str,
+    cwd: &Path,
+    title: &str,
+    summary: &str,
+    now: u64,
+) -> Result<bool> {
+    if !session_id.starts_with("ses_")
+        || session_id.len() > 256
+        || session_id
+            .chars()
+            .any(|c| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+    {
+        bail!("invalid OpenCode session ID");
+    }
+    if record.sessions.contains_key(session_id) {
+        return Ok(false);
+    }
+    record.sessions.insert(
+        session_id.to_owned(),
+        OwnedSession {
+            id: session_id.to_owned(),
+            cwd: cwd.into(),
+            title: title.into(),
+            summary: summary.into(),
+            created_at_ms: now,
+            updated_at_ms: now,
+            // Zero makes the next refresh read the session's messages.
+            server_updated_ms: 0,
+            last_user_ms: 0,
+            tail: String::new(),
+        },
+    );
+    Ok(true)
+}
+
 fn validate_cwd(cwd: &Path) -> Result<()> {
     if !cwd.is_absolute() {
         bail!("the OpenCode working directory must be absolute");
@@ -4778,6 +4832,32 @@ mod tests {
             parse_process_stat(stat).unwrap(),
             ("Z".into(), "4242".into())
         );
+    }
+
+    #[test]
+    fn adopting_records_a_foreign_session_once_and_keeps_an_owned_one() {
+        let mut record = ServerRecord {
+            api: ApiVersion::V1,
+            version: RECORD_VERSION,
+            pid: 1,
+            process_start_token: "start".into(),
+            process_cmdline: b"command".to_vec(),
+            executable: "opencode".into(),
+            port: 1234,
+            username: "opencode".into(),
+            password: "a".repeat(64),
+            created_at_ms: 1,
+            sessions: BTreeMap::new(),
+        };
+        let cwd = Path::new("/work");
+        assert!(add_owned(&mut record, "ses_x", cwd, "title", "summary", 5).unwrap());
+        assert!(!add_owned(&mut record, "ses_x", cwd, "other", "other", 9).unwrap());
+        let owned = &record.sessions["ses_x"];
+        assert_eq!((owned.title.as_str(), owned.created_at_ms), ("title", 5));
+        assert_eq!(owned.server_updated_ms, 0);
+        assert!(add_owned(&mut record, "../x", cwd, "t", "s", 5).is_err());
+        assert!(add_owned(&mut record, "plain", cwd, "t", "s", 5).is_err());
+        assert!(validate_record(&record).is_ok());
     }
 
     #[test]
