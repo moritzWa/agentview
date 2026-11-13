@@ -23,13 +23,29 @@ pub(super) fn state_dir() -> Result<PathBuf> {
     if let Some(dir) = crate::fs_util::xdg_home("AGENTVIEW_VOICE_STATE_DIR") {
         return Ok(PathBuf::from(dir));
     }
-    if let Some(state_home) = crate::fs_util::xdg_home("XDG_STATE_HOME") {
-        return Ok(PathBuf::from(state_home).join("agentview/voice"));
+    // A test run must never touch the real key, settings or call logs: the
+    // call log keeps only ten calls, so a few runs push a real one out.
+    #[cfg(test)]
+    {
+        let dir = std::env::temp_dir().join(format!("agentview-voice-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+        }
+        Ok(dir)
     }
-    let home = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .context("HOME is not set")?;
-    Ok(PathBuf::from(home).join(".local/state/agentview/voice"))
+    #[cfg(not(test))]
+    {
+        if let Some(state_home) = crate::fs_util::xdg_home("XDG_STATE_HOME") {
+            return Ok(PathBuf::from(state_home).join("agentview/voice"));
+        }
+        let home = std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .context("HOME is not set")?;
+        Ok(PathBuf::from(home).join(".local/state/agentview/voice"))
+    }
 }
 
 /// Which company's voice API a call uses.
