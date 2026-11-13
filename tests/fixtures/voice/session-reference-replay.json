@@ -1,0 +1,153 @@
+{
+  "note": "Reconstructed from the Nov 12 research note, not a verbatim call transcript. Tools are simulated; no real sessions receive messages.",
+  "history": [
+    {
+      "role": "user",
+      "content": "I want to put a line on my website about the register check. What has that session found so far?"
+    },
+    {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+        {
+          "id": "a1",
+          "type": "function",
+          "function": {
+            "name": "read_session",
+            "arguments": "{\"id\": \"this\", \"turns\": 3}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "a1",
+      "content": "{\"state\": \"working\", \"title\": \"eu-biotech-data-leads\", \"turns\": [{\"you\": \"Run the register check for the EU biotech list.\", \"it\": \"Started the register check; it will take a few minutes.\"}]}"
+    },
+    {
+      "role": "assistant",
+      "content": "It's still running the register check."
+    },
+    {
+      "role": "user",
+      "content": "Did it come back regarding the register check thing?"
+    },
+    {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+        {
+          "id": "a2",
+          "type": "function",
+          "function": {
+            "name": "send_message",
+            "arguments": "{\"id\": \"this\", \"text\": \"Did the register check come back?\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "a2",
+      "content": "{\"context\": {\"on_screen\": \"eu-biotech-data-leads\", \"watching\": [\"eu-biotech-data-leads\"]}, \"note\": \"sent; a busy session queues it\", \"ok\": true}"
+    },
+    {
+      "role": "assistant",
+      "content": "Got it."
+    },
+    {
+      "role": "user",
+      "content": "Okay. Add the footer line about the register check to my website, in the m folder."
+    },
+    {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+        {
+          "id": "a3",
+          "type": "function",
+          "function": {
+            "name": "start_session",
+            "arguments": "{\"folder\": \"m\", \"task\": \"Add a footer line about the register check\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "a3",
+      "content": "{\"context\": {\"on_screen\": \"eu-biotech-data-leads\", \"this_result_is_about\": \"website footer line\", \"warning\": \"The developer is looking at \\\"eu-biotech-data-leads\\\", but this is about \\\"website footer line\\\". If they named it, carry on. If they said \\\"the session\\\", \\\"it\\\" or \\\"that one\\\", check they meant this one, or ask which.\", \"watching\": [\"eu-biotech-data-leads\", \"website footer line\"]}, \"folder\": \"m\", \"id\": \"s2\", \"note\": \"started; it shows up in list_sessions in a few seconds\", \"ok\": true}"
+    },
+    {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+        {
+          "id": "a4",
+          "type": "function",
+          "function": {
+            "name": "watch_session",
+            "arguments": "{\"id\": \"s2\", \"until\": \"done\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "a4",
+      "content": "{\"context\": {\"on_screen\": \"eu-biotech-data-leads\", \"this_result_is_about\": \"website footer line\", \"warning\": \"The developer is looking at \\\"eu-biotech-data-leads\\\", but this is about \\\"website footer line\\\". If they named it, carry on. If they said \\\"the session\\\", \\\"it\\\" or \\\"that one\\\", check they meant this one, or ask which.\", \"watching\": [\"eu-biotech-data-leads\", \"website footer line\"]}, \"note\": \"watch registered, not completed. Wait for the completion notification before reading and relaying the answer\", \"ok\": true, \"watching\": true}"
+    }
+  ],
+  "list": {
+    "last_discussed": [
+      {
+        "id": "s2",
+        "messaged": "just now",
+        "title": "website footer line"
+      },
+      {
+        "id": "s1",
+        "messaged": "3 min ago",
+        "title": "eu-biotech-data-leads"
+      }
+    ],
+    "sessions": [
+      {
+        "agent_last_active": "just now",
+        "folder": "m",
+        "id": "s2",
+        "last_said": "(unchanged since you last heard it)",
+        "state": "done",
+        "title": "website footer line",
+        "you_last_wrote": "just now"
+      },
+      {
+        "agent_last_active": "1 min ago",
+        "folder": "arca",
+        "id": "s1",
+        "last_said": "The register check came back: the UK entry is confirmed, two EU entries are still missing.",
+        "on_screen": true,
+        "state": "done",
+        "title": "eu-biotech-data-leads",
+        "you_last_wrote": "1 min ago"
+      },
+      {
+        "agent_last_active": "2 min ago",
+        "folder": "arca",
+        "id": "s3",
+        "last_said": "(unchanged since you last heard it)",
+        "state": "working",
+        "title": "arca ship cache",
+        "you_last_wrote": "2 min ago"
+      },
+      {
+        "agent_last_active": "unknown",
+        "folder": "arca",
+        "id": "s4",
+        "last_said": "(unchanged since you last heard it)",
+        "state": "needs_you",
+        "title": "ads-performance-research"
+      }
+    ]
+  }
+}

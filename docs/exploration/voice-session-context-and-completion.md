@@ -1,5 +1,49 @@
 # Voice Mode: which session, and when it is done
 
+## November 13 realtime replay
+
+The session-reference prompt now follows the developer's topic, rather than
+equating "it" with the latest message target or automatically preferring the
+screen. A short example asks "Data leads or the website?" after discussing
+data leads and starting a website edit. This is model guidance, not a routing
+guard. There is no routine spoken title prefix.
+
+The previous prompt had conflicting rules and repeated instructions. Adding
+more disambiguation sentences to it did not help the real voice model. A
+compact relay prompt did: in six new realtime conversations per case, the old
+prompt answered from the website in all six ambiguous cases. The compact
+prompt asked which session in five and still picked the website in one.
+Explicit data-leads and website references, sending to data leads, stopping
+the website session, and ending the call all chose the expected tool/target
+in six of six runs each under both prompts. This is an improvement, not a
+guarantee against another mix-up.
+
+These runs use `grok-voice-latest` on xAI's realtime WebSocket, which identified
+itself as `grok-voice-3.0`. They inject text conversation items and simulated
+tool results and collect the generated transcript, discarding audio without
+playing it. They test the actual voice model's reasoning, not microphone
+transcription, the browser, or real session delivery. The conversation is
+reconstructed from this note, not the lost original recording. The default
+fixture assumes the ownership fix lets the earlier send succeed.
+
+With the original failed-send result retained, a separate four-run replay
+improved from zero clarification questions to two, with two wrong website
+answers remaining. The clearer prompt helps but does not eliminate the bug,
+especially when the earlier data-leads send failed. All explicit-reference
+controls in that replay still chose the correct sessions.
+
+Replay with `websocket-client` installed and `XAI_API_KEY` set (or the existing
+voice key file). This makes paid API requests; tools never touch real sessions:
+
+```sh
+python3 scripts/voice_reference_replay.py --baseline a2d5a19 --runs 6 \
+  --cases ambiguous,named,recent,relay,stop,end --output /tmp/voice-replay.json
+```
+
+`--send-failed` retains the original call's reply-authority error instead of
+the successful send. Output includes the spoken answer and read targets so
+the final answer, not just the first tool choice, can be reviewed.
+
 Research note, November 12, 2026. No code changed. It comes from one real Grok
 call (about 9 minutes, `last-call.log`) where the voice answered about the wrong
 session and its picture of session state was stale. Direct observations from the
