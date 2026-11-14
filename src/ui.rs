@@ -405,19 +405,25 @@ fn render_session_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
             continue;
         }
         let visible = app.visible_session_count(group);
+        let scheduled_section = group.key == crate::app::SCHEDULED_GROUP_KEY;
         let mut scheduled_directory = None;
         for (position, index) in group.sessions.iter().enumerate().take(visible) {
             let session = &app.snapshot.sessions[*index];
-            if group.key == crate::app::SCHEDULED_GROUP_KEY
-                && scheduled_directory.as_ref() != Some(&session.cwd)
-            {
-                lines.push(Line::from(Span::styled(
-                    format!("  {}", crate::app::abbreviate_home(&session.cwd)),
-                    Style::default().fg(palette().dim),
-                )));
+            if scheduled_section && scheduled_directory.as_ref() != Some(&session.cwd) {
+                if scheduled_directory.is_some() {
+                    lines.push(Line::default());
+                }
+                lines.push(styled_line(
+                    vec![Span::raw(format!(
+                        "  {}",
+                        crate::app::abbreviate_home(&session.cwd)
+                    ))],
+                    false,
+                ));
                 scheduled_directory = Some(session.cwd.clone());
             }
-            let depth = group.depths.get(position).copied().unwrap_or(0);
+            let depth =
+                group.depths.get(position).copied().unwrap_or(0) + usize::from(scheduled_section);
             let is_selected = selection_visible
                 && app.selection == Some(SelectionKey::Session(session.id.clone()));
             if is_selected {
@@ -434,6 +440,7 @@ fn render_session_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 depth,
                 ChildActivity::of(app, group, position),
                 queued_note(app, session).as_deref(),
+                scheduled_section,
             ));
         }
         let hidden = app.hidden_session_count(group);
@@ -643,6 +650,7 @@ fn render_session_row(
         depth,
         ChildActivity::default(),
         None,
+        false,
     )
 }
 
@@ -700,6 +708,7 @@ fn render_tree_session_row(
     depth: usize,
     children: ChildActivity,
     queued: Option<&str>,
+    scheduled_section: bool,
 ) -> Line<'static> {
     let soft_ask = session.state == SessionState::NeedsInput
         && session.raw_state.as_deref() == Some(crate::turn_classifier::ASKED_IN_MESSAGE);
@@ -756,7 +765,7 @@ fn render_tree_session_row(
     };
     // A hold from a plugin monitor keeps a finished session working. Say so instead of
     // showing a bare "Working" next to the last message, which reads as a live turn.
-    let hold_reason = (view_mode == ViewMode::Directory
+    let hold_reason = ((view_mode == ViewMode::Directory || scheduled_section)
         && matches!(
             session.state,
             SessionState::Working | SessionState::Scheduled
@@ -764,14 +773,19 @@ fn render_tree_session_row(
     .then(|| session.raw_state.as_deref()?.strip_prefix("background: "))
     .flatten()
     .map(|reason| {
-        if reason == "shell" {
+        if scheduled_section {
+            reason.strip_prefix("wake-later ").unwrap_or(reason)
+        } else if reason == "shell" {
             "background shell running"
         } else {
             reason
         }
     });
     let queued = queued.filter(|_| hold_reason.is_none());
-    let state_label = match (view_mode == ViewMode::Directory, hold_reason) {
+    let state_label = match (
+        view_mode == ViewMode::Directory && !scheduled_section,
+        hold_reason,
+    ) {
         (false, _) => "",
         (true, None) if queued.is_some() => "Queued",
         (true, Some(_)) if session.is_scheduled() && !waiting => "Scheduled",
@@ -2832,7 +2846,7 @@ fn state_symbol(state: SessionState, live_animation_visible: bool) -> &'static s
         SessionState::Working if live_animation_visible => "✳",
         SessionState::Working => "·",
         SessionState::Completed => "•",
-        SessionState::Scheduled => "·",
+        SessionState::Scheduled => "•",
         SessionState::Unknown => "?",
     }
 }
@@ -2842,7 +2856,8 @@ fn state_color(state: SessionState) -> Color {
         SessionState::ReadyForReview | SessionState::NeedsInput => palette().attention,
         SessionState::Working => palette().fg,
         SessionState::Completed => palette().complete,
-        SessionState::Scheduled | SessionState::Unknown => palette().dim,
+        SessionState::Scheduled => palette().fg,
+        SessionState::Unknown => palette().dim,
     }
 }
 
@@ -3415,6 +3430,61 @@ mod tests {
     }
 
     #[test]
+    fn scheduled_section_reuses_the_directory_hierarchy_without_repeated_status() {
+        for view_mode in [ViewMode::Directory, ViewMode::Status] {
+            let mut first = session("first reminder", SessionState::Scheduled);
+            first.cwd = PathBuf::from("/work/alpha");
+            first.raw_state = Some("background: wake-later Mon 09:00: Read the reply".into());
+            let mut second = session("second reminder", SessionState::Scheduled);
+            second.cwd = PathBuf::from("/work/beta");
+            second.raw_state = Some("background: wake-later Tue 10:00: Check the review".into());
+            let mut app = App::new(SessionSnapshot {
+                sessions: vec![first, second],
+                ..SessionSnapshot::default()
+            });
+            if app.view_mode != view_mode {
+                app.toggle_view();
+            }
+            app.toggle_scheduled();
+            app.selection = Some(SelectionKey::Session("second reminder".into()));
+            for width in [70, 120] {
+                let mut terminal = Terminal::new(TestBackend::new(width, 15)).unwrap();
+                terminal
+                    .draw(|frame| render_session_list(frame, &app, frame.size()))
+                    .unwrap();
+                let buffer = terminal.backend().buffer();
+                let rendered = buffer_text(buffer);
+                let lines = rendered.lines().collect::<Vec<_>>();
+                assert!(lines[0].starts_with("Scheduled  ctrl+y"), "{rendered}");
+                assert!(lines[1].starts_with("  /work/alpha"), "{rendered}");
+                assert!(lines[2].starts_with("   • first reminder"), "{rendered}");
+                assert!(lines[3].trim().is_empty(), "{rendered}");
+                assert!(lines[4].starts_with("  /work/beta"), "{rendered}");
+                assert!(lines[5].starts_with("   • second reminder"), "{rendered}");
+                assert!(lines[2].contains("Mon 09:00:"), "{rendered}");
+                assert!(lines[5].contains("Tue 10:00:"), "{rendered}");
+                assert!(!rendered.contains("wake-later"), "{rendered}");
+                assert_eq!(rendered.matches("Scheduled").count(), 1, "{rendered}");
+                assert_eq!(buffer.get(2, 1).fg, palette().fg);
+                assert_eq!(buffer.get(3, 2).fg, palette().fg);
+                assert_eq!(buffer.get(5, 5).bg, palette().selected_bg);
+                if width == 120 {
+                    assert!(lines[2].contains("Read the reply"), "{rendered}");
+                    assert!(lines[5].contains("Check the review"), "{rendered}");
+                }
+            }
+            app.toggle_scheduled();
+            let mut terminal = Terminal::new(TestBackend::new(120, 15)).unwrap();
+            terminal
+                .draw(|frame| render_session_list(frame, &app, frame.size()))
+                .unwrap();
+            let rendered = buffer_text(terminal.backend().buffer());
+            assert!(rendered.contains("Scheduled 2  ctrl+y"), "{rendered}");
+            assert!(!rendered.contains("/work/alpha"), "{rendered}");
+        }
+    }
+
+    #[test]
     fn a_parent_the_model_judged_to_ask_still_reads_waiting_while_children_run() {
         let children = ChildActivity {
             working: 3,
@@ -3434,6 +3504,7 @@ mod tests {
                 0,
                 children,
                 None,
+                false,
             )
             .spans
             .iter()
@@ -3455,7 +3526,7 @@ mod tests {
         let row_text = |state, view_mode| {
             let item = session("manager", state);
             render_tree_session_row(
-                &item, view_mode, 120, true, false, true, None, 0, children, None,
+                &item, view_mode, 120, true, false, true, None, 0, children, None, false,
             )
             .spans
             .iter()
@@ -3484,6 +3555,7 @@ mod tests {
             0,
             ChildActivity::default(),
             None,
+            false,
         );
         let quiet: String = quiet
             .spans
@@ -4826,6 +4898,7 @@ mod tests {
                 0,
                 ChildActivity::default(),
                 note,
+                false,
             )
             .spans
             .iter()
