@@ -29,6 +29,7 @@ pub mod pi_supervisor;
 pub mod proc_info;
 pub mod process;
 pub mod queue;
+pub mod session_focus;
 pub mod session_tree;
 pub mod terminal;
 pub mod theme;

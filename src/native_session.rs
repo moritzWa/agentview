@@ -1085,7 +1085,7 @@ fn bridge_session(
             }
             forward_ready_initial_input(&mut initial_input, &screen, &mut pending_input)?;
         }
-        let mut detach = false;
+        let mut detach = crate::session_focus::pending();
         if descriptors[1].revents & libc::POLLIN != 0 {
             let mut input = [0_u8; 256];
             let read =

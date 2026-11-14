@@ -441,6 +441,7 @@ pub fn run_dashboard(
     let mut preview_candidate: Option<(String, Instant)> = None;
     let mut previewed_row: Option<(String, u64)> = None;
     let mut pending_open: Option<PendingOpen> = None;
+    let _focus_registration = crate::session_focus::register().ok();
     watchdog::spawn();
 
     let result = 'dashboard: loop {
@@ -764,6 +765,32 @@ pub fn run_dashboard(
             next_live_animation = Instant::now() + LIVE_SESSION_ANIMATION_INTERVAL;
         }
         watchdog::set_phase(watchdog::Phase::PendingOpen);
+        if let Some(session_id) = crate::session_focus::take() {
+            app.overlay = Overlay::None;
+            app.set_filter("");
+            app.directory_filter.clear();
+            app.reveal_completed_after_launch();
+            current_request.include_completed = true;
+            let _ = hidden_sessions.unhide(&session_id);
+            if app.select_and_reveal_session(&session_id) {
+                pending_open = Some(PendingOpen {
+                    session_id,
+                    since: Instant::now(),
+                    deadline: Instant::now() + DEFERRED_OPEN_TIMEOUT,
+                });
+            } else {
+                pending_reveal = Some(PendingReveal {
+                    session_id,
+                    deadline: Instant::now() + REVEAL_DISCOVERY_TIMEOUT,
+                });
+                if refresh_in_flight {
+                    refresh_after_current = true;
+                } else {
+                    schedule_refresh(&refresh_tx, &current_request, &mut refresh_in_flight)?;
+                }
+            }
+            needs_draw = true;
+        }
         if let Some(pending) = pending_open.take() {
             match app
                 .selected_session()

@@ -34,6 +34,35 @@ const CTRL_X: &[u8] = b"\x18";
 static PTY_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
+fn notification_click_clears_the_filter_selects_and_opens_the_exact_session() {
+    let _serial = serialize_real_tty_test();
+    let mut app = PtyApp::spawn(110, 35);
+    app.wait_for("startup", |s| s.contains("owned-codex-worker"));
+    app.send(CTRL_F);
+    app.send(b"owned-codex-worker\r");
+    app.wait_for("filtered", |s| {
+        s.contains("owned-codex-worker") && !s.contains("documentation-pass")
+    });
+    let socket = std::os::unix::net::UnixDatagram::unbound().unwrap();
+    socket
+        .send_to(
+            b"codex:docker:docs",
+            app._home
+                .path()
+                .join(format!("state/agentview/focus/{}.sock", app.child.id())),
+        )
+        .unwrap();
+    app.wait_for("notification dispatched exact native open", |s| {
+        s.contains("failed to open session:") && s.contains("documentation-pass")
+    });
+    app.send(b" ");
+    let screen = app.wait_for("exact session selected", |s| {
+        s.contains("documentation-pass · Codex")
+    });
+    assert!(screen.contains("documentation-pass"), "{screen}");
+}
+
+#[test]
 fn sqlite_harnesses_launch_foreground_detach_rename_and_resume_together() {
     let _lock = serialize_real_tty_test();
     let mut app = PtyApp::spawn_configured(120, 35, |command, home| {

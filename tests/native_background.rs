@@ -14,6 +14,90 @@ const CHILD_ENV: &str = "AGENTVIEW_NATIVE_BACKGROUND_CHILD";
 const SCREEN_GATED_CHILD_ENV: &str = "AGENTVIEW_SCREEN_GATED_INPUT_CHILD";
 
 #[test]
+fn notification_click_detaches_without_losing_the_target() {
+    const ENV: &str = "AGENTVIEW_FOCUS_CHILD";
+    if std::env::var_os(ENV).is_some() {
+        let _registration = agentview::session_focus::register().unwrap();
+        let mut provider = Command::new("bash");
+        provider.args([
+            "-c",
+            "printf '\\033[2J\\033[HFOCUS_NATIVE_READY'; exec sleep 60",
+        ]);
+        assert!(matches!(
+            native_session::run(provider, "provider:host:focus").unwrap(),
+            NativeSessionExit::Backgrounded
+        ));
+        assert_eq!(
+            agentview::session_focus::take().as_deref(),
+            Some("opencode:host:ses_target")
+        );
+        assert!(agentview::session_focus::take().is_none());
+        native_session::shutdown_all();
+        println!("FOCUS_TARGET_PRESERVED");
+        return;
+    }
+    let state = tempfile::tempdir().unwrap();
+    let (mut master, slave) = outer_pty();
+    set_nonblocking(&master);
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .args([
+            "--exact",
+            "notification_click_detaches_without_losing_the_target",
+            "--nocapture",
+        ])
+        .env(ENV, "1")
+        .env("XDG_STATE_HOME", state.path())
+        .stdin(Stdio::from(slave.try_clone().unwrap()))
+        .stdout(Stdio::from(slave.try_clone().unwrap()))
+        .stderr(Stdio::from(slave));
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() < 0 || libc::ioctl(libc::STDIN_FILENO, libc::TIOCSCTTY as _, 0) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = command.spawn().unwrap();
+    let mut output = Vec::new();
+    read_until(
+        &mut master,
+        &mut output,
+        b"FOCUS_NATIVE_READY",
+        Duration::from_secs(10),
+    );
+    let socket = std::os::unix::net::UnixDatagram::unbound().unwrap();
+    socket
+        .send_to(
+            b"opencode:host:ses_target",
+            state
+                .path()
+                .join(format!("agentview/focus/{}.sock", child.id())),
+        )
+        .unwrap();
+    read_until(
+        &mut master,
+        &mut output,
+        b"FOCUS_TARGET_PRESERVED",
+        Duration::from_secs(10),
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            assert!(status.success(), "{}", String::from_utf8_lossy(&output));
+            break;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("focus child did not exit");
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
 fn boundary_arrows_and_shift_shortcuts_background_and_reattach_the_native_screen() {
     if std::env::var_os(CHILD_ENV).is_some() {
         run_child_scenario();
