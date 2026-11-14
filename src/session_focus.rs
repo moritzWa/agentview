@@ -1,7 +1,9 @@
 //! Local notification clicks hand an exact session to a running dashboard.
 use anyhow::{bail, Result};
+#[cfg(unix)]
 use std::path::PathBuf;
 
+#[cfg(unix)]
 fn directory() -> Result<PathBuf> {
     Ok(crate::last_view::default_last_view_path()?.with_file_name("focus"))
 }
