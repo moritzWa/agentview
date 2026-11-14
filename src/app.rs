@@ -30,6 +30,7 @@ pub const MODEL_PICKER_PAGE_SIZE: usize = 10;
 pub const MIGRATION_PICKER_PAGE_SIZE: usize = 10;
 pub const HIDDEN_PICKER_PAGE_SIZE: usize = 10;
 const PAUSED_GROUP_KEY: &str = "paused";
+pub const SCHEDULED_GROUP_KEY: &str = "scheduled";
 
 /// Result rows the hidden-session picker can show in a terminal of `height`
 /// rows. Rendering and PageUp/PageDown share it so a page is what fits.
@@ -437,7 +438,10 @@ impl App {
             model_cache: BTreeMap::new(),
             model_labels: BTreeMap::new(),
             opencode_pins: Default::default(),
-            collapsed: BTreeSet::from([PAUSED_GROUP_KEY.to_owned()]),
+            collapsed: BTreeSet::from([
+                PAUSED_GROUP_KEY.to_owned(),
+                SCHEDULED_GROUP_KEY.to_owned(),
+            ]),
             visible_limits: BTreeMap::new(),
             session_page_size: SESSION_PAGE_SIZE,
             group_cache: Vec::new(),
@@ -947,6 +951,7 @@ impl App {
         self.view_mode = view_mode;
         self.collapsed.clear();
         self.collapsed.insert(PAUSED_GROUP_KEY.to_owned());
+        self.collapsed.insert(SCHEDULED_GROUP_KEY.to_owned());
         self.visible_limits.clear();
         self.rebuild_group_cache();
         self.reconcile_selection();
@@ -2404,6 +2409,7 @@ impl App {
     fn status_groups(&self) -> Vec<Group> {
         let needle = self.filter.to_ascii_lowercase();
         let mut paused = Vec::new();
+        let mut scheduled = Vec::new();
         let mut grouped: BTreeMap<SessionState, Vec<usize>> = BTreeMap::new();
         for (index, session) in self.snapshot.sessions.iter().enumerate() {
             if !(needle.is_empty() || matches_filter(session, &needle)) {
@@ -2411,6 +2417,8 @@ impl App {
             }
             if self.paused.contains_key(&session.id) {
                 paused.push(index);
+            } else if self.scheduled_only(index) {
+                scheduled.push(index);
             } else {
                 grouped.entry(session.state).or_default().push(index);
             }
@@ -2431,7 +2439,67 @@ impl App {
                 }
             })
         }));
+        if let Some(group) = self.scheduled_group(scheduled) {
+            groups.push(group);
+        }
         groups
+    }
+
+    fn scheduled_only(&self, index: usize) -> bool {
+        let session = &self.snapshot.sessions[index];
+        if !session.is_scheduled() {
+            return false;
+        }
+        // A reminder must not put away a parent whose children need attention.
+        !self.snapshot.sessions.iter().any(|child| {
+            let Some(mut raw) = crate::session_tree::raw_opencode_id(&child.id) else {
+                return false;
+            };
+            let active = child.state == SessionState::NeedsInput
+                || (child.state == SessionState::Working && !child.is_scheduled());
+            if !active {
+                return false;
+            }
+            for _ in 0..64 {
+                let Some(parent) = self.session_parents.get(raw) else {
+                    break;
+                };
+                if Some(parent.as_str()) == crate::session_tree::raw_opencode_id(&session.id) {
+                    return true;
+                }
+                raw = parent;
+            }
+            false
+        })
+    }
+
+    fn scheduled_group(&self, mut sessions: Vec<usize>) -> Option<Group> {
+        if sessions.is_empty() {
+            return None;
+        }
+        sessions.sort_by_key(|index| {
+            let session = &self.snapshot.sessions[*index];
+            (project_group_path(&session.cwd), session.name.clone())
+        });
+        Some(Group {
+            key: SCHEDULED_GROUP_KEY.into(),
+            label: "Scheduled".into(),
+            sessions,
+            depths: Vec::new(),
+        })
+    }
+
+    pub fn toggle_scheduled(&mut self) {
+        if !self.collapsed.remove(SCHEDULED_GROUP_KEY) {
+            self.collapsed.insert(SCHEDULED_GROUP_KEY.into());
+        }
+        if self
+            .groups()
+            .iter()
+            .any(|group| group.key == SCHEDULED_GROUP_KEY)
+        {
+            self.selection = Some(SelectionKey::Group(SCHEDULED_GROUP_KEY.into()));
+        }
     }
 
     /// Replace the spawned-session links. Returns whether anything changed.
@@ -2506,6 +2574,7 @@ impl App {
     fn directory_groups(&self) -> Vec<Group> {
         let needle = self.filter.to_ascii_lowercase();
         let mut paused = Vec::new();
+        let mut scheduled = Vec::new();
         let mut groups: BTreeMap<PathBuf, Vec<usize>> = BTreeMap::new();
         for (index, session) in self.snapshot.sessions.iter().enumerate() {
             if !(needle.is_empty() || matches_filter(session, &needle)) {
@@ -2513,6 +2582,8 @@ impl App {
             }
             if self.paused.contains_key(&session.id) {
                 paused.push(index);
+            } else if self.scheduled_only(index) {
+                scheduled.push(index);
             } else {
                 groups
                     .entry(project_group_path(&session.cwd))
@@ -2542,6 +2613,9 @@ impl App {
                 depths,
             }
         }));
+        if let Some(group) = self.scheduled_group(scheduled) {
+            ordered.push(group);
+        }
         ordered
     }
 
@@ -3199,6 +3273,7 @@ impl App {
             .unwrap_or((input.as_str(), ""));
         match command.to_ascii_lowercase().as_str() {
             "/help" => self.toggle_help(),
+            "/scheduled" => self.toggle_scheduled(),
             "/voice" if argument.is_empty() => return AppAction::ToggleVoice,
             "/voice" => return self.voice_setting(argument),
             "/harness" | "/provider" if argument.is_empty() => self.open_harness_picker(),
@@ -3793,7 +3868,7 @@ pub(crate) fn project_group_path(path: &std::path::Path) -> PathBuf {
         .unwrap_or_else(|| path.to_path_buf())
 }
 
-fn abbreviate_home(path: &std::path::Path) -> String {
+pub(crate) fn abbreviate_home(path: &std::path::Path) -> String {
     std::env::var_os("HOME")
         .map(PathBuf::from)
         .and_then(|home| path.strip_prefix(home).ok().map(PathBuf::from))
@@ -3897,6 +3972,61 @@ mod tests {
             pull_requests: None,
             capabilities: BTreeSet::from([Capability::Inspect]),
         }
+    }
+
+    #[test]
+    fn scheduled_sessions_are_put_away_in_both_views_and_return_when_busy() {
+        let snapshot = || SessionSnapshot {
+            sessions: vec![
+                session("active", SessionState::Working),
+                session("later", SessionState::Scheduled),
+            ],
+            warnings: vec![],
+        };
+        for mode in [ViewMode::Directory, ViewMode::Status] {
+            let mut app = App::new(snapshot());
+            app.view_mode = mode;
+            app.rebuild_group_cache();
+            assert_eq!(app.groups().last().unwrap().key, SCHEDULED_GROUP_KEY);
+            assert!(!app
+                .selectable_keys()
+                .contains(&SelectionKey::Session("later".into())));
+            app.toggle_scheduled();
+            assert!(app
+                .selectable_keys()
+                .contains(&SelectionKey::Session("later".into())));
+            app.toggle_scheduled();
+            for state in [
+                SessionState::Working,
+                SessionState::NeedsInput,
+                SessionState::Completed,
+            ] {
+                let mut next = snapshot();
+                next.sessions[1].state = state;
+                app.replace_snapshot(next);
+                assert!(app
+                    .selectable_keys()
+                    .contains(&SelectionKey::Session("later".into())));
+                assert!(!app.groups().iter().any(|g| g.key == SCHEDULED_GROUP_KEY));
+            }
+        }
+    }
+
+    #[test]
+    fn scheduled_parent_with_a_running_child_stays_in_its_directory() {
+        let mut app = App::new(SessionSnapshot {
+            sessions: vec![
+                session("opencode:host:ses_parent", SessionState::Scheduled),
+                session("opencode:host:ses_child", SessionState::Working),
+            ],
+            warnings: vec![],
+        });
+        app.view_mode = ViewMode::Directory;
+        app.set_session_parents(HashMap::from([("ses_child".into(), "ses_parent".into())]));
+        assert!(!app.groups().iter().any(|g| g.key == SCHEDULED_GROUP_KEY));
+        assert!(app
+            .selectable_keys()
+            .contains(&SelectionKey::Session("opencode:host:ses_parent".into())));
     }
 
     #[test]
@@ -5981,7 +6111,10 @@ mod tests {
         app.toggle_view();
 
         assert_eq!(app.view_mode, ViewMode::Directory);
-        assert_eq!(app.collapsed, BTreeSet::from([PAUSED_GROUP_KEY.to_owned()]));
+        assert_eq!(
+            app.collapsed,
+            BTreeSet::from([PAUSED_GROUP_KEY.to_owned(), SCHEDULED_GROUP_KEY.to_owned()])
+        );
         assert_eq!(app.selection, Some(SelectionKey::Session("one".into())));
         app.toggle_view();
         assert_eq!(app.view_mode, ViewMode::Status);

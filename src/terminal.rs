@@ -2286,6 +2286,10 @@ fn handle_key(app: &mut App, key: KeyEvent) -> AppAction {
                 app.toggle_view();
                 AppAction::None
             }
+            KeyCode::Char('y') if app.overlay == Overlay::None => {
+                app.toggle_scheduled();
+                AppAction::None
+            }
             KeyCode::Char('r') if app.overlay == Overlay::None => {
                 app.start_rename();
                 AppAction::None

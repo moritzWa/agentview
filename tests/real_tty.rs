@@ -1737,7 +1737,9 @@ send({'jsonrpc':'2.0','id':request['id'],'result':{'models':[
     app.wait_for("Copilot account requires login", |screen| {
         screen.contains("choose GitHub Copilot model")
             && screen.contains("GitHub Copilot is not authenticated")
-            && screen.contains("native setup")
+            // Wait for the actionable login state, not the custom-ID footer
+            // which also mentions native setup while a model load settles.
+            && screen.contains("enter/l native setup")
     });
     app.send(b"l");
     app.wait_for("Copilot native login prompt", |screen| {

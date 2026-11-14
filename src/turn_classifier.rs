@@ -164,10 +164,15 @@ impl TurnClassifier {
                         // A status the model calls input must not hide a live
                         // shell. A real question still does.
                         (Verdict::NeedsInput, true) if !message_asks(session) => {
-                            SessionState::Working
+                            if session.is_scheduled() {
+                                SessionState::Scheduled
+                            } else {
+                                SessionState::Working
+                            }
                         }
                         (Verdict::NeedsInput, _) => SessionState::NeedsInput,
                         // Its background work still runs, so it stays Background.
+                        (Verdict::Done, true) if session.is_scheduled() => SessionState::Scheduled,
                         (Verdict::Done, true) => SessionState::Working,
                         (Verdict::Done, false) => SessionState::Completed,
                     };
@@ -241,11 +246,13 @@ impl TurnClassifier {
 /// a monitor, a wake-later) is attached to it. Its last message may still ask
 /// the user something, and the hold must not hide that.
 fn held(session: &AgentSession) -> bool {
-    session.state == SessionState::Working
-        && session
-            .raw_state
-            .as_deref()
-            .is_some_and(|raw| raw.starts_with("background: ") || raw == "background work")
+    matches!(
+        session.state,
+        SessionState::Working | SessionState::Scheduled
+    ) && session
+        .raw_state
+        .as_deref()
+        .is_some_and(|raw| raw.starts_with("background: ") || raw == "background work")
 }
 
 /// Whether the last message asks the user something. A hold stays visible
@@ -453,6 +460,9 @@ mod tests {
     use crate::domain::{Runtime, SessionKind};
 
     fn idle(id: &str, state: SessionState, raw_state: &str, summary: &str) -> AgentSession {
+        // Snapshots of unchanged test turns share their activity timestamp.
+        // Tests exercising a new activity time set updated_at explicitly.
+        static ACTIVITY: std::sync::OnceLock<SystemTime> = std::sync::OnceLock::new();
         AgentSession {
             id: id.into(),
             provider_session_id: id.into(),
@@ -466,7 +476,7 @@ mod tests {
             raw_state: Some(raw_state.into()),
             pid: None,
             started_at: None,
-            updated_at: Some(SystemTime::now()),
+            updated_at: Some(*ACTIVITY.get_or_init(SystemTime::now)),
             pull_requests: None,
             capabilities: BTreeSet::from([Capability::Inspect]),
         }
@@ -585,6 +595,14 @@ mod tests {
 
     #[test]
     fn a_new_turn_is_labelled_again_and_failures_are_not_retried() {
+        // Repeated snapshots describe the same turn, even across a wall-clock
+        // second boundary on a slow runner. Activity time is part of its hash.
+        let updated_at = SystemTime::now();
+        let turn = |summary| {
+            let mut session = idle("one", SessionState::Completed, "", summary);
+            session.updated_at = Some(updated_at);
+            snapshot(vec![session])
+        };
         let asked = Arc::new(AtomicUsize::new(0));
         let counter = Arc::clone(&asked);
         let classifier = TurnClassifier::new(
@@ -598,11 +616,11 @@ mod tests {
             },
         );
         for summary in ["boom", "boom", "Ready?", "Ready?"] {
-            let mut next = snapshot(vec![idle("one", SessionState::Completed, "", summary)]);
+            let mut next = turn(summary);
             classifier.apply(&mut next);
             classifier.wait_for_idle();
         }
-        let mut last = snapshot(vec![idle("one", SessionState::Completed, "", "Ready?")]);
+        let mut last = turn("Ready?");
         classifier.apply(&mut last);
         assert_eq!(last.sessions[0].state, SessionState::NeedsInput);
         assert!(last.warnings.is_empty());

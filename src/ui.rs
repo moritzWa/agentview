@@ -390,6 +390,9 @@ fn render_session_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
             sanitize_inline(&group.label),
             suffix.unwrap_or_default()
         ))];
+        if group.key == crate::app::SCHEDULED_GROUP_KEY {
+            spans.push(Span::styled("  ctrl+y", Style::default().fg(palette().dim)));
+        }
         if let Some(verb) = is_selected.then(|| app.pending_removal_verb()).flatten() {
             spans.push(Span::styled(
                 format!("  ctrl+x again to {verb}"),
@@ -402,8 +405,18 @@ fn render_session_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
             continue;
         }
         let visible = app.visible_session_count(group);
+        let mut scheduled_directory = None;
         for (position, index) in group.sessions.iter().enumerate().take(visible) {
             let session = &app.snapshot.sessions[*index];
+            if group.key == crate::app::SCHEDULED_GROUP_KEY
+                && scheduled_directory.as_ref() != Some(&session.cwd)
+            {
+                lines.push(Line::from(Span::styled(
+                    format!("  {}", crate::app::abbreviate_home(&session.cwd)),
+                    Style::default().fg(palette().dim),
+                )));
+                scheduled_directory = Some(session.cwd.clone());
+            }
             let depth = group.depths.get(position).copied().unwrap_or(0);
             let is_selected = selection_visible
                 && app.selection == Some(SelectionKey::Session(session.id.clone()));
@@ -649,7 +662,9 @@ impl ChildActivity {
                 continue;
             };
             match app.snapshot.sessions[*index].state {
-                SessionState::Working => activity.working += 1,
+                SessionState::Working if !app.snapshot.sessions[*index].is_scheduled() => {
+                    activity.working += 1
+                }
                 SessionState::NeedsInput => activity.needs_input += 1,
                 _ => {}
             }
@@ -690,6 +705,7 @@ fn render_tree_session_row(
         && session.raw_state.as_deref() == Some(crate::turn_classifier::ASKED_IN_MESSAGE);
     let waiting = view_mode == ViewMode::Directory
         && (soft_ask
+            || session.is_scheduled()
             || !matches!(
                 session.state,
                 SessionState::Working | SessionState::NeedsInput
@@ -740,20 +756,25 @@ fn render_tree_session_row(
     };
     // A hold from a plugin monitor keeps a finished session working. Say so instead of
     // showing a bare "Working" next to the last message, which reads as a live turn.
-    let hold_reason = (view_mode == ViewMode::Directory && session.state == SessionState::Working)
-        .then(|| session.raw_state.as_deref()?.strip_prefix("background: "))
-        .flatten()
-        .map(|reason| {
-            if reason == "shell" {
-                "background shell running"
-            } else {
-                reason
-            }
-        });
+    let hold_reason = (view_mode == ViewMode::Directory
+        && matches!(
+            session.state,
+            SessionState::Working | SessionState::Scheduled
+        ))
+    .then(|| session.raw_state.as_deref()?.strip_prefix("background: "))
+    .flatten()
+    .map(|reason| {
+        if reason == "shell" {
+            "background shell running"
+        } else {
+            reason
+        }
+    });
     let queued = queued.filter(|_| hold_reason.is_none());
     let state_label = match (view_mode == ViewMode::Directory, hold_reason) {
         (false, _) => "",
         (true, None) if queued.is_some() => "Queued",
+        (true, Some(_)) if session.is_scheduled() && !waiting => "Scheduled",
         (true, Some(_)) => "Background",
         (true, None) if waiting => "Waiting",
         (true, None) => short_state(session.state),
@@ -1851,6 +1872,7 @@ fn help_sections(app: &App) -> Vec<HelpSection> {
             ("ctrl+g", "bring back a hidden session"),
             ("ctrl+k", "voice mode, again to end"),
             ("ctrl+s", "switch view"),
+            ("ctrl+y", "toggle scheduled"),
             ("ctrl+l", "refresh"),
             ("esc", "quit"),
         ],
@@ -1932,6 +1954,7 @@ fn help_sections(app: &App) -> Vec<HelpSection> {
         title: "commands",
         entries: vec![
             ("/filter text", "filter sessions"),
+            ("/scheduled", "toggle scheduled"),
             ("/restore", "bring back a hidden session"),
             ("/completed", "show or hide finished"),
             ("/cd path", "start in any directory"),
@@ -2809,6 +2832,7 @@ fn state_symbol(state: SessionState, live_animation_visible: bool) -> &'static s
         SessionState::Working if live_animation_visible => "✳",
         SessionState::Working => "·",
         SessionState::Completed => "•",
+        SessionState::Scheduled => "·",
         SessionState::Unknown => "?",
     }
 }
@@ -2818,7 +2842,7 @@ fn state_color(state: SessionState) -> Color {
         SessionState::ReadyForReview | SessionState::NeedsInput => palette().attention,
         SessionState::Working => palette().fg,
         SessionState::Completed => palette().complete,
-        SessionState::Unknown => palette().dim,
+        SessionState::Scheduled | SessionState::Unknown => palette().dim,
     }
 }
 
@@ -2828,6 +2852,7 @@ fn short_state(state: SessionState) -> &'static str {
         SessionState::NeedsInput => "Needs input",
         SessionState::Working => "Working",
         SessionState::Completed => "Done",
+        SessionState::Scheduled => "Scheduled",
         SessionState::Unknown => "Unknown",
     }
 }

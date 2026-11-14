@@ -69,6 +69,7 @@ impl Info {
     pub fn state_word(&self) -> &'static str {
         match self.state {
             SessionState::Working => "working",
+            SessionState::Scheduled => "scheduled",
             SessionState::NeedsInput => "needs_you",
             SessionState::Completed | SessionState::ReadyForReview => "done",
             SessionState::Unknown => "unknown",
@@ -293,6 +294,7 @@ fn describe(info: &Info, before: Option<SessionState>) -> String {
     let title = &info.title;
     match info.state {
         SessionState::Working => format!("\"{title}\" started working."),
+        SessionState::Scheduled => format!("\"{title}\" is scheduled to resume later."),
         SessionState::NeedsInput => format!("\"{title}\" now needs the developer.{said}"),
         SessionState::Completed | SessionState::ReadyForReview => {
             if before == Some(SessionState::Working) || before.is_none() {
