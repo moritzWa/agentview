@@ -121,6 +121,11 @@ enum Commands {
 
 #[derive(Clone, Debug, Eq, PartialEq, Subcommand)]
 enum SessionCommand {
+    /// Open an exact session in the most recently started running dashboard.
+    Open {
+        #[arg(value_name = "SESSION_ID")]
+        session_id: String,
+    },
     /// Archive a bounded batch of exact agentview-owned completed Codex sessions.
     Archive {
         /// Limit candidates to sessions under this directory.
@@ -504,6 +509,12 @@ struct Cli {
 fn main() -> Result<()> {
     configure_platform_environment()?;
     let mut cli = Cli::parse();
+    if let Some(Commands::Sessions {
+        command: SessionCommand::Open { session_id },
+    }) = &cli.command
+    {
+        return agentview::session_focus::send(session_id).context("could not navigate to session");
+    }
     resolve_default_provider_bins(&mut cli);
     if cli.command.is_none() && !cli.json {
         agentview::perf_log::use_default_file();
@@ -1362,6 +1373,7 @@ fn run_opencode_command(command: &OpenCodeCommand, cli: &Cli) -> Result<()> {
 
 fn run_session_command(command: &SessionCommand, cli: &Cli) -> Result<()> {
     match command {
+        SessionCommand::Open { session_id } => agentview::session_focus::send(session_id),
         SessionCommand::Archive {
             cwd,
             older_than_days,

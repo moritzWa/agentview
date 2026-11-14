@@ -7,6 +7,18 @@ binary and report `agentview VERSION`.
 
 ## Dashboard and JSON options
 
+Notification handlers can open an exact session in a running dashboard:
+
+```console
+agentview sessions open opencode:host:ses_example
+```
+
+Use the normalized ID from `agentview --json`. On macOS and Linux, the command
+targets the most recently started dashboard. It returns from the current native
+session without stopping its work, clears the dashboard search, and opens the
+target session. On macOS it also brings the dashboard's terminal app forward.
+Restart dashboards after updating to enable this command.
+
 ```text
 agentview [OPTIONS]
 ```
