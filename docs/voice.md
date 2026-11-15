@@ -109,8 +109,15 @@ badge has no buttons.
 
 ## Reading sessions and searching
 
-`read_session` returns recent requests and final replies, plus up to six running
-shells. Each has a command excerpt (not the full script), working folder, elapsed
+`read_session` reads committed messages directly from OpenCode's database on every
+call, independent of the search index and dashboard preview. `latest_turn` names
+the newest exchange explicitly. `awaiting_reply` means its request has no recorded
+reply, even if the dashboard says done. Re-reading the same session is allowed
+after the broad-history read limit is reached. Bounded reads keep replies whose
+original request falls outside the window. Call logs retain complete tool results.
+
+The result also includes up to six running shells. Each has a command excerpt
+(not the full script), working folder, elapsed
 seconds and the last three output lines (at most 400 characters). This is a clue
 to progress, not an exact execution position. If live status cannot be read, the
 result says so rather than claiming nothing is running. Shell inspection uses

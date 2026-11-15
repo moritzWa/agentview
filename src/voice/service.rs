@@ -1106,7 +1106,7 @@ impl Inner {
                                     "name": call_.name,
                                     "args": args,
                                     "ms": started.elapsed().as_millis() as u64,
-                                    "result": clip(&result.to_string(), 2000),
+                                    "result": result.to_string(),
                                 }),
                             );
                             registered_watches_only &=

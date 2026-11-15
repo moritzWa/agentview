@@ -439,6 +439,11 @@ fn turns_from_rows(rows: &[TextRow]) -> Vec<SessionTurn> {
                 it: String::new(),
             }),
             "assistant" => {
+                // A bounded read (or imported history) may start after the
+                // question. Never discard a reply just because it is missing.
+                if turns.is_empty() {
+                    turns.push(SessionTurn::default());
+                }
                 if let Some(turn) = turns.last_mut() {
                     turn.it = text.to_owned();
                 }
@@ -1273,6 +1278,7 @@ mod tests {
         let conn = Connection::open(dir.path().join("t.db")).unwrap();
         conn.execute_batch(
             r#"
+            PRAGMA journal_mode=WAL;
             CREATE TABLE session_v2(id TEXT PRIMARY KEY, title TEXT, project_id TEXT,
                 directory TEXT, parent_id TEXT, fork_session_id TEXT,
                 time_created INTEGER, time_updated INTEGER, time_archived INTEGER);
@@ -1315,8 +1321,47 @@ mod tests {
         let (rows, raw) = text_rows(&conn, "s", 3).unwrap();
         assert_eq!(raw, 3);
         let turns = turns_from_rows(&rows);
-        assert_eq!(turns.len(), 1);
-        assert_eq!(turns[0].you, "go");
+        assert_eq!(turns.len(), 2);
+        assert_eq!(turns[0].you, "");
+        assert_eq!(turns[0].it, "first result");
+        assert_eq!(turns[1].you, "go");
+
+        // A later committed reply must be visible even if a previous read saw
+        // the user message without a response. Sequence, not wall clock or ID,
+        // determines which reply is newest.
+        conn.execute_batch(
+            r#"
+            INSERT INTO session_message VALUES
+              ('u3', 's', 'user', 8, 8, 8, '{"text":"restore the good/bad ideas wording"}');
+        "#,
+        )
+        .unwrap();
+        let reader =
+            Connection::open_with_flags(dir.path().join("t.db"), OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .unwrap();
+        let (rows, _) = text_rows(&reader, "s", 100).unwrap();
+        assert_eq!(turns_from_rows(&rows).last().unwrap().it, "");
+        conn.execute_batch(r#"
+            INSERT INTO session_message VALUES
+              ('a0', 's', 'assistant', 9, 1, 1, '{"content":[{"type":"text","text":"Updated to: Jensen Huang line"}]}');
+        "#).unwrap();
+        let (rows, _) = text_rows(&reader, "s", 100).unwrap();
+        assert_eq!(
+            turns_from_rows(&rows).last().unwrap(),
+            &SessionTurn {
+                you: "restore the good/bad ideas wording".into(),
+                it: "Updated to: Jensen Huang line".into(),
+            }
+        );
+        let (rows, _) = text_rows(&reader, "s", 1).unwrap();
+        assert_eq!(
+            turns_from_rows(&rows),
+            vec![SessionTurn {
+                you: String::new(),
+                it: "Updated to: Jensen Huang line".into(),
+            }],
+            "even a window without the original question must expose the latest reply"
+        );
     }
 
     #[test]

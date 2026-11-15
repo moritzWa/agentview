@@ -112,7 +112,7 @@ pub struct Tools {
     /// each came on screen: "the one I was just looking at".
     viewed: Mutex<Vec<(String, u64)>>,
     /// When recent `read_session` calls ran, to stop one request reading everything.
-    reads: Mutex<Vec<u64>>,
+    reads: Mutex<std::collections::HashMap<String, u64>>,
     /// When each session was last given work by a tool.
     touched: Mutex<std::collections::HashMap<String, u64>>,
     /// Folders whose children a spoken name may refer to, such as `~/Code`.
@@ -454,16 +454,18 @@ impl Tools {
     }
 
     fn read(&self, args: &Value) -> Result<Value> {
+        let id = self.resolve(args)?;
         {
             let now = (self.clock)();
             let mut reads = self.reads.lock().unwrap();
-            reads.retain(|at| now.saturating_sub(*at) < READ_WINDOW_MS);
-            if reads.len() >= READS_PER_WINDOW {
+            reads.retain(|_, at| now.saturating_sub(*at) < READ_WINDOW_MS);
+            if !reads.contains_key(&id) && reads.len() >= READS_PER_WINDOW {
                 bail!("enough sessions have been read for one request: answer from what you have; list_sessions already carries what each session last said");
             }
-            reads.push(now);
+            // Bound broad history sweeps, not freshness checks on a session
+            // already being discussed. Those must still reach the database.
+            reads.insert(id.clone(), now);
         }
-        let id = self.resolve(args)?;
         let count = args
             .get("turns")
             .or_else(|| args.get("last_n"))
@@ -485,10 +487,19 @@ impl Tools {
         kept.reverse();
         let infos = self.host.infos();
         let info = infos.iter().find(|info| info.id == id);
-        if let Some(info) = info {
-            self.seen.lock().unwrap().told(&id, &info.tail);
+        if let Some(turn) = turns.last() {
+            self.seen.lock().unwrap().told(&id, &turn.it);
         }
         let mut out = json!({ "turns": kept });
+        // Make the newest exchange explicit, ahead of the older history in the
+        // serialized result. Dashboard previews can lag behind this fresh read.
+        let latest_has_reply = turns.last().is_some_and(|turn| !turn.it.trim().is_empty());
+        out["latest_turn"] = out["turns"]
+            .as_array()
+            .and_then(|turns| turns.last())
+            .cloned()
+            .unwrap_or(Value::Null);
+        out["awaiting_reply"] = json!(!turns.is_empty() && !latest_has_reply);
         match self.host.running_shells(&id) {
             Ok(shells) => out["running_shells"] = json!(shells),
             Err(_) => {
@@ -508,8 +519,9 @@ impl Tools {
                 .unwrap()
                 .get(&id)
                 .is_some_and(|sent| *sent >= info.updated_ms);
-            out["answer_ready"] =
-                json!(info.state == SessionState::Completed && !awaiting_new_reply);
+            out["answer_ready"] = json!(
+                info.state == SessionState::Completed && !awaiting_new_reply && latest_has_reply
+            );
             if info.busy() || awaiting_new_reply {
                 out["still_working"] =
                     json!("the requested reply is not confirmed complete; this content may be stale or unfinished. Wait for done before reporting it as the answer");
@@ -997,6 +1009,7 @@ pub(crate) mod fake {
         pub hits: Mutex<Vec<HistoryHit>>,
         pub shells: Mutex<Vec<crate::opencode_supervisor::ShellSummary>>,
         pub shells_unavailable: Mutex<bool>,
+        pub turns: Mutex<Option<Vec<Turn>>>,
     }
 
     impl FakeHost {
@@ -1031,6 +1044,9 @@ pub(crate) mod fake {
         }
         fn recent_turns(&self, id: &str, turns: usize) -> Result<Vec<Turn>> {
             self.record(format!("read {id} {turns}"))?;
+            if let Some(turns) = self.turns.lock().unwrap().clone() {
+                return Ok(turns);
+            }
             Ok(vec![
                 Turn {
                     you: "Run the benchmark.".into(),
@@ -1231,6 +1247,40 @@ mod tests {
     }
 
     #[test]
+    fn latest_exchange_is_explicit_and_reread_even_when_done_preview_is_stale() {
+        let (host, tools) = tools(two());
+        host.infos.lock().unwrap()[0].state = SessionState::Completed;
+        tools.run("list_sessions", &json!({}));
+        let question = "restore the good/bad ideas wording";
+        *host.turns.lock().unwrap() = Some(vec![Turn {
+            you: question.into(),
+            it: String::new(),
+        }]);
+        let pending = tools.run("read_session", &json!({"id":"s1"}));
+        assert_eq!(pending["answer_ready"], false);
+        assert_eq!(pending["awaiting_reply"], true);
+        let reply = "Updated to: Jensen Huang line";
+        *host.turns.lock().unwrap() = Some(vec![
+            Turn {
+                you: "old question".into(),
+                it: "old answer ".repeat(600),
+            },
+            Turn {
+                you: question.into(),
+                it: reply.into(),
+            },
+        ]);
+        let fresh = tools.run("read_session", &json!({"id":"s1"}));
+        assert_eq!(fresh["latest_turn"], json!({"you":question,"it":reply}));
+        assert_eq!(fresh["awaiting_reply"], false);
+        assert_eq!(fresh["answer_ready"], true);
+        assert_eq!(
+            fresh["turns"].as_array().unwrap().last().unwrap(),
+            &fresh["latest_turn"]
+        );
+    }
+
+    #[test]
     fn long_reply_excerpts_keep_the_subject_and_the_final_outcome() {
         let reply = format!(
             "{} latent working memory {} Final answer.",
@@ -1361,19 +1411,37 @@ mod tests {
 
     #[test]
     fn one_request_cannot_read_every_session() {
-        let (_, tools) = tools(two());
+        let mut infos = two();
+        for n in 0..READS_PER_WINDOW {
+            infos.push(info(
+                &format!("extra{n}"),
+                &format!("extra{n}"),
+                "misc",
+                SessionState::Completed,
+            ));
+        }
+        let (_, tools) = tools(infos);
         tools.run("list_sessions", &json!({}));
-        for _ in 0..READS_PER_WINDOW {
+        for n in 0..READS_PER_WINDOW {
             assert!(tools
-                .run("read_session", &json!({"id": "s1"}))
+                .run("read_session", &json!({"id": format!("extra{n}")}))
                 .get("turns")
                 .is_some());
         }
-        let refused = tools.run("read_session", &json!({"id": "s2"}));
+        let refused = tools.run("read_session", &json!({"id": "voice mode"}));
         assert!(refused["error"]
             .as_str()
             .unwrap()
             .contains("enough sessions have been read"));
+        for _ in 0..READS_PER_WINDOW + 1 {
+            assert!(
+                tools
+                    .run("read_session", &json!({"id":"extra0"}))
+                    .get("turns")
+                    .is_some(),
+                "re-reading a known session must not return a cached answer or be refused"
+            );
+        }
     }
 
     #[test]

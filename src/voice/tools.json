@@ -24,7 +24,7 @@
   {
     "type": "function",
     "name": "read_session",
-    "description": "Read one session's recent requests and final replies, plus up to six currently running shells: a command excerpt, working folder, elapsed seconds and last few output lines. Output is a progress clue, not an exact execution position. Full scripts, logs and intermediate narration are left out. Works for old sessions too; shells_note means live status was unavailable.",
+    "description": "Read fresh session messages directly from history, not the dashboard preview. latest_turn is the newest exchange: you is the developer's request, it is the latest assistant text after it. An empty it with awaiting_reply means no reply is recorded yet, even if state is done. turns contains older context in chronological order. Re-read when the developer says a newer reply exists. Includes up to six running shells; shells_note means live status was unavailable. Scripts, tool output and reasoning are left out.",
     "parameters": {
       "type": "object",
       "properties": {
