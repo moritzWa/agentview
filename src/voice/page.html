@@ -57,7 +57,8 @@ const stateEl = $("state"), log = $("log"), out = $("out");
 // agentview runs this page in a hidden browser with `?hidden`: the microphone is allowed and there is nothing to click.
 const hidden = new URLSearchParams(location.search).has("hidden");
 let ws, pc, dc, stream, ready = hidden, muted = false, retired = false;
-let provider = "openai", xws, ctx, capture, nextTime = 0, playing = [];
+let provider = "openai", xws, ctx, capture, captureSource, nextTime = 0, playing = [];
+let preferredMic = null, inputEpoch = 0, inputRefresh = Promise.resolve();
 // What was said before Grok was ready to listen is kept and sent first, so speaking right after the key loses nothing.
 let heardEarly = [], grokReady = false;
 let youLine = null, voiceLine = null;
@@ -95,11 +96,12 @@ function playOut() {
 document.addEventListener("click", () => { if (out.srcObject) playOut(); ctx?.resume(); });
 
 // How loud the microphone is, shown in the page and reported so agentview can tell a dead one.
-let meterTimer = null;
+let meterTimer = null, meterContext = null;
 function meter(media) {
   clearInterval(meterTimer);
+  meterContext?.close().catch(() => {});
   try {
-    const context = new AudioContext();
+    const context = meterContext = new AudioContext();
     const analyser = context.createAnalyser();
     analyser.fftSize = 512;
     context.createMediaStreamSource(media).connect(analyser);
@@ -116,16 +118,116 @@ function meter(media) {
 }
 let ticks = 0;
 
-// Which microphone the call opened, and which one the system default is now, so a call that keeps an old mic shows in the log.
+// Resolve the default alias to a physical device. Capturing "default" lets macOS
+// input-routing automation silently move an ongoing call to the laptop mic.
+function physicalInput(inputs, groupId, label) {
+  const physical = inputs.filter((d) => !["default", "communications", ""].includes(d.deviceId));
+  const name = label?.replace(/^Default - /, "");
+  return (groupId && physical.find((d) => d.groupId === groupId))
+    || (name && physical.find((d) => d.label === name));
+}
+
+async function openMic() {
+  const audio = { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
+  const devices = () => navigator.mediaDevices.enumerateDevices().then((all) => all.filter((d) => d.kind === "audioinput"));
+  let inputs = await devices();
+  const system = inputs.find((d) => d.deviceId === "default");
+  let selected = physicalInput(inputs, system?.groupId, system?.label);
+  let probe;
+  try {
+    // Before permission, device labels/identities may be hidden. Open briefly to
+    // reveal them, then pin the mic that actually opened, not a newly changed default.
+    if (!selected) {
+      probe = await navigator.mediaDevices.getUserMedia({ audio });
+      const track = probe.getAudioTracks()[0];
+      inputs = await devices();
+      selected = inputs.find((d) => d.deviceId === track.getSettings().deviceId
+        && !["default", "communications", ""].includes(d.deviceId))
+        || physicalInput(inputs, track.getSettings().groupId, track.label);
+    }
+    // Never open the movable alias for the actual call.
+    if (!selected) throw new DOMException("The selected microphone is unavailable", "NotFoundError");
+    const media = await captureInput(selected);
+    preferredMic = selected.deviceId;
+    return media;
+  } finally {
+    probe?.getTracks().forEach((t) => t.stop());
+  }
+}
+
+async function captureInput(device) {
+  const media = await navigator.mediaDevices.getUserMedia({ audio: {
+    echoCancellation: true, noiseSuppression: true, autoGainControl: true,
+    deviceId: { exact: device.deviceId },
+  } });
+  media.getAudioTracks()[0].addEventListener("ended", () => {
+    if (stream === media) refreshInput();
+  });
+  return media;
+}
+
+// A changed default alone must not steal a working microphone. A disconnected
+// device does need a new track, though, for both the WebRTC sender and PCM graph.
+// Keep the original preference so reconnecting AirPods restores them automatically.
+function refreshInput() {
+  const epoch = inputEpoch;
+  inputRefresh = inputRefresh.catch(() => {}).then(async () => {
+    if (epoch !== inputEpoch || !stream) return;
+    const previous = stream;
+    let replacement;
+    try {
+      const inputs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "audioinput");
+      const system = inputs.find((d) => d.deviceId === "default");
+      const selected = inputs.find((d) => d.deviceId === preferredMic)
+        || physicalInput(inputs, system?.groupId, system?.label);
+      const track = previous.getAudioTracks()[0];
+      if (!selected) throw new Error("No microphone is connected");
+      if (track.readyState === "live" && track.getSettings().deviceId === selected.deviceId) return;
+      replacement = await captureInput(selected);
+      const nextTrack = replacement.getAudioTracks()[0];
+      nextTrack.enabled = !muted;
+      if (stream !== previous) return;
+      if (pc) {
+        const sender = pc.getSenders().find((s) => s.track?.kind === "audio");
+        if (!sender) throw new Error("The microphone sender is unavailable");
+        await sender.replaceTrack(nextTrack);
+      }
+      if (stream !== previous) return;
+      if (ctx && capture) {
+        const source = ctx.createMediaStreamSource(replacement);
+        source.connect(capture);
+        captureSource?.disconnect();
+        captureSource = source;
+      }
+      stream = replacement;
+      replacement = null;
+      previous.getTracks().forEach((t) => t.stop());
+      meter(stream);
+      reportInput(stream, "microphone reconnected");
+    } catch (e) {
+      // Leave the call up: the next devicechange can recover when a mic returns.
+      post({ type: "input", why: "microphone unavailable", error: e.message });
+    } finally {
+      replacement?.getTracks().forEach((t) => t.stop());
+    }
+  });
+  return inputRefresh;
+}
+
+// Log the explicit device constraint as well as the label: a default track's
+// label can stay unchanged even after macOS moves its capture to another mic.
 async function reportInput(media, why) {
   try {
     const track = media.getAudioTracks()[0];
     const inputs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "audioinput");
     const system = inputs.find((d) => d.deviceId === "default");
-    post({ type: "input", why, using: track?.label, system_default: system?.label, state: track?.readyState });
+    post({ type: "input", why, using: track?.label, device_id: track?.getSettings().deviceId,
+      pinned: !!track?.getConstraints().deviceId?.exact, system_default: system?.label, state: track?.readyState });
   } catch {}
 }
-navigator.mediaDevices.addEventListener("devicechange", () => { if (stream) reportInput(stream, "devices changed"); });
+navigator.mediaDevices.addEventListener("devicechange", () => {
+  if (stream) { reportInput(stream, "devices changed"); return refreshInput(); }
+});
 
 function applyMute() {
   stream?.getAudioTracks().forEach((t) => { t.enabled = !muted; });
@@ -137,7 +239,7 @@ async function begin() {
   out.muted = false;
   post({ type: "stage", stage: "microphone" });
   try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    stream = await openMic();
   } catch (e) {
     setState("microphone blocked: " + e.name, "bad");
     post({ type: "ended", reason: `the microphone is blocked (${e.name}). On a Mac, allow your terminal or browser under System Settings, Privacy & Security, Microphone` });
@@ -235,7 +337,7 @@ async function beginXai() {
   out.muted = false;
   post({ type: "stage", stage: "microphone" });
   try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    stream = await openMic();
   } catch (e) {
     setState("microphone blocked: " + e.name, "bad");
     post({ type: "ended", reason: `the microphone is blocked (${e.name}). On a Mac, allow your terminal or browser under System Settings, Privacy & Security, Microphone` });
@@ -248,7 +350,8 @@ async function beginXai() {
   post({ type: "audio", on: ctx.state === "running" });
   await ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([captureProcessor], { type: "text/javascript" })));
   capture = new AudioWorkletNode(ctx, "capture");
-  ctx.createMediaStreamSource(stream).connect(capture);
+  captureSource = ctx.createMediaStreamSource(stream);
+  captureSource.connect(capture);
   heardEarly = []; grokReady = false;
   capture.port.onmessage = (e) => {
     const audio = toBase64(e.data);
@@ -307,10 +410,13 @@ function end(reason) {
   try { dc?.close(); } catch {}
   try { pc?.close(); } catch {}
   try { xws?.close(); } catch {}
-  try { stopPlayback(); capture?.disconnect(); ctx?.close(); } catch {}
+  try { stopPlayback(); captureSource?.disconnect(); capture?.disconnect(); ctx?.close(); } catch {}
   stream?.getTracks().forEach((t) => t.stop());
   clearInterval(meterTimer);
-  pc = dc = stream = xws = ctx = capture = null; youLine = voiceLine = null; heardEarly = []; grokReady = false;
+  meterContext?.close().catch(() => {}); meterContext = null;
+  pc = dc = stream = xws = ctx = capture = captureSource = null; preferredMic = null;
+  inputEpoch++;
+  youLine = voiceLine = null; heardEarly = []; grokReady = false;
   out.srcObject = null;
   $("mute").disabled = true; $("end").disabled = true;
   setState(ready ? "ready" : "idle", ready ? "live" : "");
