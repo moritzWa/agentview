@@ -749,7 +749,9 @@ fn install_views(db: &Connection, projection: Projection) -> Result<Views> {
         SELECT id, session_id, time_created, time_updated,
                json_set(data, '$.role', CASE type WHEN 'idle' THEN 'assistant'
                         WHEN 'shell' THEN 'assistant' WHEN 'compaction' THEN 'assistant'
-                        WHEN 'synthetic' THEN 'user' ELSE type END,
+                         WHEN 'synthetic' THEN 'user' ELSE type END,
+                         '$.synthetic', CASE WHEN type='synthetic' THEN 1
+                             ELSE COALESCE(json_extract(data, '$.synthetic'), 0) END,
                         '$.midTurn', CASE WHEN type='assistant' THEN 1 ELSE 0 END,
                         '$.time.completed', CASE WHEN type='idle' THEN time_created
                         WHEN type IN ('shell','compaction') AND json_extract(data,'$.status') NOT IN ('running','pending') THEN time_updated
@@ -1270,6 +1272,51 @@ mod tests {
         assert!(is_interrupted(Some(&last("open"))));
         assert_eq!(last("asked").question, 1);
         assert!(is_interrupted(Some(&last("asked"))));
+    }
+
+    #[test]
+    fn shell_notifications_do_not_count_as_new_user_messages_or_clear_a_defer() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE session_v2(id TEXT PRIMARY KEY, title TEXT, project_id TEXT,
+                directory TEXT, parent_id TEXT, time_created INTEGER,
+                time_updated INTEGER, time_archived INTEGER);
+            CREATE TABLE session_message(id TEXT PRIMARY KEY, session_id TEXT, type TEXT,
+                seq INTEGER, time_created INTEGER, time_updated INTEGER, data TEXT);
+            INSERT INTO session_v2 VALUES ('s', 'Certification', 'p', '/work', NULL, 1, 300, NULL);
+            INSERT INTO session_message VALUES
+                ('u', 's', 'user', 1, 100, 100, '{"text":"publish it"}'),
+                ('a', 's', 'idle', 2, 200, 200, '{}'),
+                ('n', 's', 'synthetic', 3, 300, 300, '{"text":"background shell exited"}');
+        "#,
+        )
+        .unwrap();
+        install_compatibility_views(&conn).unwrap();
+        let read = || {
+            let raw: String = conn
+                .query_row(super::super::opencode::GLOBAL_SESSION_ROWS, [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            serde_json::from_str::<serde_json::Value>(&raw).unwrap()
+        };
+        let row = read();
+        assert_eq!(row["userCreated"], 100);
+        assert_eq!(
+            row["last"]["created"], 300,
+            "notifications still count as session activity"
+        );
+        conn.execute_batch(
+            r#"INSERT INTO session_message VALUES
+            ('u2', 's', 'user', 4, 400, 400, '{"text":"continue brainstorming"}');"#,
+        )
+        .unwrap();
+        assert_eq!(
+            read()["userCreated"],
+            400,
+            "a real message still clears an older defer"
+        );
     }
 
     #[test]

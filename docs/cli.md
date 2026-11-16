@@ -710,6 +710,9 @@ works, for example `/defer 2026-12-01T10:00 Check the reply`. `/keep` brings the
 selected session back without cancelling its wakes. Both commands currently
 require a host OpenCode session and the local helper. `Ctrl+Y` or `/scheduled`
 expands the deferred section in either view.
+Scheduled stays at the top directly below Paused. Shell-exit notifications
+still count as session activity, but do not count as new messages from you and
+cannot clear a defer. Reminder and plain rows share the same column widths.
 
 A native OpenCode background shell prefixed with
 `AGENTVIEW_SHELL_PURPOSE=service ` keeps an app available without holding the
