@@ -35,6 +35,91 @@ const CTRL_X: &[u8] = b"\x18";
 static PTY_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
+fn work_view_global_command_hides_personal_rows_and_restores_the_draft() {
+    let _serial = serialize_real_tty_test();
+    let mut app = PtyApp::spawn_configured(120, 35, |command, home| {
+        let work = home.path().join("work");
+        let personal = home.path().join("personal");
+        fs::create_dir_all(&work).unwrap();
+        fs::create_dir_all(&personal).unwrap();
+        let mut fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../fixtures/populated-sessions.json")).unwrap();
+        for session in fixture["sessions"].as_array_mut().unwrap() {
+            session["cwd"] = serde_json::json!(if session["name"] == "owned-codex-worker" {
+                &work
+            } else {
+                &personal
+            });
+        }
+        let fixture_path = home.path().join("fixture.json");
+        fs::write(&fixture_path, serde_json::to_vec(&fixture).unwrap()).unwrap();
+        let config = home.path().join("config/agentview");
+        fs::create_dir_all(&config).unwrap();
+        fs::write(
+            config.join("work-roots.json"),
+            serde_json::to_vec(&serde_json::json!({"roots": [work]})).unwrap(),
+        )
+        .unwrap();
+        command
+            .env("XDG_CONFIG_HOME", home.path().join("config"))
+            .arg("--include-temp")
+            .args([
+                "--fixture",
+                fixture_path.to_str().unwrap(),
+                "--all",
+                "--include-interactive",
+                "--no-host-claude",
+                "--no-host-codex",
+                "--no-host-pi",
+                "--no-host-opencode",
+                "--no-host-cursor",
+                "--no-host-copilot",
+                "--no-host-antigravity",
+                "--no-host-mistral-vibe",
+                "--no-host-muse",
+                "--no-host-qwen",
+                "--no-host-kimi",
+                "--refresh-ms",
+                "60000",
+            ]);
+    });
+    app.wait_for("all sessions", |s| {
+        s.contains("owned-codex-worker") && s.contains("documentation-pass")
+    });
+    app.send(b"private unsent draft");
+    app.wait_for("private draft", |s| s.contains("private unsent draft"));
+    let toggle = |app: &PtyApp| {
+        assert!(Command::new(
+            std::env::var_os("AGENTVIEW_TEST_BIN")
+                .unwrap_or_else(|| env!("CARGO_BIN_EXE_agentview").into())
+        )
+        .args(["view", "toggle"])
+        .env("XDG_STATE_HOME", app._home.path().join("state"))
+        .output()
+        .unwrap()
+        .status
+        .success());
+    };
+    toggle(&app);
+    app.wait_for("work-only overview", |s| {
+        s.contains("Work only")
+            && s.contains("owned-codex-worker")
+            && !s.contains("documentation-pass")
+            && !s.contains("private unsent draft")
+    });
+    app.send(CTRL_S);
+    app.wait_for("work-only directory view", |s| {
+        s.contains("Work only") && !s.contains("documentation-pass")
+    });
+    toggle(&app);
+    app.wait_for("personal view and draft restored", |s| {
+        !s.contains("Work only")
+            && s.contains("documentation-pass")
+            && s.contains("private unsent draft")
+    });
+}
+
+#[test]
 fn control_c_discards_the_draft_and_keeps_the_dashboard_running() {
     let _serial = serialize_real_tty_test();
     let mut app = PtyApp::spawn(110, 35);
@@ -269,7 +354,10 @@ impl PtyApp {
         let stdout = duplicate_file(slave).expect("duplicate slave for stdout");
         let stderr = unsafe { File::from_raw_fd(slave) };
         let home = tempfile::tempdir().expect("create isolated home");
-        let mut command = Command::new(env!("CARGO_BIN_EXE_agentview"));
+        let mut command = Command::new(
+            std::env::var_os("AGENTVIEW_TEST_BIN")
+                .unwrap_or_else(|| env!("CARGO_BIN_EXE_agentview").into()),
+        );
         command
             .env("TERM", "xterm-256color")
             .env("HOME", home.path())

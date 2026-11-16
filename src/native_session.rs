@@ -1062,7 +1062,8 @@ fn bridge_session(
                 return Err(error).context("provider-native terminal poll failed");
             }
         }
-        if descriptors[0].revents & libc::POLLIN != 0 {
+        let scope_changed = crate::work_view::native_scope_changed();
+        if !scope_changed && descriptors[0].revents & libc::POLLIN != 0 {
             if let Some(sent) = echo_wait.take() {
                 crate::perf!(
                     "echo",
@@ -1085,8 +1086,8 @@ fn bridge_session(
             }
             forward_ready_initial_input(&mut initial_input, &screen, &mut pending_input)?;
         }
-        let mut detach = crate::session_focus::pending();
-        if descriptors[1].revents & libc::POLLIN != 0 {
+        let mut detach = scope_changed || crate::session_focus::pending();
+        if !detach && descriptors[1].revents & libc::POLLIN != 0 {
             let mut input = [0_u8; 256];
             let read =
                 unsafe { libc::read(libc::STDIN_FILENO, input.as_mut_ptr().cast(), input.len()) };

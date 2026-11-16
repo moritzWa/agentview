@@ -72,6 +72,11 @@ enum LaunchProvider {
 
 #[derive(Clone, Debug, Eq, PartialEq, Subcommand)]
 enum Commands {
+    /// Switch all running dashboards between work repos and every session.
+    View {
+        #[arg(value_enum)]
+        mode: ScopeMode,
+    },
     /// Private mobile history sync and queued replies. Disabled until explicitly paired.
     Bridge {
         #[arg(long, value_name = "PATH")]
@@ -151,6 +156,13 @@ enum BridgeCommand {
     Install,
     /// Stop and disable the login item, retaining pairing and cloud history.
     Stop,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum ScopeMode {
+    Toggle,
+    Work,
+    All,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Subcommand)]
@@ -555,6 +567,21 @@ fn main() -> Result<()> {
     }
     if let Some(command) = cli.command.as_ref() {
         match command {
+            Commands::View { mode } => {
+                let store = agentview::work_view::WorkViewStore::load_default()?;
+                let enabled = match mode {
+                    ScopeMode::Toggle => store.toggle()?,
+                    ScopeMode::Work => {
+                        store.set(true)?;
+                        true
+                    }
+                    ScopeMode::All => {
+                        store.set(false)?;
+                        false
+                    }
+                };
+                println!("{}", if enabled { "Work only" } else { "All sessions" });
+            }
             Commands::Bridge { state_dir, command } => {
                 let dir = state_dir
                     .clone()

@@ -117,7 +117,11 @@ pub fn terminal_title(app: &App) -> String {
 }
 
 fn render_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let title = format!("agentview v{}", env!("CARGO_PKG_VERSION"));
+    let title = format!(
+        "agentview v{}{}",
+        env!("CARGO_PKG_VERSION"),
+        if app.work_only { " · Work only" } else { "" }
+    );
 
     let lines = if area.height <= 2 {
         vec![

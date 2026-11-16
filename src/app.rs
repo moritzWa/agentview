@@ -252,7 +252,26 @@ pub struct Group {
 }
 
 #[derive(Debug)]
+struct WorkReturn {
+    view_mode: ViewMode,
+    selection: Option<SelectionKey>,
+    filter: String,
+    overlay: Overlay,
+    input: String,
+    input_cursor: Option<usize>,
+    input_anchor: Option<usize>,
+    pasted: PastedParts,
+    native_session: Option<String>,
+    launch_directory: Option<PathBuf>,
+}
+
+#[derive(Debug)]
 pub struct App {
+    pub work_only: bool,
+    pub work_roots: crate::work_view::WorkRoots,
+    work_return: Option<WorkReturn>,
+    pub scope_native_return: Option<String>,
+    pub last_work_session: Option<String>,
     pub snapshot: SessionSnapshot,
     pub includes_completed: bool,
     pub view_mode: ViewMode,
@@ -395,6 +414,11 @@ impl App {
             .position(|target| target.provider == launch_provider)
             .unwrap_or(0);
         let mut app = Self {
+            work_only: false,
+            work_roots: Default::default(),
+            work_return: None,
+            scope_native_return: None,
+            last_work_session: None,
             snapshot,
             includes_completed,
             view_mode: ViewMode::Status,
@@ -779,7 +803,21 @@ impl App {
     /// shows and new sessions start in.
     pub fn launch_directory(&self) -> Option<PathBuf> {
         if let Some(directory) = &self.launch_directory_override {
-            return Some(directory.clone());
+            if self.scope_allows(directory) {
+                return Some(directory.clone());
+            }
+        }
+        if self.work_only {
+            return self
+                .selected_session()
+                .filter(|s| self.scope_allows(&s.cwd))
+                .or_else(|| {
+                    self.snapshot
+                        .sessions
+                        .iter()
+                        .find(|s| self.scope_allows(&s.cwd))
+                })
+                .map(|s| s.cwd.clone());
         }
         if self.view_mode != ViewMode::Directory {
             return None;
@@ -2408,11 +2446,91 @@ impl App {
     }
 
     pub fn filtered(&self, session: &AgentSession) -> bool {
+        if !self.scope_allows(&session.cwd) {
+            return false;
+        }
         if self.filter.is_empty() {
             return true;
         }
         let needle = self.filter.to_ascii_lowercase();
         matches_filter(session, &needle)
+    }
+
+    pub fn scope_allows(&self, cwd: &Path) -> bool {
+        !self.work_only || self.work_roots.contains(cwd)
+    }
+
+    /// Change display scope without changing discovery or provider state.
+    /// Reopen a native session only if the switch interrupted one.
+    pub fn set_work_only(&mut self, enabled: bool, native: Option<String>) -> Option<String> {
+        if self.work_only == enabled {
+            return None;
+        }
+        let was_native = native.is_some();
+        if enabled {
+            self.work_return = Some(WorkReturn {
+                view_mode: self.view_mode,
+                selection: self.selection.clone(),
+                filter: self.filter.clone(),
+                overlay: self.overlay.clone(),
+                input: self.input.clone(),
+                input_cursor: self.input_cursor,
+                input_anchor: self.input_anchor,
+                pasted: self.pasted.clone(),
+                native_session: native.clone(),
+                launch_directory: self.launch_directory_override.take(),
+            });
+            self.filter.clear();
+            self.overlay = Overlay::None;
+            self.input.clear();
+            self.input_cursor = None;
+            self.input_anchor = None;
+            self.pasted = Default::default();
+        }
+        self.work_only = enabled;
+        self.notice = None;
+        self.pending_removal = None;
+        self.rebuild_group_cache();
+        let target = if enabled {
+            native
+                .filter(|id| {
+                    self.session_by_id(id)
+                        .is_some_and(|s| self.work_roots.contains(&s.cwd))
+                })
+                .or_else(|| {
+                    self.last_work_session.clone().filter(|id| {
+                        self.session_by_id(id)
+                            .is_some_and(|s| self.work_roots.contains(&s.cwd))
+                    })
+                })
+                .or_else(|| {
+                    self.snapshot
+                        .sessions
+                        .iter()
+                        .find(|s| self.work_roots.contains(&s.cwd))
+                        .map(|s| s.id.clone())
+                })
+                .filter(|_| was_native)
+        } else if let Some(saved) = self.work_return.take() {
+            self.view_mode = saved.view_mode;
+            self.selection = saved.selection;
+            self.filter = saved.filter;
+            self.overlay = saved.overlay;
+            self.input = saved.input;
+            self.input_cursor = saved.input_cursor;
+            self.input_anchor = saved.input_anchor;
+            self.pasted = saved.pasted;
+            self.launch_directory_override = saved.launch_directory;
+            self.rebuild_group_cache();
+            saved.native_session
+        } else {
+            None
+        };
+        if let Some(id) = &target {
+            self.select_and_reveal_session(id);
+        }
+        self.reconcile_selection();
+        target.filter(|id| self.session_by_id(id).is_some())
     }
 
     fn status_groups(&self) -> Vec<Group> {
@@ -2421,7 +2539,9 @@ impl App {
         let mut scheduled = Vec::new();
         let mut grouped: BTreeMap<SessionState, Vec<usize>> = BTreeMap::new();
         for (index, session) in self.snapshot.sessions.iter().enumerate() {
-            if !(needle.is_empty() || matches_filter(session, &needle)) {
+            if !self.scope_allows(&session.cwd)
+                || !(needle.is_empty() || matches_filter(session, &needle))
+            {
                 continue;
             }
             if self.paused.contains_key(&session.id) {
@@ -2586,7 +2706,9 @@ impl App {
         let mut scheduled = Vec::new();
         let mut groups: BTreeMap<PathBuf, Vec<usize>> = BTreeMap::new();
         for (index, session) in self.snapshot.sessions.iter().enumerate() {
-            if !(needle.is_empty() || matches_filter(session, &needle)) {
+            if !self.scope_allows(&session.cwd)
+                || !(needle.is_empty() || matches_filter(session, &needle))
+            {
                 continue;
             }
             if self.paused.contains_key(&session.id) {
@@ -2899,6 +3021,9 @@ impl App {
 
     /// Every row the picker can offer, before filtering.
     pub fn picker_candidate_count(&self) -> usize {
+        if self.work_only {
+            return self.hidden_choices().len();
+        }
         self.open_candidates.len() + self.hidden_candidates.len()
     }
 
@@ -2916,6 +3041,12 @@ impl App {
             .open_candidates
             .iter()
             .chain(&self.hidden_candidates)
+            .filter(|record| {
+                !self.work_only
+                    || self
+                        .picker_cwd(&record.id)
+                        .is_some_and(|cwd| self.work_roots.contains(cwd))
+            })
             .filter_map(|record| {
                 if needle.is_empty() || self.label_matches(record, &needle) {
                     Some((record, true))
@@ -3492,7 +3623,12 @@ impl App {
                 terms.iter().all(|term| label.contains(term.as_str()))
             })
             .cloned();
-        typed.clone().into_iter().chain(matches).collect()
+        typed
+            .clone()
+            .into_iter()
+            .chain(matches)
+            .filter(|path| self.scope_allows(path))
+            .collect()
     }
 
     pub fn move_directory_selection(&mut self, delta: isize) {
@@ -4000,6 +4136,80 @@ mod tests {
             pull_requests: None,
             capabilities: BTreeSet::from([Capability::Inspect]),
         }
+    }
+
+    #[test]
+    fn work_view_filters_both_lists_and_restores_the_personal_draft() {
+        let dir = tempfile::tempdir().unwrap();
+        let work = dir.path().join("work");
+        let personal = dir.path().join("personal");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::create_dir_all(&personal).unwrap();
+        let mut a = session("work-chat", SessionState::Working);
+        a.cwd = work.clone();
+        let mut b = session("personal-chat", SessionState::Working);
+        b.cwd = personal;
+        let mut app = App::new(SessionSnapshot {
+            sessions: vec![a, b],
+            ..Default::default()
+        });
+        app.work_roots = crate::work_view::WorkRoots::new(vec![work.clone()]);
+        app.selection = Some(SelectionKey::Session("personal-chat".into()));
+        app.filter = "personal".into();
+        app.input = "private unsent draft".into();
+        app.overlay = Overlay::Composer(ComposerMode::NewSession);
+        assert!(app.set_work_only(true, None).is_none());
+        assert!(app.input.is_empty());
+        assert_eq!(app.overlay, Overlay::None);
+        for mode in [ViewMode::Status, ViewMode::Directory] {
+            app.set_view_mode(mode);
+            assert_eq!(
+                app.groups().iter().map(|g| g.sessions.len()).sum::<usize>(),
+                1
+            );
+            assert!(!app.select_and_reveal_session("personal-chat"));
+        }
+        app.directory_candidates = vec![work.clone(), dir.path().join("personal")];
+        assert_eq!(app.directory_choices(), vec![work]);
+        app.open_restore_picker(Vec::new());
+        assert!(app.hidden_choices().iter().all(|r| r.id == "work-chat"));
+        app.set_work_only(false, None);
+        assert_eq!(app.filter, "personal");
+        assert_eq!(app.input, "private unsent draft");
+        assert_eq!(app.overlay, Overlay::Composer(ComposerMode::NewSession));
+        assert_eq!(
+            app.selection,
+            Some(SelectionKey::Session("personal-chat".into()))
+        );
+    }
+
+    #[test]
+    fn work_view_native_toggle_returns_to_the_previous_chat() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut a = session("work-chat", SessionState::Working);
+        a.cwd = dir.path().into();
+        let b = session("personal-chat", SessionState::Completed);
+        let mut app = App::new(SessionSnapshot {
+            sessions: vec![a, b],
+            ..Default::default()
+        });
+        app.work_roots = crate::work_view::WorkRoots::new(vec![dir.path().into()]);
+        assert_eq!(
+            app.set_work_only(true, Some("personal-chat".into())),
+            Some("work-chat".into())
+        );
+        assert_eq!(
+            app.set_work_only(false, Some("work-chat".into())),
+            Some("personal-chat".into())
+        );
+        assert_eq!(
+            app.set_work_only(true, Some("work-chat".into())),
+            Some("work-chat".into())
+        );
+        app.set_work_only(false, None);
+        app.work_roots = Default::default();
+        assert_eq!(app.set_work_only(true, Some("personal-chat".into())), None);
+        assert!(app.groups().is_empty());
     }
 
     #[test]
