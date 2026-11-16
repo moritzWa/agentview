@@ -1,0 +1,83 @@
+[
+  {
+    "at": 0.15,
+    "text": "All your coding agents. One terminal. One voice.",
+    "file": "00.mp3",
+    "voice": "JBFqnCBsd6RMkjVDRZzb",
+    "duration": 2.9257291666666667,
+    "speed": 1,
+    "end": 3.0757291666666666
+  },
+  {
+    "at": 3.25,
+    "text": "Which sessions need my attention?",
+    "file": "01.mp3",
+    "voice": "nPczCjzI2devNBz1zQrb",
+    "duration": 1.8576041666666667,
+    "speed": 1,
+    "end": 5.1076041666666665
+  },
+  {
+    "at": 5.25,
+    "text": "Your checkout agent asked whether coupons belong in the cart or at checkout.",
+    "file": "02.mp3",
+    "voice": "JBFqnCBsd6RMkjVDRZzb",
+    "duration": 4.133166666666667,
+    "speed": 1,
+    "end": 9.383166666666668
+  },
+  {
+    "at": 10.1,
+    "text": "Tell it checkout.",
+    "file": "03.mp3",
+    "voice": "nPczCjzI2devNBz1zQrb",
+    "duration": 1.1148125,
+    "speed": 1.0459441441441446,
+    "end": 11.214812499999999
+  },
+  {
+    "at": 11.35,
+    "text": "Sent.",
+    "file": "04.mp3",
+    "voice": "JBFqnCBsd6RMkjVDRZzb",
+    "duration": 0.6037291666666667,
+    "speed": 1,
+    "end": 11.953729166666665
+  },
+  {
+    "at": 12.6,
+    "text": "Take your agents with you.",
+    "file": "05.mp3",
+    "voice": "JBFqnCBsd6RMkjVDRZzb",
+    "duration": 1.4860833333333334,
+    "speed": 1,
+    "end": 14.086083333333333
+  },
+  {
+    "at": 17.35,
+    "text": "Keep work in view. Everything else keeps running.",
+    "file": "06.mp3",
+    "voice": "JBFqnCBsd6RMkjVDRZzb",
+    "duration": 2.6006458333333335,
+    "speed": 1,
+    "end": 19.950645833333336
+  },
+  {
+    "at": 20.6,
+    "text": "Schedule the follow-up. Agent bouncer queues the heavy jobs.",
+    "file": "07.mp3",
+    "voice": "JBFqnCBsd6RMkjVDRZzb",
+    "duration": 3.6687708333333333,
+    "speed": 1,
+    "end": 24.268770833333335
+  },
+  {
+    "at": 26.0,
+    "text": "Open source. Built in Rust.",
+    "file": "08.mp3",
+    "voice": "JBFqnCBsd6RMkjVDRZzb",
+    "duration": 1.9040416666666666,
+    "speed": 1,
+    "end": 27.904041666666668
+  }
+]
