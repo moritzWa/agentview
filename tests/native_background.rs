@@ -14,6 +14,124 @@ const CHILD_ENV: &str = "AGENTVIEW_NATIVE_BACKGROUND_CHILD";
 const SCREEN_GATED_CHILD_ENV: &str = "AGENTVIEW_SCREEN_GATED_INPUT_CHILD";
 
 #[test]
+fn work_view_toggle_parks_and_resumes_the_same_native_screen() {
+    const ENV: &str = "AGENTVIEW_WORK_VIEW_CHILD";
+    if std::env::var_os(ENV).is_some() {
+        let store = agentview::work_view::WorkViewStore::load_default().unwrap();
+        store.watch_native(false);
+        let mut provider = Command::new("bash");
+        provider.args([
+            "-c",
+            "printf '\\033[2J\\033[HNATIVE_DRAFT_STAYS'; exec sleep 60",
+        ]);
+        let key = "opencode:host:work-toggle-probe";
+        assert!(matches!(
+            native_session::run(provider, key).unwrap(),
+            NativeSessionExit::Backgrounded
+        ));
+        assert!(store.read().unwrap());
+        assert!(native_session::is_backgrounded(key));
+        assert!(native_session::background_screen_contents(key)
+            .unwrap()
+            .1
+            .contains("NATIVE_DRAFT_STAYS"));
+        store.watch_native(true);
+        println!("WORK_SWITCH_RESUMING");
+        assert!(matches!(
+            native_session::resume(key).unwrap(),
+            NativeSessionExit::Backgrounded
+        ));
+        assert!(!store.read().unwrap());
+        assert!(native_session::background_screen_contents(key)
+            .unwrap()
+            .1
+            .contains("NATIVE_DRAFT_STAYS"));
+        native_session::shutdown_all();
+        println!("WORK_SWITCH_PRESERVED");
+        return;
+    }
+    let state = tempfile::tempdir().unwrap();
+    let (mut master, slave) = outer_pty();
+    set_nonblocking(&master);
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .args([
+            "--exact",
+            "work_view_toggle_parks_and_resumes_the_same_native_screen",
+            "--nocapture",
+        ])
+        .env(ENV, "1")
+        .env("XDG_STATE_HOME", state.path())
+        .stdin(Stdio::from(slave.try_clone().unwrap()))
+        .stdout(Stdio::from(slave.try_clone().unwrap()))
+        .stderr(Stdio::from(slave));
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() < 0 || libc::ioctl(libc::STDIN_FILENO, libc::TIOCSCTTY as _, 0) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = command.spawn().unwrap();
+    let mut output = Vec::new();
+    read_until(
+        &mut master,
+        &mut output,
+        b"NATIVE_DRAFT_STAYS",
+        Duration::from_secs(10),
+    );
+    let toggle = || {
+        assert!(Command::new(
+            std::env::var_os("AGENTVIEW_TEST_BIN")
+                .unwrap_or_else(|| env!("CARGO_BIN_EXE_agentview").into())
+        )
+        .args(["view", "toggle"])
+        .env("XDG_STATE_HOME", state.path())
+        .output()
+        .unwrap()
+        .status
+        .success());
+    };
+    output.clear();
+    toggle();
+    read_until(
+        &mut master,
+        &mut output,
+        b"WORK_SWITCH_RESUMING",
+        Duration::from_secs(10),
+    );
+    if occurrence_count(&output, b"NATIVE_DRAFT_STAYS") == 0 {
+        read_until(
+            &mut master,
+            &mut output,
+            b"NATIVE_DRAFT_STAYS",
+            Duration::from_secs(10),
+        );
+    }
+    toggle();
+    read_until(
+        &mut master,
+        &mut output,
+        b"WORK_SWITCH_PRESERVED",
+        Duration::from_secs(10),
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            assert!(status.success(), "{}", String::from_utf8_lossy(&output));
+            break;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("work toggle child did not exit");
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
 fn notification_click_detaches_without_losing_the_target() {
     const ENV: &str = "AGENTVIEW_FOCUS_CHILD";
     if std::env::var_os(ENV).is_some() {

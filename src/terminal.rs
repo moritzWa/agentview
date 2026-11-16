@@ -411,6 +411,11 @@ pub fn run_dashboard(
     if let Some(view_mode) = last_view.view_mode() {
         app.set_view_mode(view_mode);
     }
+    app.work_roots = crate::work_view::WorkRoots::load_default()?;
+    let work_store = crate::work_view::WorkViewStore::load_default()?;
+    let work_enabled = work_store.read()?;
+    app.set_work_only(work_enabled, None);
+    work_store.watch_native(work_enabled);
     app.color_scheme = color_scheme;
     crate::theme::set_terminal_scheme(color_scheme);
     let scheme_watcher = SchemeWatcher::spawn(theme_preference);
@@ -493,6 +498,28 @@ pub fn run_dashboard(
 
     let result = 'dashboard: loop {
         watchdog::set_phase(watchdog::Phase::Updates);
+        if let Ok(enabled) = work_store.read() {
+            if enabled != app.work_only {
+                pending_open = None;
+                pending_reveal = None;
+                pending_launch = None;
+                let native = app.scope_native_return.take();
+                let target = app.set_work_only(enabled, native);
+                work_store.watch_native(enabled);
+                terminal.terminal.draw(|frame| ui::render(frame, &app))?;
+                terminal.set_title(&ui::terminal_title(&app));
+                if let Some(session_id) = target {
+                    dispatch_action(
+                        &mut terminal,
+                        &mut app,
+                        AppAction::Open { session_id },
+                        control,
+                    );
+                }
+                needs_draw = true;
+                continue;
+            }
+        }
         loop {
             match snapshot_rx.try_recv() {
                 Ok((mut snapshot, complete)) => {
@@ -1405,6 +1432,13 @@ pub fn run_dashboard(
                                     },
                                     migration_tx.clone(),
                                 );
+                                ActionEffect::default()
+                            }
+                            AppAction::Launch { ref cwd, .. }
+                                if app.work_only
+                                    && !cwd.as_ref().is_some_and(|path| app.scope_allows(path)) =>
+                            {
+                                app.set_notice("choose a work folder before starting a session");
                                 ActionEffect::default()
                             }
                             AppAction::Launch {
@@ -3062,6 +3096,10 @@ fn dispatch_action<T: DashboardTerminal, C: DashboardControl>(
             prompt,
             cwd,
         } => {
+            if app.work_only && !cwd.as_ref().is_some_and(|path| app.scope_allows(path)) {
+                app.set_notice("choose a work folder before starting a session");
+                return ActionEffect::default();
+            }
             let known_session_ids = provider_session_ids(app, &provider);
             let result = control.launch_session(provider.clone(), model, prompt, cwd);
             match result {
@@ -3206,8 +3244,19 @@ fn handle_action_legacy<T: DashboardTerminal, C: DashboardControl>(
             }
             let started = Instant::now();
             // A voice call hears which session is in front while it is open.
+            if !app.scope_allows(&session.cwd) {
+                let _ = terminal.resume_dashboard();
+                app.set_notice("that session is outside the work view");
+                return false;
+            }
+            if app.work_roots.contains(&session.cwd) {
+                app.last_work_session = Some(session.id.clone());
+            }
             crate::voice::set_viewing(Some(session.id.clone()));
             let result = control.open_session(&session);
+            if crate::work_view::native_scope_changed() {
+                app.scope_native_return = Some(session.id.clone());
+            }
             let resume_result = terminal.resume_dashboard();
             crate::perf!(
                 "open-result",

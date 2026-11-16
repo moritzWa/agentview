@@ -57,6 +57,11 @@ own interface.
 - **Grouped by status:** waiting for input, working, completed. The harness is
   shown on every row.
 - **Jump in and back out** of a native session while its work keeps running.
+- **Switch to work-only browsing**, including from inside a native chat, with
+  `agentview view toggle`. Configure exact repo paths in
+  `~/.config/agentview/work-roots.json` (`{"roots":["/absolute/path/to/work-repo"]}`).
+  Linked worktrees count too. Bind the command to a global hotkey; toggle again
+  to return to your previous chat or overview. Background work keeps running.
 - **Bring back any past session** without leaving the dashboard. `Ctrl+G`
   searches older and hidden sessions by name, harness, folder, or ID, even
   while you're typing a task, and `Enter` puts the session back in the list.
