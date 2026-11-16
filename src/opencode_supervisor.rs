@@ -782,6 +782,66 @@ impl OpenCodeSupervisor {
         save_record(&self.record_path, &record)
     }
 
+    /// Explicit remote-send authorization uses the same managed service and
+    /// ownership registry as dashboard replies, but preserves a retry-stable V2
+    /// input ID and queues rather than steering the current turn.
+    pub fn queue_remote_reply(
+        &self,
+        session_id: &str,
+        cwd: &Path,
+        title: &str,
+        message_id: &str,
+        text: &str,
+    ) -> Result<()> {
+        if text.trim().is_empty() || !message_id.starts_with("msg_") || message_id.len() > 200 {
+            bail!("invalid remote input");
+        }
+        validate_cwd(cwd)?;
+        let _lock = StateLock::acquire(&self.lock_path)?;
+        let mut record = self.ensure_server_locked()?;
+        if record.api != ApiVersion::V2 {
+            bail!("remote message delivery requires OpenCode V2");
+        }
+        let info = self.request_json(
+            &record,
+            "GET",
+            &with_directory_query(&format!("/session/{}", url_path_segment(session_id)), cwd),
+            None,
+        )?;
+        if info
+            .pointer("/location/directory")
+            .or_else(|| info.get("directory"))
+            .and_then(Value::as_str)
+            != cwd.to_str()
+        {
+            bail!("remote target directory mismatch");
+        }
+        add_owned(
+            &mut record,
+            session_id,
+            cwd,
+            title,
+            "Remote message queued",
+            now_millis(),
+        )?;
+        save_record(&self.record_path, &record)?;
+        let response = request_http(
+            &record,
+            "POST",
+            &format!("/api/session/{}/prompt", url_path_segment(session_id)),
+            Some(&json!({
+                "id":message_id,"text":text,"delivery":"queue","resume":true,"metadata":{"source":"agentvoice"}
+            })),
+        )?;
+        ensure_http_success(&response)?;
+        let value: Value =
+            serde_json::from_slice(&response.body).context("invalid admission receipt")?;
+        if value.pointer("/data/id").and_then(Value::as_str) != Some(message_id) {
+            bail!("admission receipt ID mismatch");
+        }
+        Ok(())
+    }
+
     /// Move a session to another directory in place on a V2 server, keeping
     /// its ID and transcript. Returns false on a V1 server, which has no
     /// native move, so the caller can fall back to copying the session.

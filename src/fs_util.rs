@@ -18,6 +18,22 @@ pub(crate) fn xdg_home(name: &str) -> Option<std::ffi::OsString> {
 /// Write a small owner-only JSON state file through a temporary sibling so a
 /// crash never leaves it truncated. A missing parent is created owner-only.
 pub(crate) fn write_private_json(path: &Path, value: &impl Serialize) -> Result<()> {
+    write_private(path, |file| {
+        serde_json::to_writer_pretty(&mut *file, value)?;
+        file.write_all(b"\n")?;
+        Ok(())
+    })
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn write_private_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
+    write_private(path, |file| {
+        file.write_all(bytes)?;
+        Ok(())
+    })
+}
+
+fn write_private(path: &Path, write: impl FnOnce(&mut std::fs::File) -> Result<()>) -> Result<()> {
     let parent = path
         .parent()
         .with_context(|| format!("{} has no parent", path.display()))?;
@@ -47,8 +63,7 @@ pub(crate) fn write_private_json(path: &Path, value: &impl Serialize) -> Result<
         let mut file = options
             .open(&temporary)
             .with_context(|| format!("failed to create {}", temporary.display()))?;
-        serde_json::to_writer_pretty(&mut file, value)?;
-        file.write_all(b"\n")?;
+        write(&mut file)?;
         file.sync_all()?;
         replace_file(&temporary, path)
             .with_context(|| format!("failed to replace {}", path.display()))?;
