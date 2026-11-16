@@ -52,6 +52,9 @@ const DASHBOARD_COMMANDS: &[&str] = &[
     "/setup",
     "/cd",
     "/completed",
+    "/scheduled",
+    "/defer",
+    "/keep",
     "/filter",
     "/migrate",
     "/usage",
@@ -209,6 +212,12 @@ pub enum AppAction {
     SetPaused {
         session_id: String,
         paused: bool,
+    },
+    /// Schedule an explicit defer, reuse an existing wake, or keep visible.
+    ScheduleVisibility {
+        session_id: String,
+        /// None keeps visible; Some("") defers to an existing wake.
+        defer: Option<String>,
     },
     /// Remember swapped sort keys after a manual move. The row order is
     /// already updated. Paused rows store theirs as pause times.
@@ -3274,6 +3283,8 @@ impl App {
         match command.to_ascii_lowercase().as_str() {
             "/help" => self.toggle_help(),
             "/scheduled" => self.toggle_scheduled(),
+            "/keep" if argument.is_empty() => return self.schedule_visibility(None),
+            "/defer" => return self.schedule_visibility(Some(argument.to_owned())),
             "/voice" if argument.is_empty() => return AppAction::ToggleVoice,
             "/voice" => return self.voice_setting(argument),
             "/harness" | "/provider" if argument.is_empty() => self.open_harness_picker(),
@@ -3331,6 +3342,22 @@ impl App {
             }
         }
         AppAction::None
+    }
+
+    fn schedule_visibility(&mut self, defer: Option<String>) -> AppAction {
+        let Some(session) = self.selected_session() else {
+            self.set_notice("select a session first");
+            return AppAction::None;
+        };
+        if session.provider != Provider::OpenCode || session.runtime != crate::domain::Runtime::Host
+        {
+            self.set_notice("scheduled wakes currently require a host OpenCode session");
+            return AppAction::None;
+        }
+        AppAction::ScheduleVisibility {
+            session_id: session.id.clone(),
+            defer,
+        }
     }
 
     /// `/voice grok`, `/voice openai`, `/voice speed 1.2`.
@@ -3965,12 +3992,38 @@ mod tests {
             cwd: PathBuf::from("/work"),
             state,
             summary: format!("summary {id}"),
+            wake: None,
             raw_state: None,
             pid: None,
             started_at: None,
             updated_at: None,
             pull_requests: None,
             capabilities: BTreeSet::from([Capability::Inspect]),
+        }
+    }
+
+    #[test]
+    fn reminder_visibility_commands_target_the_selected_session() {
+        let mut item = session("opencode:host:ses_outreach", SessionState::Completed);
+        item.provider = Provider::OpenCode;
+        let mut app = App::new(SessionSnapshot {
+            sessions: vec![item],
+            ..SessionSnapshot::default()
+        });
+        app.selection = Some(SelectionKey::Session("opencode:host:ses_outreach".into()));
+        for (command, defer) in [
+            ("/keep", None),
+            ("/defer", Some("")),
+            ("/defer +2d Check replies", Some("+2d Check replies")),
+        ] {
+            app.input = command.into();
+            assert_eq!(
+                app.submit_composer(ComposerMode::NewSession),
+                AppAction::ScheduleVisibility {
+                    session_id: "opencode:host:ses_outreach".into(),
+                    defer: defer.map(str::to_owned)
+                }
+            );
         }
     }
 

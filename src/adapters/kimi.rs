@@ -567,6 +567,7 @@ fn kimi_session(
             SessionState::Completed
         },
         summary,
+        wake: None,
         raw_state: Some(
             if backgrounded {
                 "backgrounded"

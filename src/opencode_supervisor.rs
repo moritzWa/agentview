@@ -1108,19 +1108,8 @@ impl OpenCodeSupervisor {
                 Err(error) if is_missing_location(&error) => continue,
                 Err(error) => return Err(error),
             };
-            for shell in listed.as_array().into_iter().flatten() {
-                if shell["status"] != "running" {
-                    continue;
-                }
-                let (Some(session), Some(command)) = (
-                    shell.pointer("/metadata/sessionID").and_then(Value::as_str),
-                    shell["command"].as_str(),
-                ) else {
-                    continue;
-                };
-                shells
-                    .entry(session.to_owned())
-                    .or_insert_with(|| command.to_owned());
+            for (session, command) in attention_shell_entries(&listed) {
+                shells.entry(session).or_insert(command);
             }
         }
         let ids = shells.keys().cloned().collect();
@@ -2418,6 +2407,31 @@ fn running_shell_entries(listed: &Value) -> Vec<(String, String)> {
                 shell["command"].as_str()?.to_owned(),
             ))
         })
+        .collect()
+}
+
+fn is_service_shell(command: &str) -> bool {
+    command
+        .trim_start()
+        .strip_prefix("AGENTVIEW_SHELL_PURPOSE=service")
+        .is_some_and(|rest| rest.starts_with(char::is_whitespace))
+}
+
+/// Services remain live and inspectable, but do not hold a row as Background.
+/// Filter before grouping by session so a service cannot mask a real job.
+fn attention_shell_entries(listed: &Value) -> Vec<(String, String)> {
+    listed
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|shell| shell["status"] == "running")
+        .filter_map(|shell| {
+            Some((
+                shell.pointer("/metadata/sessionID")?.as_str()?.to_owned(),
+                shell["command"].as_str()?.to_owned(),
+            ))
+        })
+        .filter(|(_, command)| !is_service_shell(command))
         .collect()
 }
 
@@ -4248,6 +4262,36 @@ mod tests {
         );
     }
     #[test]
+    fn services_require_an_explicit_launch_marker() {
+        assert!(is_service_shell(
+            "AGENTVIEW_SHELL_PURPOSE=service python3 browser/serve.py"
+        ));
+        assert!(is_service_shell(
+            "  AGENTVIEW_SHELL_PURPOSE=service npm run dev"
+        ));
+        assert!(!is_service_shell(
+            "AGENTVIEW_SHELL_PURPOSE=service-extra cmd"
+        ));
+        assert!(!is_service_shell("echo AGENTVIEW_SHELL_PURPOSE=service"));
+        assert!(!is_service_shell("python3 browser/serve.py"));
+        assert!(!is_service_shell(
+            "AGENTVIEW_SHELL_PURPOSE=task python3 bench.py"
+        ));
+        let listed = json!([
+            {"status":"running","command":"AGENTVIEW_SHELL_PURPOSE=service python3 browser/serve.py","metadata":{"sessionID":"mixed"}},
+            {"status":"running","command":"AGENTVIEW_SHELL_PURPOSE=service npm run dev","metadata":{"sessionID":"service_only"}},
+            {"status":"running","command":"python3 benchmark.py","metadata":{"sessionID":"mixed","durable":true}},
+            {"status":"completed","command":"make","metadata":{"sessionID":"finished"}}
+        ]);
+        assert_eq!(
+            attention_shell_entries(&listed),
+            vec![("mixed".into(), "python3 benchmark.py".into())]
+        );
+        // Service classification never changes the registry / inspection data.
+        assert_eq!(listed.as_array().unwrap().len(), 4);
+    }
+
+    #[test]
     fn only_running_shells_that_name_a_session_and_a_restart_would_stop_count_as_busy() {
         let listed = serde_json::json!([
             {"status": "running", "command": "sleep 900", "metadata": {"sessionID": "ses_a"}},
@@ -4359,6 +4403,29 @@ mod tests {
         assert!(shells[0].command.contains("sleep 30"));
         assert_eq!(shells[0].cwd, cwd.to_string_lossy());
         assert!(shells[0].output_note.is_none());
+        let service_owner = format!("{session}_service");
+        let created = supervisor
+            .request_json(
+                &record,
+                "POST",
+                &super::with_directory_query("/shell", &cwd),
+                Some(&json!({
+                    "command":"AGENTVIEW_SHELL_PURPOSE=service sleep 30", "timeout":60000,
+                    "metadata":{"sessionID":service_owner}
+                })),
+            )
+            .unwrap();
+        cleanup.ids.push(created["id"].as_str().unwrap().to_owned());
+        let service = supervisor.session_shells(&service_owner, &cwd).unwrap();
+        assert_eq!(service.len(), 1, "services remain inspectable");
+        let working = supervisor
+            .running_shells(&BTreeSet::from([cwd.clone()]))
+            .unwrap();
+        assert!(working.contains_key(&session), "ordinary jobs still count");
+        assert!(
+            !working.contains_key(&service_owner),
+            "services do not claim attention"
+        );
     }
 
     #[test]

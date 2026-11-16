@@ -1022,6 +1022,7 @@ mod tests {
             cwd: PathBuf::from("/work/repo"),
             state: crate::domain::SessionState::NeedsInput,
             summary: String::new(),
+            wake: None,
             raw_state: Some("waiting at prompt".into()),
             pid: Some(4242),
             started_at: None,

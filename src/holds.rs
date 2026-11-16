@@ -17,7 +17,17 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct Wake {
+    pub label: String,
+    pub text: String,
+    pub due_ms: u64,
+    /// Only an explicit defer may put a session away. A later user message
+    /// clears its effect without cancelling the reminder.
+    pub deferred_at_ms: Option<u64>,
+}
 
 #[derive(Deserialize)]
 struct Hold {
@@ -26,6 +36,8 @@ struct Hold {
     reason: String,
     #[serde(default)]
     expires_ms: Option<u64>,
+    #[serde(default)]
+    wake: Option<Wake>,
 }
 
 pub fn default_holds_dir() -> Option<PathBuf> {
@@ -55,17 +67,44 @@ pub fn live_hold(root: &Path, harness: &str, session_id: &str) -> Option<String>
         })
         .collect::<Vec<_>>();
     entries.sort();
-    let mut live = entries
+    let live = entries
         .into_iter()
         .filter_map(|path| {
             let hold = serde_json::from_slice::<Hold>(&std::fs::read(path).ok()?).ok()?;
             let current = hold.expires_ms.map_or(true, |expires| now_ms < expires);
-            (current && process_alive(hold.pid)).then_some(hold.reason)
+            (current
+                && process_alive(hold.pid)
+                && hold.wake.is_none()
+                && !hold.reason.starts_with("wake-later "))
+            .then_some(hold.reason)
         })
         .collect::<Vec<_>>();
-    // Live work wins over a future reminder on the same session.
-    live.sort_by_key(|reason| reason.starts_with("wake-later "));
     live.into_iter().next()
+}
+
+/// Earliest pending wake, whether it defers the session or merely reminds it.
+pub fn next_wake(root: &Path, harness: &str, session_id: &str) -> Option<Wake> {
+    if session_id.is_empty() || session_id.contains(['/', '\\']) || session_id.starts_with('.') {
+        return None;
+    }
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()?
+        .as_millis() as u64;
+    let wakes = std::fs::read_dir(root.join(harness).join(session_id))
+        .ok()?
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
+        .filter_map(|entry| serde_json::from_slice::<Hold>(&std::fs::read(entry.path()).ok()?).ok())
+        .filter(|hold| {
+            hold.expires_ms.map_or(true, |expiry| now < expiry) && process_alive(hold.pid)
+        })
+        .filter_map(|hold| hold.wake)
+        .collect::<Vec<_>>();
+    let deferred_at = wakes.iter().filter_map(|wake| wake.deferred_at_ms).max();
+    let mut next = wakes.into_iter().min_by_key(|wake| wake.due_ms)?;
+    next.deferred_at_ms = deferred_at;
+    Some(next)
 }
 
 /// Every session under `harness` that has a live hold, with that hold's reason.
@@ -184,5 +223,41 @@ mod tests {
             &format!(r#"{{"pid": {pid}, "reason": "gone"}}"#),
         );
         assert_eq!(live_hold(root.path(), "opencode", "ses_1"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reminders_are_metadata_not_work_and_only_explicit_defers_put_sessions_away() {
+        let root = tempfile::tempdir().unwrap();
+        let write = |name: &str, due, deferred_at| {
+            let wake = Wake {
+                label: "Mon 10:00".into(),
+                text: "check replies".into(),
+                due_ms: due,
+                deferred_at_ms: deferred_at,
+            };
+            write_hold(
+                root.path(),
+                "ses_wake",
+                name,
+                &serde_json::json!({
+                    "pid": std::process::id(), "reason": "wake-later Mon 10:00", "wake": wake
+                })
+                .to_string(),
+            );
+        };
+        write("a.json", 200, None);
+        assert_eq!(live_hold(root.path(), "opencode", "ses_wake"), None);
+        assert_eq!(
+            next_wake(root.path(), "opencode", "ses_wake")
+                .unwrap()
+                .deferred_at_ms,
+            None
+        );
+        write("b.json", 300, Some(100));
+        let wake = next_wake(root.path(), "opencode", "ses_wake").unwrap();
+        assert_eq!((wake.due_ms, wake.deferred_at_ms), (200, Some(100)));
+        assert_eq!(live_hold(root.path(), "opencode", "ses_wake"), None);
+        assert_eq!(next_wake(root.path(), "opencode", "../ses_wake"), None);
     }
 }

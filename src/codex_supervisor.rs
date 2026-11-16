@@ -3667,6 +3667,7 @@ mod tests {
             cwd: PathBuf::from("/work"),
             state: SessionState::Working,
             summary: String::new(),
+            wake: None,
             raw_state: None,
             pid: None,
             started_at: None,

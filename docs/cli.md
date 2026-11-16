@@ -688,6 +688,37 @@ writing `{"pid": PID, "reason": "…", "expires_ms": MS}` to
 (`$XDG_STATE_HOME/agentview/holds/…` when set) and deleting it when the work
 ends. The row shows `background: REASON` while that process lives and the
 expiry has not passed, unless a permission or question prompt needs the user.
+Future wakes are independent metadata: add a `wake` object with `label`, `text`,
+`due_ms`, and nullable `deferred_at_ms` to the hold file. A null defer timestamp
+keeps the session in its normal project with a compact wake time beside its
+status. Only an explicit defer moves an idle session to Scheduled. The latest
+user message clears any older defer, even across dashboard restarts, but leaves
+the wake intact. Old `wake-later` holds without metadata no longer hide a session.
+
+With the local `~/.claude/scripts/wake-later.py` helper installed:
+
+```sh
+# Same future message delivery; only the second puts the session away.
+wake-later.py add SESSION_ID REPO +2d 'Check the replies and continue'
+wake-later.py defer SESSION_ID REPO +2d 'Check the reply that blocks this task'
+wake-later.py keep SESSION_ID
+```
+
+On the dashboard, `/defer` uses the selected session's existing wake;
+`/defer +2d <what to check>` creates one. An ISO timestamp without spaces also
+works, for example `/defer 2026-12-01T10:00 Check the reply`. `/keep` brings the
+selected session back without cancelling its wakes. Both commands currently
+require a host OpenCode session and the local helper. `Ctrl+Y` or `/scheduled`
+expands the deferred section in either view.
+
+A native OpenCode background shell prefixed with
+`AGENTVIEW_SHELL_PURPOSE=service ` keeps an app available without holding the
+session as Background, for example
+`AGENTVIEW_SHELL_PURPOSE=service python3 browser/serve.py`. This is explicit
+launch metadata, not a command-name or runtime heuristic. Unmarked shells
+remain tasks; a real job still counts when a service runs in the same session.
+Services remain in shell inspection and retain their normal exit notifications.
+
 A permission prompt in another
 terminal is not recorded by OpenCode and reads as working there. Sessions no
 live process runs are completed history. A process started with `--session ID`

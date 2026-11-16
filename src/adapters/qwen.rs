@@ -309,6 +309,7 @@ impl SessionSource for QwenSource {
                     SessionState::Completed
                 },
                 summary: summarize(&record.prompt, 160),
+                wake: None,
                 raw_state: Some(if active.is_some() { "running" } else { "saved" }.into()),
                 pid: active.map(|record| record.pid),
                 started_at,
@@ -344,6 +345,7 @@ impl SessionSource for QwenSource {
                     SessionState::Completed
                 },
                 summary: owned.name,
+                wake: None,
                 raw_state: Some(
                     if backgrounded {
                         "backgrounded; awaiting Qwen history"

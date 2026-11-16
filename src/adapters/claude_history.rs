@@ -251,6 +251,7 @@ fn session(
         cwd: transcript.cwd,
         state: SessionState::Completed,
         summary,
+        wake: None,
         raw_state: Some(HISTORY_RAW_STATE.into()),
         pid: None,
         started_at: created,

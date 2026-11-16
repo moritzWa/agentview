@@ -172,6 +172,7 @@ impl SessionSource for TerminalHarness {
                 cwd: cwd.clone(),
                 state: SessionState::Working,
                 summary: "Interactive provider setup · Enter resumes · Ctrl+X stops".into(),
+                wake: None,
                 raw_state: Some("setup_terminal_backgrounded".into()),
                 pid: None,
                 started_at: None,
@@ -342,6 +343,7 @@ fn terminal_session(record: &TerminalRecord) -> AgentSession {
                 shell_label(&record.shell)
             )
         },
+        wake: None,
         raw_state: Some(if record.state == SessionState::Completed {
             "terminal_exited".into()
         } else {

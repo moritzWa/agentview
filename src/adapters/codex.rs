@@ -463,6 +463,7 @@ fn normalize_thread(thread: CodexThread, runtime: Runtime) -> AgentSession {
         cwd: thread.cwd,
         state,
         summary: latest_summary,
+        wake: None,
         raw_state: Some(raw_state),
         pid: None,
         started_at: unix_seconds(thread.created_at),

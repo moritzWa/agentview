@@ -1245,6 +1245,7 @@ fn normalize_copilot_session(session: CopilotSessionInfo, runtime: Runtime) -> A
         // ACP session/list is persisted-history metadata, not a live state API.
         state: SessionState::Unknown,
         summary: "Persisted Copilot session".into(),
+        wake: None,
         raw_state: Some("persisted".into()),
         pid: None,
         started_at: None,

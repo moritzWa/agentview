@@ -385,6 +385,7 @@ fn external_session(provider: Provider, id: &str, cwd: &Path) -> AgentSession {
         cwd: PathBuf::from(cwd),
         state: SessionState::Unknown,
         summary: "external record".into(),
+        wake: None,
         raw_state: Some("external".into()),
         pid: None,
         started_at: None,

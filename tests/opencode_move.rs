@@ -146,6 +146,7 @@ fn real_opencode_moves_large_history_without_session_migrate() {
         cwd: source.clone(),
         state: SessionState::Completed,
         summary: String::new(),
+        wake: None,
         raw_state: None,
         pid: None,
         started_at: None,
