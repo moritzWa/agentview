@@ -220,6 +220,27 @@ fn legacy_sessions_are_included_once_with_text_only_and_edited_parts() {
             .text,
         "Edited legacy reply"
     );
+    db.execute(
+        "UPDATE part SET data='{\"type\":\"text\",\"text\":\"\"}',time_updated=12 WHERE id='part3'",
+        [],
+    )
+    .unwrap();
+    let emptied = source::capture(&mut db, "legacy", Some(11))
+        .unwrap()
+        .unwrap();
+    assert!(!emptied.ids.contains("msg_reply"));
+    db.execute(
+        "UPDATE session SET revert='{\"messageID\":\"msg_reply\"}' WHERE id='legacy'",
+        [],
+    )
+    .unwrap();
+    assert_eq!(
+        source::capture(&mut db, "legacy", None)
+            .unwrap()
+            .unwrap()
+            .state["visible_before"],
+        1
+    );
 }
 
 #[test]
@@ -243,7 +264,10 @@ fn real_source_projection_audit_without_upload() {
         }
     }
     eprintln!("Read-only source audit: {} sessions, {messages} visible messages, {bytes} UTF-8 text bytes, largest encoded message {largest} bytes. No upload.",ids.len());
-    assert!(largest<=850_000,"a source message needs transport fragmentation before upload");
+    assert!(
+        largest <= 850_000,
+        "a source message needs transport fragmentation before upload"
+    );
 }
 
 #[test]

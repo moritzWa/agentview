@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -144,6 +144,7 @@ pub fn capture(db: &mut Connection, id: &str, after: Option<i64>) -> Result<Opti
     }
     let mut ids = BTreeSet::new();
     let mut messages = Vec::new();
+    let mut legacy_order = BTreeMap::new();
     if v2 {
         let mut q=tx.prepare("SELECT id FROM session_message WHERE session_id=?1 AND type IN ('user','assistant') ORDER BY seq")?;
         ids = q
@@ -187,16 +188,17 @@ pub fn capture(db: &mut Connection, id: &str, after: Option<i64>) -> Result<Opti
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         for (order, (mid, role, created, updated)) in rows.into_iter().enumerate() {
+            legacy_order.insert(mid.clone(), order as i64);
             if !matches!(role.as_str(), "user" | "assistant") {
                 continue;
             }
-            ids.insert(mid.clone());
             let mut p=tx.prepare("SELECT json_extract(data,'$.text') FROM main.part WHERE message_id=?1 AND json_extract(data,'$.type')='text' AND COALESCE(json_extract(data,'$.synthetic'),0)=0 AND COALESCE(json_extract(data,'$.ignored'),0)=0 ORDER BY id")?;
             let text = p
                 .query_map([&mid], |r| r.get::<_, String>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?
                 .join("\n");
             if !text.trim().is_empty() {
+                ids.insert(mid.clone());
                 messages.push(Message {
                     id: mid,
                     role,
@@ -222,10 +224,9 @@ pub fn capture(db: &mut Connection, id: &str, after: Option<i64>) -> Result<Opti
                 |r| r.get::<_, i64>(0),
             )?)
         } else {
-            let order = messages
-                .iter()
-                .find(|m| m.id == mid)
-                .map(|m| m.order)
+            let order = legacy_order
+                .get(mid)
+                .copied()
                 .context("legacy revert boundary missing")?;
             Some(order)
         }
