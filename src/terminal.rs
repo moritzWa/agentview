@@ -4288,6 +4288,7 @@ mod tests {
         let mut app = app();
         app.usage = vec![crate::usage::Usage {
             provider: "claude",
+            login_command: None,
             windows: vec![crate::usage::Window {
                 label: "week",
                 percent: 4.0,

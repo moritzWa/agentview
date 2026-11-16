@@ -1440,7 +1440,13 @@ fn render_usage(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .enumerate()
     {
         frame.render_widget(
-            Paragraph::new(text).style(Style::default().bg(palette().bg).fg(palette().dim)),
+            Paragraph::new(text).style(Style::default().bg(palette().bg).fg(
+                if app.usage[row].login_command.is_some() {
+                    palette().attention
+                } else {
+                    palette().dim
+                },
+            )),
             Rect {
                 x: area.x + indent,
                 y: area.y + 1 + row as u16,
@@ -1530,6 +1536,9 @@ fn usage_header_rows(usages: &[crate::usage::Usage], now: u64, width: usize) -> 
             .take(3)
             .zip(cells)
             .map(|(usage, cells)| {
+                if let Some(warning) = usage.login_warning() {
+                    return warning;
+                }
                 let columns = cells
                     .into_iter()
                     .zip(&widths)
@@ -1607,6 +1616,13 @@ fn render_usage_popup(frame: &mut Frame<'_>, app: &App, area: Rect) {
     for (position, usage) in app.usage.iter().enumerate() {
         if position > 0 {
             lines.push(Line::default());
+        }
+        if let Some(warning) = usage.login_warning() {
+            lines.push(Line::styled(
+                warning,
+                Style::default().fg(palette().attention),
+            ));
+            continue;
         }
         for (index, window) in usage.windows.iter().enumerate() {
             let percent_style = Style::default().fg(if window.percent >= 90.0 {
@@ -4312,6 +4328,7 @@ mod tests {
     fn header_keeps_both_providers_visible_when_claude_is_exhausted() {
         let usage = |provider, percent| crate::usage::Usage {
             provider,
+            login_command: None,
             windows: vec![crate::usage::Window {
                 label: "5h",
                 percent,
@@ -4352,6 +4369,7 @@ mod tests {
             .into_iter()
             .map(|provider| crate::usage::Usage {
                 provider,
+                login_command: None,
                 windows: vec![
                     crate::usage::Window {
                         label: "5h",
@@ -4404,10 +4422,12 @@ mod tests {
         app.usage = vec![
             crate::usage::Usage {
                 provider: "claude",
+                login_command: None,
                 windows: vec![window("5h", 0.0), window("week", 100.0)],
             },
             crate::usage::Usage {
                 provider: "codex",
+                login_command: None,
                 windows: vec![window("week", 18.0)],
             },
         ];
@@ -4448,6 +4468,7 @@ mod tests {
         let usages = [
             crate::usage::Usage {
                 provider: "claude",
+                login_command: None,
                 windows: vec![
                     window("5h", 3.0, 4 * 3600 + 1260),
                     window("week", 5.0, 6 * 86_400 + 15 * 3600),
@@ -4455,6 +4476,7 @@ mod tests {
             },
             crate::usage::Usage {
                 provider: "codex",
+                login_command: None,
                 // 20% eleven hours in, counted as a day's use, runs out in 4 more days.
                 windows: vec![window("week", 20.0, 6 * 86_400 + 13 * 3600)],
             },
@@ -4485,14 +4507,17 @@ mod tests {
         let usages = [
             crate::usage::Usage {
                 provider: "claude",
+                login_command: None,
                 windows: vec![window.clone()],
             },
             crate::usage::Usage {
                 provider: "claude2",
+                login_command: None,
                 windows: vec![window.clone()],
             },
             crate::usage::Usage {
                 provider: "codex",
+                login_command: None,
                 windows: vec![window],
             },
         ];
@@ -4502,10 +4527,51 @@ mod tests {
     }
 
     #[test]
+    fn expired_login_stays_visible_in_header_and_popup_until_usage_recovers() {
+        let mut app = App::new(SessionSnapshot::default());
+        app.usage = vec![
+            crate::usage::Usage {
+                provider: "claude",
+                windows: vec![],
+                login_command: Some("claude auth login".into()),
+            },
+            crate::usage::Usage::parse_codex(&serde_json::json!({
+                "rate_limit": {"primary_window": {"used_percent": 12}}
+            }))
+            .unwrap(),
+        ];
+        for width in [50, 80, 120] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            let text = buffer_text(terminal.backend().buffer());
+            assert!(
+                text.contains("claude expired: run claude auth login"),
+                "{text}"
+            );
+            assert!(text.contains("codex"), "{text}");
+        }
+        app.overlay = Overlay::Usage;
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        assert!(buffer_text(terminal.backend().buffer())
+            .contains("claude expired: run claude auth login"));
+        app.usage[0] = crate::usage::Usage::parse_claude(&serde_json::json!({
+            "seven_day": {"utilization": 25}
+        }))
+        .unwrap();
+        app.overlay = Overlay::None;
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(!text.contains("expired"), "{text}");
+        assert!(text.contains("25% used"), "{text}");
+    }
+
+    #[test]
     fn usage_header_labels_missing_reset_as_unknown() {
         let rows = usage_header_rows(
             &[crate::usage::Usage {
                 provider: "claude",
+                login_command: None,
                 windows: vec![crate::usage::Window {
                     label: "5h",
                     percent: 0.0,
@@ -4530,6 +4596,7 @@ mod tests {
         let mut app = App::new(SessionSnapshot::default());
         app.usage = vec![crate::usage::Usage {
             provider: "claude",
+            login_command: None,
             windows: vec![
                 window("5h", 60.0, 2 * 3600 + 900),
                 window("week", 4.0, 4 * 86_400 + 1800),

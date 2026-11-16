@@ -2,7 +2,7 @@
 //!
 //! Each provider reuses its own CLI's login and polls the undocumented
 //! endpoint behind that CLI's usage screen (Claude Code's `/usage`, Codex's
-//! `/status`). Any failure just leaves that provider out of the header.
+//! `/status`). Expired Claude logins stay visible with a sign-in command.
 
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -30,6 +30,7 @@ pub struct Window {
 pub struct Usage {
     pub provider: &'static str,
     pub windows: Vec<Window>,
+    pub login_command: Option<String>,
 }
 
 impl Usage {
@@ -80,12 +81,19 @@ impl Usage {
 
     fn new(provider: &'static str, windows: [Option<Window>; 2]) -> Option<Self> {
         let windows = windows.into_iter().flatten().collect::<Vec<_>>();
-        (!windows.is_empty()).then_some(Self { provider, windows })
+        (!windows.is_empty()).then_some(Self {
+            provider,
+            windows,
+            login_command: None,
+        })
     }
 
     /// One short entry and whether it needs attention. Only the binding
     /// window is shown so several providers fit on one line.
     pub fn summary(&self, now: u64) -> (String, bool) {
+        if let Some(warning) = self.login_warning() {
+            return (warning, true);
+        }
         let blocked = self
             .windows
             .iter()
@@ -115,6 +123,11 @@ impl Usage {
             format!("{} {} {:.0}%", self.provider, top.label, top.percent),
             top.percent >= 90.0,
         )
+    }
+    pub fn login_warning(&self) -> Option<String> {
+        self.login_command
+            .as_ref()
+            .map(|command| format!("{} expired: run {command}", self.provider))
     }
 }
 
@@ -349,7 +362,7 @@ fn matching_json_end(text: &str) -> Option<usize> {
 }
 
 fn fetch_claude() -> Option<Usage> {
-    fetch_claude_account("Claude Code-credentials", "claude", true)
+    fetch_claude_account("Claude Code-credentials", "claude", None)
 }
 
 /// Primary login plus each `~/.claude-*` profile. A missing extra account must
@@ -375,23 +388,31 @@ fn fetch_claude_accounts() -> Vec<Usage> {
             }
             let path = entry.path();
             let text = path.to_str()?;
-            Some(format!("Claude Code-credentials-{}", sha256_prefix(text)?))
+            Some((
+                format!("Claude Code-credentials-{}", sha256_prefix(text)?),
+                path,
+            ))
         })
         .collect::<Vec<_>>();
     extras.sort();
-    for (index, service) in extras.into_iter().enumerate() {
+    for (index, (service, profile)) in extras.into_iter().enumerate() {
         let label = match index {
             0 => "claude2",
             _ => "claude3",
         };
-        if let Some(usage) = fetch_claude_account(&service, label, false) {
+        if let Some(usage) = fetch_claude_account(&service, label, Some(&profile)) {
             usages.push(usage);
         }
     }
     usages
 }
 
-fn fetch_claude_account(service: &str, label: &'static str, file_fallback: bool) -> Option<Usage> {
+fn fetch_claude_account(
+    service: &str,
+    label: &'static str,
+    profile: Option<&std::path::Path>,
+) -> Option<Usage> {
+    let file_fallback = profile.is_none();
     // Several dashboards may be open. Read credentials only after acquiring
     // the lock so they cannot simultaneously rotate the same refresh token.
     #[cfg(unix)]
@@ -404,6 +425,9 @@ fn fetch_claude_account(service: &str, label: &'static str, file_fallback: bool)
             .flatten()
     })?;
     let mut credentials = parse_claude_credentials(&raw)?;
+    if let Some(warning) = expired_claude_login(&credentials, label, profile, now()) {
+        return Some(warning);
+    }
     if claude_token_expiring(&credentials, now()) {
         refresh_claude_credentials(&mut credentials)?;
         // Persist rotated refresh tokens in the same store Claude Code uses.
@@ -428,6 +452,38 @@ fn fetch_claude_account(service: &str, label: &'static str, file_fallback: bool)
     let mut usage = Usage::parse_claude(&body)?;
     usage.provider = label;
     Some(usage)
+}
+
+fn expired_claude_login(
+    credentials: &Value,
+    provider: &'static str,
+    profile: Option<&std::path::Path>,
+    now: u64,
+) -> Option<Usage> {
+    let oauth = credentials.get("claudeAiOauth")?;
+    let cleared = oauth.get("loginEnded").and_then(Value::as_str) == Some("time_limit")
+        || (oauth.get("accessToken").and_then(Value::as_str) == Some("")
+            && oauth.get("refreshToken").and_then(Value::as_str) == Some(""));
+    let expired = claude_token_expiring(credentials, now)
+        && oauth
+            .get("refreshTokenExpiresAt")
+            .and_then(Value::as_u64)
+            .is_some_and(|expires| expires / 1000 <= now);
+    if !cleared && !expired {
+        return None;
+    }
+    let command = match profile {
+        Some(path) => format!(
+            "CLAUDE_CONFIG_DIR='{}' claude auth login",
+            path.to_string_lossy().replace('\'', "'\\''")
+        ),
+        None => "claude auth login".to_owned(),
+    };
+    Some(Usage {
+        provider,
+        windows: Vec::new(),
+        login_command: Some(command),
+    })
 }
 
 fn refresh_claude_credentials(credentials: &mut Value) -> Option<()> {
@@ -807,6 +863,45 @@ fn parse_rfc3339(text: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cleared_claude_login_has_an_actionable_warning() {
+        let credentials = serde_json::json!({"claudeAiOauth": {
+            "accessToken": "", "refreshToken": "", "expiresAt": 0,
+            "loginEnded": "time_limit"
+        }});
+        let usage = expired_claude_login(&credentials, "claude", None, 100).unwrap();
+        assert_eq!(
+            usage.summary(100),
+            ("claude expired: run claude auth login".into(), true)
+        );
+        assert!(usage.windows.is_empty());
+        let extra = expired_claude_login(
+            &credentials,
+            "claude2",
+            Some(std::path::Path::new("/home/test/.claude-two")),
+            100,
+        )
+        .unwrap();
+        assert_eq!(
+            extra.login_command.as_deref(),
+            Some("CLAUDE_CONFIG_DIR='/home/test/.claude-two' claude auth login")
+        );
+    }
+
+    #[test]
+    fn renewable_or_missing_claude_credentials_are_not_reported_as_expired() {
+        let mut credentials = serde_json::json!({"claudeAiOauth": {
+            "accessToken": "test", "refreshToken": "test", "expiresAt": 1000,
+            "refreshTokenExpiresAt": 200_000
+        }});
+        assert!(expired_claude_login(&credentials, "claude", None, 100).is_none());
+        assert!(expired_claude_login(&serde_json::json!({}), "claude", None, 100).is_none());
+        credentials["claudeAiOauth"]["refreshTokenExpiresAt"] = 90_000.into();
+        assert!(expired_claude_login(&credentials, "claude", None, 100).is_some());
+        credentials["claudeAiOauth"]["expiresAt"] = 300_000.into();
+        assert!(expired_claude_login(&credentials, "claude", None, 100).is_none());
+    }
     use serde_json::json;
 
     #[test]
