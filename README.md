@@ -57,11 +57,9 @@ own interface.
 - **Grouped by status:** waiting for input, working, completed. The harness is
   shown on every row.
 - **Jump in and back out** of a native session while its work keeps running.
-- **Switch to work-only browsing**, including from inside a native chat, with
-  `agentview view toggle`. Configure exact repo paths in
-  `~/.config/agentview/work-roots.json` (`{"roots":["/absolute/path/to/work-repo"]}`).
-  Linked worktrees count too. Bind the command to a global hotkey; toggle again
-  to return to your previous chat or overview. Background work keeps running.
+- **Hide personal chats with one shortcut.** Switch to work-only browsing,
+  even from inside a native chat. Toggle back to your previous chat or draft.
+  Background agents keep working. [Set up work-only browsing](#work-only-browsing).
 - **Bring back any past session** without leaving the dashboard. `Ctrl+G`
   searches older and hidden sessions by name, harness, folder, or ID, even
   while you're typing a task, and `Enter` puts the session back in the list.
@@ -143,6 +141,24 @@ macOS instead of running `lsof`.
 Median over 30 s of one-second refreshes on an Apple M5 Pro with a 17 GB
 OpenCode history, measured with [`AGENTVIEW_PERF_LOG`](docs/cli.md#timing-log).
 Harnesses are read in parallel, and none of it runs on the input thread.
+
+## Work-only browsing
+
+1. Create `~/.config/agentview/work-roots.json` with your work repos' **absolute paths**:
+
+   ```json
+   {"roots":["/Users/alex/Code/company-app","/Users/alex/Code/company-site"]}
+   ```
+
+2. Restart Agent View after adding or changing the config. Subfolders and linked
+   Git worktrees count as work too. Personal sessions disappear from the overview,
+   session search and restore picker while work-only browsing is on.
+3. Bind `agentview view toggle` to a **global shortcut** to switch without focusing
+   your terminal. The shortcut isn't built in. See the
+   [macOS setup with Karabiner-Elements](docs/work-view.md#global-shortcut-on-macos).
+
+The command switches every running dashboard. Toggle again to return to your
+previous chat or overview. Other apps and browser windows stay unchanged.
 
 ## Keys
 
