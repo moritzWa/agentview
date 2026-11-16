@@ -3,6 +3,40 @@ use rusqlite::Connection;
 use source::{Capture, Message};
 use tempfile::tempdir;
 
+#[test]
+fn login_daemon_retains_shared_v2_discovery_but_not_secrets_or_isolated_profiles() {
+    let dir = tempdir().unwrap();
+    let service = dir.path().join("runtime/service.json");
+    let state = dir.path().join("state");
+    let shared = login_environment(false, Some(&service), Some(&state));
+    assert_eq!(
+        shared.get("AGENTVIEW_OPENCODE_API").map(String::as_str),
+        Some("v2")
+    );
+    assert_eq!(
+        shared
+            .get("AGENTVIEW_OPENCODE_SERVICE_FILE")
+            .map(String::as_str),
+        service.to_str()
+    );
+    assert_eq!(
+        shared.get("XDG_STATE_HOME").map(String::as_str),
+        state.to_str()
+    );
+    assert_eq!(
+        shared.len(),
+        3,
+        "only nonsecret discovery settings are persisted"
+    );
+    let isolated = login_environment(true, Some(&service), Some(&state));
+    assert_eq!(isolated.len(), 1);
+    assert!(!isolated.contains_key("AGENTVIEW_OPENCODE_SERVICE_FILE"));
+    assert_eq!(
+        login_environment(false, Some(Path::new("relative/service.json")), None).len(),
+        1
+    );
+}
+
 fn fixture() -> Connection {
     let db = Connection::open_in_memory().unwrap();
     db.execute_batch("CREATE TABLE session_v2(id TEXT PRIMARY KEY,title TEXT,directory TEXT,time_archived INTEGER,revert TEXT);

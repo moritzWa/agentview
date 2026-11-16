@@ -451,6 +451,27 @@ pub fn status(dir: &Path) -> Result<Value> {
     )
 }
 
+#[cfg(any(target_os = "macos", test))]
+fn login_environment(
+    isolated: bool,
+    service_file: Option<&Path>,
+    xdg_state: Option<&Path>,
+) -> std::collections::BTreeMap<String, String> {
+    let mut values =
+        std::collections::BTreeMap::from([("AGENTVIEW_OPENCODE_API".into(), "v2".into())]);
+    if !isolated {
+        for (key, path) in [
+            ("AGENTVIEW_OPENCODE_SERVICE_FILE", service_file),
+            ("XDG_STATE_HOME", xdg_state),
+        ] {
+            if let Some(path) = path.filter(|p| p.is_absolute()) {
+                values.insert(key.into(), path.to_string_lossy().into_owned());
+            }
+        }
+    }
+    values
+}
+
 pub fn install(dir: &Path) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
@@ -478,7 +499,22 @@ pub fn install(dir: &Path) -> Result<()> {
         for arg in args {
             write!(strings, "<string>{}</string>", xml_escape(&arg))?;
         }
-        let contents=format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?><!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\"><plist version=\"1.0\"><dict><key>Label</key><string>{label}</string><key>ProgramArguments</key><array>{strings}</array><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>15</integer><key>StandardErrorPath</key><string>{}</string></dict></plist>",xml_escape(&dir.join("daemon.log").to_string_lossy()));
+        let service_file = std::env::var_os("AGENTVIEW_OPENCODE_SERVICE_FILE").map(PathBuf::from);
+        let xdg_state = crate::fs_util::xdg_home("XDG_STATE_HOME").map(PathBuf::from);
+        let mut environment = String::new();
+        for (key, value) in login_environment(
+            config.supervisor_state.is_some(),
+            service_file.as_deref(),
+            xdg_state.as_deref(),
+        ) {
+            write!(
+                environment,
+                "<key>{}</key><string>{}</string>",
+                xml_escape(&key),
+                xml_escape(&value)
+            )?;
+        }
+        let contents=format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?><!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\"><plist version=\"1.0\"><dict><key>Label</key><string>{label}</string><key>ProgramArguments</key><array>{strings}</array><key>EnvironmentVariables</key><dict>{environment}</dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>15</integer><key>StandardErrorPath</key><string>{}</string></dict></plist>",xml_escape(&dir.join("daemon.log").to_string_lossy()));
         std::fs::create_dir_all(plist.parent().unwrap())?;
         crate::fs_util::write_private_bytes(&plist, contents.as_bytes())?;
         let domain = format!("gui/{}", unsafe { libc::getuid() });

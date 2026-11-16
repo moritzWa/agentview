@@ -19,6 +19,8 @@ agentview bridge stop
 `sync-once` uploads sessions from the selected V2 database, including unmigrated
 legacy sessions. `install` starts a separate macOS login item. Closing the
 dashboard does not stop it. `stop` disables it but retains pairing and history.
+The login item retains the launcher's nonsecret V2 service-discovery settings,
+so a reboot or service restart does not send replies to a separate server.
 
 Credentials go in a dedicated Keychain item through Apple's stable `security`
 helper. The local journal has owner-only permissions. Source connections are
