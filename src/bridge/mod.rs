@@ -1,6 +1,8 @@
 //! Opt-in private mobile history bridge. The dashboard does not own its lifecycle.
+mod context;
 mod http;
 mod journal;
+mod runtime;
 mod source;
 #[cfg(test)]
 mod tests;
@@ -231,7 +233,33 @@ pub fn sync_once(dir: &Path) -> Result<usize> {
         Some(&json!({})),
         30,
     )?;
+    if let Err(error) = publish_runtime(dir, &config, &credential) {
+        log_unavailable("runtime", &error);
+    }
     Ok(uploads)
+}
+
+fn publish_runtime(dir: &Path, config: &Config, credential: &str) -> Result<()> {
+    let _lock = local_lock(&dir.join("runtime.lock"))?;
+    let stamp = dir.join("runtime-checked.json");
+    if std::fs::metadata(&stamp)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|age| age < Duration::from_secs(15))
+    {
+        return Ok(());
+    }
+    let snapshot = runtime::snapshot(config)?;
+    http::request(
+        &config.endpoint,
+        "/v1/connector/runtime",
+        Some(credential),
+        Some(&serde_json::to_value(snapshot)?),
+        35,
+    )?;
+    crate::fs_util::write_private_json(&stamp, &json!({"checked":true}))?;
+    Ok(())
 }
 
 fn already_admitted(
@@ -311,11 +339,15 @@ pub fn deliver_once(dir: &Path) -> Result<bool> {
         {
             status = "failed";
         } else if let Some(capture) = source::capture(&mut db, id, None)? {
-            if journal
-                .checkpoint(id)?
-                .map_or(true, |p| Some(p.cursor) != message["base_cursor"].as_i64())
-                || !journal.source_matches(id, &capture)?
-            {
+            let consistent = if message["context"].is_object() {
+                context::matches(&capture, &message["context"])
+            } else {
+                journal
+                    .checkpoint(id)?
+                    .is_some_and(|p| Some(p.cursor) == message["base_cursor"].as_i64())
+                    && journal.source_matches(id, &capture)?
+            };
+            if !consistent {
                 status = "needs_confirmation";
             } else {
                 let supervisor = if let Some(state) = &config.supervisor_state {
@@ -390,13 +422,19 @@ pub fn run(dir: &Path) -> Result<()> {
                 poll["active_until"].as_u64().unwrap_or(0),
                 Ordering::Relaxed,
             );
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_millis() as u64;
             if poll["pending"] == true {
                 while deliver_once(&queue_dir)? {}
             }
+            if poll["active_until"].as_u64().unwrap_or(0) > now {
+                publish_runtime(&queue_dir, &config, &credential)?;
+            }
             Ok(())
         })();
-        if result.is_err() {
-            eprintln!("bridge delivery unavailable; retrying without changing source history");
+        if let Err(error) = result {
+            log_unavailable("delivery", &error);
             std::thread::sleep(Duration::from_secs(10));
         }
     });
@@ -426,10 +464,34 @@ pub fn run(dir: &Path) -> Result<()> {
                     eprintln!("bridge queue reconciliation deferred");
                 }
             }
-            Err(_) => eprintln!("bridge sync unavailable; last acknowledged cursor retained"),
+            Err(error) => log_unavailable("sync", &error),
         };
         std::thread::sleep(Duration::from_secs(5));
     }
+}
+
+fn log_unavailable(channel: &str, error: &anyhow::Error) {
+    let message = error.to_string();
+    let kind = if message.contains("HTTP 401") {
+        "authentication"
+    } else if message.contains("HTTP 429") {
+        "rate_limit"
+    } else if message.contains("HTTP 5") {
+        "cloud_service"
+    } else if message.contains("already running") {
+        "busy"
+    } else if message.contains("Keychain") {
+        "credential"
+    } else if message.contains("network") {
+        "network"
+    } else {
+        "local_or_native"
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    // No exception text: it can contain paths, SQL, headers or prompt content.
+    eprintln!("bridge {channel} unavailable kind={kind} time={now}; retrying");
 }
 
 pub fn status(dir: &Path) -> Result<Value> {

@@ -44,14 +44,28 @@ Idle sync runs every 15 minutes so Neon can suspend. Mobile requests notify the
 connector to check more often for five minutes. Reads report the last cloud sync
 and successful source check. Offline reads are snapshots.
 
+`list_sessions(status="needs_you")` reads the same native states as the dashboard,
+including questions and approvals. It excludes hidden and paused rows. Status
+snapshots contain IDs and typed states, not tool output or conversation text.
+Offline results are last-known, not proof that a session is still working.
+`read_session` defaults to the latest messages. Its `before` and `after` values
+are message offsets. The sync `cursor` is not a message offset.
+
 Sending requires the current user to ask, a write-enabled OAuth grant, client
-approval, an operation ID and the cursor from a recent read. Retries reuse the
+approval, an operation ID and the cursor and context from a recent read. Retries reuse the
 same OpenCode message ID. Accepted means admitted, not completed. Native
 permission gates remain in force. Retrieved history is never authorization.
 
-Queued messages expire after a day. A context change requires a fresh read and
-new confirmed operation. Cancel the old queued operation first. An expired
+Queued messages expire after a day. Appended turns and streaming suffixes do not
+invalidate them. Edits, removals and reverts of already-read text require a fresh
+read and a new confirmed operation. Cancel the old queued operation first. An expired
 lease stays uncertain until the connector reconciles its admission ID.
+
+Check `message_status` after sending. `queued` means cloud storage, not delivery.
+`accepted` means native admission, not finished work. A reply must follow the
+operation's own input; an older completed reply is not its result. The receipt
+reports blocking earlier operations and distinguishes a synced reply from a
+recent native completed state tied to that input.
 
 ## Recovery and limits
 

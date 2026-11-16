@@ -4,6 +4,89 @@ use source::{Capture, Message};
 use tempfile::tempdir;
 
 #[test]
+fn queued_context_allows_new_turns_but_blocks_rewritten_history() {
+    let mut db = fixture();
+    let mut capture = source::capture(&mut db, "s", None).unwrap().unwrap();
+    let guard = json!({"version":1,"anchor_order":1,"anchor_bytes":7,"prefix_hash":"c7831bf2b8c6c012e0c622a9ae47915d64e9b2a3ef0fa579eb2680a5a74104b3","visible_before":null});
+    assert!(context::matches(&capture, &guard));
+    capture.messages[0].text.push_str(" streaming suffix");
+    assert!(context::matches(&capture, &guard));
+    capture.messages.push(Message {
+        id: "new_reply".into(),
+        role: "assistant".into(),
+        order: 2,
+        created_at: 2,
+        updated_at: 2,
+        text: "Progress after the phone read".into(),
+    });
+    capture.messages.push(Message {
+        id: "new_user".into(),
+        role: "user".into(),
+        order: 3,
+        created_at: 3,
+        updated_at: 3,
+        text: "Another appended turn".into(),
+    });
+    assert!(context::matches(&capture, &guard));
+    capture.messages[0].text = "Edited old input".into();
+    assert!(!context::matches(&capture, &guard));
+    capture.messages[0].text = "Visible".into();
+    capture.state["visible_before"] = json!(2);
+    assert!(!context::matches(&capture, &guard));
+}
+
+#[test]
+fn runtime_projection_reuses_typed_states_without_leaking_paths_or_chat_text() {
+    use crate::domain::{AgentSession, Provider, Runtime, SessionKind, SessionState};
+    let mut session = AgentSession {
+        id: "opencode:host:ses_x".into(),
+        provider_session_id: "ses_x".into(),
+        provider: Provider::OpenCode,
+        runtime: Runtime::Host,
+        kind: SessionKind::Managed,
+        name: "PRIVATE_TITLE".into(),
+        cwd: PathBuf::from("PRIVATE_PATH"),
+        state: SessionState::NeedsInput,
+        summary: "PRIVATE_TOOL_OUTPUT".into(),
+        raw_state: Some("permission requested".into()),
+        wake: None,
+        pid: None,
+        started_at: None,
+        updated_at: None,
+        pull_requests: None,
+        capabilities: Default::default(),
+    };
+    let status = serde_json::to_value(runtime::project(&session)).unwrap();
+    assert_eq!(status["status"], "needs_you");
+    assert_eq!(status["reason"], "approval");
+    assert_eq!(status["can_message"], false);
+    assert!(!status.to_string().contains("PRIVATE"));
+    session.state = SessionState::Working;
+    session.raw_state = None;
+    assert_eq!(
+        serde_json::to_value(runtime::project(&session)).unwrap()["status"],
+        "working"
+    );
+}
+
+#[test]
+#[ignore = "read-only inspection of the paired Mac's native session classifier; no uploads or model calls"]
+fn real_runtime_snapshot_audit_without_upload() {
+    let config = load(&state_dir().unwrap()).unwrap();
+    let start = std::time::Instant::now();
+    let snapshot = serde_json::to_value(runtime::snapshot(&config).unwrap()).unwrap();
+    let mut counts = std::collections::BTreeMap::new();
+    for status in snapshot["statuses"].as_array().unwrap() {
+        *counts
+            .entry(status["status"].as_str().unwrap())
+            .or_insert(0usize) += 1;
+    }
+    eprintln!("Native runtime audit: available={}, partial={}, truncated={}, states={counts:?}, elapsed_ms={}",snapshot["available"],snapshot["partial"],snapshot["truncated"],start.elapsed().as_millis());
+    assert_eq!(snapshot["available"], true);
+    assert_eq!(snapshot["partial"], false);
+}
+
+#[test]
 fn login_daemon_retains_shared_v2_discovery_but_not_secrets_or_isolated_profiles() {
     let dir = tempdir().unwrap();
     let service = dir.path().join("runtime/service.json");
