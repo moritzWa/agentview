@@ -710,6 +710,40 @@ fn save_keychain_service(service: &str, credentials: &str) -> Option<()> {
     }
 }
 
+/// Dedicated bridge items use the stable Apple helper, not an ad-hoc build's
+/// SecItem API identity. Never permit this wrapper to touch subscription items.
+pub(crate) fn save_bridge_credential(service: &str, token: &str) -> Option<()> {
+    if !is_bridge_service(service)
+        || token.len() != 43
+        || !token
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
+    {
+        return None;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        update_keychain_password(service, "connector", token, None)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
+pub(crate) fn read_bridge_credential(service: &str) -> Option<String> {
+    if !is_bridge_service(service) {
+        return None;
+    }
+    read_keychain_service(service).map(|value| value.trim().to_owned())
+}
+
+fn is_bridge_service(service: &str) -> bool {
+    service
+        .strip_prefix("agentview-bridge-")
+        .is_some_and(|id| id.len() == 32 && id.bytes().all(|c| c.is_ascii_hexdigit()))
+}
+
 /// First 8 hex chars of SHA-256, matching Claude Code's config-dir suffix.
 fn sha256_prefix(text: &str) -> Option<String> {
     use std::io::Write;

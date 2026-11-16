@@ -72,6 +72,13 @@ enum LaunchProvider {
 
 #[derive(Clone, Debug, Eq, PartialEq, Subcommand)]
 enum Commands {
+    /// Private mobile history sync and queued replies. Disabled until explicitly paired.
+    Bridge {
+        #[arg(long, value_name = "PATH")]
+        state_dir: Option<PathBuf>,
+        #[command(subcommand)]
+        command: BridgeCommand,
+    },
     /// Download, verify, and install the latest agentview release.
     #[command(alias = "upgrade")]
     Update,
@@ -117,6 +124,33 @@ enum Commands {
         #[arg(long)]
         socket: PathBuf,
     },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Subcommand)]
+enum BridgeCommand {
+    /// Pair this Mac using owner Google login. Does not upload until Run or SyncOnce.
+    Pair {
+        #[arg(long, default_value = "https://agentvoice-private.moritzw.workers.dev")]
+        endpoint: String,
+        /// Explicit source path for isolated testing or a nondefault OpenCode profile.
+        #[arg(long)]
+        database: Option<PathBuf>,
+        /// Isolated Agent View OpenCode supervisor directory, for test profiles.
+        #[arg(long)]
+        supervisor_state: Option<PathBuf>,
+    },
+    /// Run the background sync and delivery service without the dashboard.
+    Run,
+    /// Sync pending source changes once, then exit.
+    SyncOnce,
+    /// Deliver at most one already-authorized cloud message, then exit.
+    DeliverOnce,
+    /// Print connection and local journal counts without conversation text.
+    Status,
+    /// Install and start a macOS login item for the paired background service.
+    Install,
+    /// Stop and disable the login item, retaining pairing and cloud history.
+    Stop,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Subcommand)]
@@ -521,6 +555,40 @@ fn main() -> Result<()> {
     }
     if let Some(command) = cli.command.as_ref() {
         match command {
+            Commands::Bridge { state_dir, command } => {
+                let dir = state_dir
+                    .clone()
+                    .map(Ok)
+                    .unwrap_or_else(agentview::bridge::state_dir)?;
+                match command {
+                    BridgeCommand::Pair {
+                        endpoint,
+                        database,
+                        supervisor_state,
+                    } => agentview::bridge::pair(
+                        &dir,
+                        endpoint,
+                        &cli.opencode_bin,
+                        database.as_deref(),
+                        supervisor_state.as_deref(),
+                    )?,
+                    BridgeCommand::Run => agentview::bridge::run(&dir)?,
+                    BridgeCommand::SyncOnce => println!(
+                        "Synced {} history batches",
+                        agentview::bridge::sync_once(&dir)?
+                    ),
+                    BridgeCommand::DeliverOnce => println!(
+                        "Delivery processed: {}",
+                        agentview::bridge::deliver_once(&dir)?
+                    ),
+                    BridgeCommand::Status => println!(
+                        "{}",
+                        serde_json::to_string_pretty(&agentview::bridge::status(&dir)?)?
+                    ),
+                    BridgeCommand::Install => agentview::bridge::install(&dir)?,
+                    BridgeCommand::Stop => agentview::bridge::stop(&dir)?,
+                }
+            }
             Commands::Update => run_self_update()?,
             Commands::Voice { set_key, provider } => {
                 use agentview::voice::config::{key_for, save_key_for, save_setting, Provider};

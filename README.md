@@ -112,6 +112,9 @@ own interface.
   browser agentview starts for the call, for OpenCode sessions. See
   [Voice Mode](docs/voice.md).
 - **`Ctrl+X` twice** stops and hides or deletes a session, no dialog.
+- **Mobile OpenCode bridge:** opt-in text-only history search and queued replies
+  through a private ChatGPT MCP server. Runs without the dashboard.
+  [Setup and privacy](docs/mobile-bridge.md).
 
 ### Refresh time by harness
 
