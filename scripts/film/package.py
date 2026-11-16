@@ -21,7 +21,9 @@ def main():
         verification["frames"] == 900
         and verification["decode"] == "all frames and audio packets passed"
     )
-    dest = ROOT / "docs/assets/film-review"
+    # The revised music-bearing master stays private until creative/publication
+    # review. The older checked-in review package is not overwritten here.
+    dest = ROOT / "target/film-review"
     # Explicit allowlist. Never copy private runtime state or credentials.
     files = [
         "agentview-30s-review.mp4",
@@ -32,19 +34,31 @@ def main():
         "verification.json",
         "audio/manifest.json",
         "audio/timing.json",
+        "audio/music.json",
         "captures/overview.png",
         "captures/work.png",
         "captures/resumed.png",
         "captures/layout.json",
+        "captures/scheduled.png",
+        "captures/continued.png",
         "captures/provenance.json",
     ]
     files += [f"audio/{i:02d}.mp3" for i in range(9)]
+    files += [
+        f"agentview-film-evidence/{name}"
+        for name in [
+            "voice-blocker.json",
+            "voice-blocker.log",
+            "chatgpt-desktop-blocker.png",
+        ]
+        if (args.output / "agentview-film-evidence" / name).exists()
+    ]
     for name in files:
         target = dest / name
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(args.output / name, target)
     shutil.copyfile(Path(__file__).with_name("shotlist.json"), dest / "shotlist.json")
-    print(f"Staged review package: {dest}. Existing public assets unchanged.")
+    print(f"Staged private review package: {dest}. Existing public assets unchanged.")
 
 
 if __name__ == "__main__":

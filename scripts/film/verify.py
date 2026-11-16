@@ -35,7 +35,7 @@ def main():
     )
     video = next(s for s in probe["streams"] if s["codec_type"] == "video")
     audio = next(s for s in probe["streams"] if s["codec_type"] == "audio")
-    assert (video["width"], video["height"]) == (1600, 900)
+    assert (video["width"], video["height"]) == (3840, 2160)
     assert video["r_frame_rate"] == "30/1"
     assert int(video["nb_frames"]) == 900
     assert video["pix_fmt"] == "yuv420p"
@@ -43,6 +43,11 @@ def main():
     assert audio["codec_name"] == "aac"
     assert int(audio["sample_rate"]) == 48000
     assert float(audio["duration"]) >= 29.9, "Encoded narration is truncated"
+    provenance = json.loads((args.output / "captures/provenance.json").read_text())
+    assert provenance["font_pixels"] >= 60
+    assert provenance["raster_size"][0] >= 3840, (
+        "UI sources must be genuinely high resolution"
+    )
     clips = json.loads((args.output / "audio/timing.json").read_text())
     for i, c in enumerate(clips):
         assert c["end"] <= 30 and c["speed"] <= 1.35
@@ -121,6 +126,11 @@ def main():
         "voice_overlap": False,
         "live_call_recording": False,
         "public_assets_replaced": False,
+        "source_ui_resolution": provenance["raster_size"],
+        "source_glyph_pixels": provenance["font_pixels"],
+        "music": "Lorn · TIMESINK, 30-second excerpt, user-reported artist permission",
+        "native_chatgpt_voice": "blocked in recording VM: NotReadableError, Microphone is already in use",
+        "creative_review_complete": False,
     }
     (args.output / "verification.json").write_text(json.dumps(report, indent=2))
     print(json.dumps(report))

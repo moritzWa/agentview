@@ -25,7 +25,8 @@ import pyte
 from PIL import Image, ImageDraw, ImageFont
 
 ROOT = Path(__file__).resolve().parents[2]
-COLS, ROWS = 112, 31
+COLS, ROWS = 132, 23
+RASTER_SCALE = 3
 PALETTE = [
     "5c5f77",
     "d20f39",
@@ -50,8 +51,12 @@ def color(value, default):
 
 
 def picture(screen, path):
-    font = ImageFont.truetype("/System/Library/Fonts/Menlo.ttc", 20)
-    im = Image.new("RGB", (COLS * 12 + 32, ROWS * 28 + 32), "white")
+    font = ImageFont.truetype("/System/Library/Fonts/Menlo.ttc", 20 * RASTER_SCALE)
+    im = Image.new(
+        "RGB",
+        ((COLS * 12 + 32) * RASTER_SCALE, (ROWS * 28 + 32) * RASTER_SCALE),
+        "white",
+    )
     draw = ImageDraw.Draw(im)
     for y in range(ROWS):
         for x in range(COLS):
@@ -59,7 +64,10 @@ def picture(screen, path):
             fg, bg = color(c.fg, "#000000"), color(c.bg, "#ffffff")
             if c.reverse:
                 fg, bg = bg, fg
-            box = (16 + x * 12, 16 + y * 28, 28 + x * 12, 44 + y * 28)
+            box = tuple(
+                v * RASTER_SCALE
+                for v in (16 + x * 12, 16 + y * 28, 28 + x * 12, 44 + y * 28)
+            )
             draw.rectangle(box, fill=bg)
             if c.data.strip():
                 draw.text((box[0], box[1]), c.data, font=font, fill=fg)
@@ -116,8 +124,20 @@ def main():
         data["sessions"].append(devin)
         fixture = home / "film.json"
         fixture.write_text(json.dumps(data))
+        queue_dir = home / "queue"
+        queue_dir.mkdir()
+        queue_file = queue_dir / "synthetic-status.json"
+        queue_file.write_text("{}")
+        bins = home / "bin"
+        bins.mkdir()
+        queue_stub = bins / "agent-bouncer"
+        queue_stub.write_text(
+            '#!/usr/bin/env python3\nimport os,pathlib\nprint((pathlib.Path(os.environ["AGENT_BOUNCER_DIR"])/"synthetic-status.json").read_text())\n'
+        )
+        queue_stub.chmod(0o700)
         env = {
-            "PATH": os.environ["PATH"],
+            "PATH": str(bins) + os.pathsep + os.environ["PATH"],
+            "AGENT_BOUNCER_DIR": str(queue_dir),
             "LANG": "en_US.UTF-8",
             "HOME": str(home),
             "XDG_STATE_HOME": str(home / "state"),
@@ -212,6 +232,57 @@ def main():
             picture(screen, args.output / "work.png")
             assert "Work only" in "\n".join(screen.display)
             assert "plan-weekend" not in "\n".join(screen.display)
+            scheduled = copy.deepcopy(data["sessions"][2])
+            scheduled.update(
+                id="opencode:host:review-checkout",
+                name="review-checkout",
+                provider_session_id="synthetic-review-checkout",
+                state="scheduled",
+                raw_state="background: wake-later Tomorrow 09:00: Review checkout results",
+                summary="Review checkout results",
+                pid=None,
+            )
+            data["sessions"] = [checkout, scheduled]
+            fixture.write_text(json.dumps(data))
+            queue_file.write_text(
+                json.dumps(
+                    {
+                        "running": [
+                            {
+                                "label": "checkout tests",
+                                "cwd": str(work),
+                                "started_ms": int(time.time() * 1000) - 42000,
+                            }
+                        ],
+                        "waiting": [
+                            {
+                                "label": "Rust build",
+                                "cwd": str(work),
+                                "since_ms": int(time.time() * 1000) - 12000,
+                                "reason": "slots",
+                            }
+                        ],
+                        "est_free_ms": 180000,
+                    }
+                )
+            )
+            drain(3)
+            os.write(
+                master, b"\x19"
+            )  # Actual Ctrl+Y expands the integrated Scheduled section.
+            drain(1)
+            display = "\n".join(screen.display)
+            assert "review-checkout" in display, display
+            assert "Heavy jobs" in display, display
+            picture(screen, args.output / "scheduled.png")
+            scheduled.update(
+                state="working",
+                raw_state="background: shell: checking checkout results",
+                summary="Reviewing checkout tests and preview",
+            )
+            fixture.write_text(json.dumps(data))
+            drain(1)
+            picture(screen, args.output / "continued.png")
             (args.output / "provenance.json").write_text(
                 json.dumps(
                     {
@@ -223,11 +294,18 @@ def main():
                             Path(shutil.which(args.binary) or args.binary).read_bytes()
                         ).hexdigest(),
                         "capture": "actual Agent View PTY, rasterized via pyte",
+                        "raster_size": [
+                            (COLS * 12 + 32) * RASTER_SCALE,
+                            (ROWS * 28 + 32) * RASTER_SCALE,
+                        ],
+                        "font_pixels": 20 * RASTER_SCALE,
+                        "queue_source": "isolated read-only synthetic agent-bouncer status; actual app widget",
                         "data": "isolated synthetic fixture; no live calls or sends",
                         "checks": [
                             "work-only heading visible",
                             "personal session hidden",
                             "staged checkout row moved from Needs input to Working",
+                            "real Scheduled and Heavy jobs widgets visible together",
                         ],
                     },
                     indent=2,

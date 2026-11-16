@@ -7,13 +7,20 @@ from html.parser import HTMLParser
 import narrate
 import render
 import verify
+import visual
 from PIL import ImageStat
 
 
 class FilmTests(unittest.TestCase):
+    def test_all_eighteen_supported_harnesses_have_artwork(self):
+        self.assertEqual(len(visual.HARNESSES), 18)
+        self.assertEqual(len({name for name, _ in visual.HARNESSES}), 18)
+        for _, asset in visual.HARNESSES:
+            self.assertTrue((visual.ROOT / "site/providers" / asset).is_file())
+
     def test_edit_is_exactly_thirty_seconds(self):
         self.assertEqual(render.FPS * render.SECONDS, 900)
-        self.assertEqual((render.W, render.H), (1600, 900))
+        self.assertEqual((render.W, render.H), (3840, 2160))
 
     def test_easing_is_bounded_and_monotonic(self):
         values = [render.ease(i / 100) for i in range(-20, 121)]

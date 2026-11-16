@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run capture, render, verification and review staging under one queue admission.
 
-python3 ~/.claude/scripts/heavy-job.py --wait -- uv run --with pillow --with pyte --with resvg-py scripts/film/build.py --output ~/Movies/agentview-film-draft
+python3 ~/.claude/scripts/heavy-job.py --wait -- uv run --with pillow --with pyte --with resvg-py --with numpy scripts/film/build.py --output ~/Movies/agentview-film-draft
 
 Requires existing audio clips. No API call, browser, playback or public deploy.
 """

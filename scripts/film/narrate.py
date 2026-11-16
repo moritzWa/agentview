@@ -24,13 +24,13 @@ LINES = [
     (11.35, "Sent.", "JBFqnCBsd6RMkjVDRZzb"),
     (12.6, "Take your agents with you.", "JBFqnCBsd6RMkjVDRZzb"),
     (
-        17.35,
+        16.05,
         "Keep work in view. Everything else keeps running.",
         "JBFqnCBsd6RMkjVDRZzb",
     ),
     (
-        20.6,
-        "Schedule the follow-up. Agent bouncer queues the heavy jobs.",
+        19.25,
+        "Tomorrow at nine, review checkout. Agent bouncer queues the heavy jobs.",
         "JBFqnCBsd6RMkjVDRZzb",
     ),
     (26.0, "Open source. Built in Rust.", "JBFqnCBsd6RMkjVDRZzb"),

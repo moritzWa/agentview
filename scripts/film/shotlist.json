@@ -1,5 +1,7 @@
 {
   "duration_seconds": 30,
+  "delivery_resolution": [3840,2160],
+  "source_ui_resolution": [4848,2028],
   "shots": [
     {
       "start": 0,
@@ -17,33 +19,34 @@
     },
     {
       "start": 12,
-      "end": 17,
-      "beat": "Take your agents with you",
-      "evidence": "Labeled phone illustration; no native ChatGPT UI asserted",
-      "missing_capture": "Actual ChatGPT Voice using AgentVoice read/search/send on a disposable OpenCode session",
-      "replacement_path": "Use existing mobile-voice verification session's proven account/device path. Capture only the dedicated synthetic conversation. If browser-sized footage is used, label it web capture rather than native phone footage. Do not show create, stop or native approval actions."
+      "end": 15.8,
+      "beat": "Reserved real ChatGPT desktop Voice capture",
+      "evidence": "Explicit recording-blocker card. No conceptual phone or fabricated call substituted.",
+      "missing_capture": "Native desktop Voice exact-target AgentVoice read/send on a dedicated synthetic OpenCode session",
+      "blocker": "Real signed-in ChatGPT desktop Codex and Work fail Voice startup with NotReadableError: Microphone is already in use. Virtual input also failed. Dedicated synthetic session deleted after attempt; pairing unchanged.",
+      "replacement_path": "Resolve recording-environment microphone separately, then capture only a new dedicated synthetic target. Desktop Voice availability does not establish MCP tool support."
     },
     {
-      "start": 17,
-      "end": 20.5,
+      "start": 15.8,
+      "end": 18.8,
       "beat": "Work-only view hides personal sessions",
       "evidence": "Actual before/after app renders; view work command exercised and asserted",
       "limitation": "Global binding caption reflects this user's configured setup, not an intrinsic app shortcut. Background work continuing is not exercised by this fixture."
     },
     {
-      "start": 20.5,
+      "start": 18.8,
       "end": 25,
       "beat": "Scheduled continuation and agent-bouncer queue",
-      "evidence": "Actual work-view render plus labeled editorial state panels",
-      "missing_capture": "Actual Scheduled/Background sections and actual heavy-job queue UI",
-      "replacement_path": "Launch isolated non-fixture Agent View against synthetic provider history and private schedule state. Point PATH at a deterministic read-only agent-bouncer status stub to capture the real queue widget, clearly labeled synthetic queue state. Exercise one disposable scheduled wake; capture its background continuation separately and use an honest time-jump caption."
+      "evidence": "Actual integrated Scheduled and Heavy jobs widgets. Isolated synthetic schedule/queue state. Ctrl+Y expands real section; explicit staged time jump to Background state.",
+      "limitation": "A fixture state transition is not proof that a real scheduled session woke up. No production queue modified."
     },
     {
       "start": 25,
       "end": 30,
       "beat": "Five-second bento and URL hold",
-      "evidence": "Editorial feature recap; open-source/Rust footer; no additional product controls"
+      "evidence": "Apple WWDC reference-led, screenshot bento with central identity and all 18 harness logos. Actual UI crops; no Apple artwork. Missing desktop capture remains visibly pending."
     }
   ],
-  "publication": "Review only. Existing website and README assets remain unchanged."
+  "music": "Lorn TIMESINK 0:00–0:30. User reports personal artist permission. Music-bearing master and separate stem private pending review.",
+  "publication": "Review only. Existing website, README and checked-in first-draft media remain unchanged."
 }
