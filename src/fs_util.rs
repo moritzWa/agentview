@@ -25,6 +25,7 @@ pub(crate) fn write_private_json(path: &Path, value: &impl Serialize) -> Result<
     })
 }
 
+#[cfg(target_os = "macos")]
 pub(crate) fn write_private_bytes(path: &Path, bytes: &[u8]) -> Result<()> {
     write_private(path, |file| {
         file.write_all(bytes)?;

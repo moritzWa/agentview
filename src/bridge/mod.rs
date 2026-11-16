@@ -56,7 +56,12 @@ pub fn random_id() -> Result<String> {
     let mut bytes = [0u8; 16];
     getrandom::getrandom(&mut bytes)
         .map_err(|_| anyhow::anyhow!("secure random source unavailable"))?;
-    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+    use std::fmt::Write;
+    let mut encoded = String::with_capacity(32);
+    for byte in bytes {
+        write!(encoded, "{byte:02x}")?;
+    }
+    Ok(encoded)
 }
 pub fn hash(value: &Value) -> String {
     format!("{:x}", Sha256::digest(value.to_string().as_bytes()))
@@ -351,6 +356,7 @@ pub fn deliver_once(dir: &Path) -> Result<bool> {
 fn local_lock(path: &Path) -> Result<std::fs::File> {
     let lock = std::fs::OpenOptions::new()
         .create(true)
+        .truncate(false)
         .write(true)
         .open(path)?;
     #[cfg(unix)]
@@ -467,10 +473,11 @@ pub fn install(dir: &Path) -> Result<()> {
             dir.to_string_lossy().to_string(),
             "run".into(),
         ];
-        let strings = args
-            .iter()
-            .map(|s| format!("<string>{}</string>", xml_escape(s)))
-            .collect::<String>();
+        use std::fmt::Write;
+        let mut strings = String::new();
+        for arg in args {
+            write!(strings, "<string>{}</string>", xml_escape(&arg))?;
+        }
         let contents=format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?><!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\"><plist version=\"1.0\"><dict><key>Label</key><string>{label}</string><key>ProgramArguments</key><array>{strings}</array><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>15</integer><key>StandardErrorPath</key><string>{}</string></dict></plist>",xml_escape(&dir.join("daemon.log").to_string_lossy()));
         std::fs::create_dir_all(plist.parent().unwrap())?;
         crate::fs_util::write_private_bytes(&plist, contents.as_bytes())?;

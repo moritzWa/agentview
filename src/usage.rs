@@ -701,7 +701,7 @@ fn read_keychain_service(service: &str) -> Option<String> {
 fn save_keychain_service(service: &str, credentials: &str) -> Option<()> {
     #[cfg(target_os = "macos")]
     {
-        return update_keychain_password(service, &std::env::var("USER").ok()?, credentials, None);
+        update_keychain_password(service, &std::env::var("USER").ok()?, credentials, None)
     }
     #[cfg(not(target_os = "macos"))]
     {
