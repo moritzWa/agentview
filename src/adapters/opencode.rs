@@ -2604,6 +2604,9 @@ mod tests {
         assert_eq!(session.state, SessionState::Scheduled);
         // An assistant finishing the turn does not undo defer. A new user does.
         crate::last_message::remember_facts(&session.id, 101, "new reply");
+        // The managed server may return an older user timestamp when a long
+        // tool-heavy turn pushes that message outside its bounded history.
+        crate::last_message::remember_facts(&session.id, 90, "latest reply");
         session.state = SessionState::Completed;
         session.raw_state = Some("managed_server".into());
         apply(&mut session);
