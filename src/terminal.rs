@@ -2369,6 +2369,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> AppAction {
     }
     if key.modifiers.contains(KeyModifiers::CONTROL) {
         return match key.code {
+            KeyCode::Char('c') if matches!(app.overlay, Overlay::Composer(_)) => app.escape(),
             KeyCode::Char('s') if app.overlay == Overlay::None => {
                 app.toggle_view();
                 AppAction::None
@@ -4420,6 +4421,22 @@ mod tests {
         handle_key(&mut app, control_key('j'));
         handle_key(&mut app, key(KeyCode::Char('b')));
         assert_eq!(app.input, "a\nb");
+    }
+
+    #[test]
+    fn control_c_clears_and_closes_input_without_quitting() {
+        let mut app = app();
+        app.start_new_session(Some('a'));
+        handle_key(&mut app, control_key('j'));
+        handle_key(&mut app, key(KeyCode::Char('b')));
+
+        assert_eq!(handle_key(&mut app, control_key('c')), AppAction::None);
+        assert!(app.input.is_empty());
+        assert_eq!(app.overlay, Overlay::None);
+        assert!(!app.should_quit);
+
+        assert_eq!(handle_key(&mut app, control_key('c')), AppAction::None);
+        assert!(!app.should_quit);
     }
 
     #[test]

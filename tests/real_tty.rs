@@ -22,6 +22,7 @@ const LEFT: &[u8] = b"\x1b[D";
 const SHIFT_LEFT: &[u8] = b"\x1b[1;2D";
 const SHIFT_TAB: &[u8] = b"\x1b[Z";
 const CTRL_A: &[u8] = b"\x01";
+const CTRL_C: &[u8] = b"\x03";
 const CTRL_F: &[u8] = b"\x06";
 const CTRL_J: &[u8] = b"\x0a";
 // Kitty keyboard enhancement encoding for Ctrl+M. A legacy terminal sends CR
@@ -32,6 +33,24 @@ const CTRL_S: &[u8] = b"\x13";
 const CTRL_X: &[u8] = b"\x18";
 
 static PTY_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+#[test]
+fn control_c_discards_the_draft_and_keeps_the_dashboard_running() {
+    let _serial = serialize_real_tty_test();
+    let mut app = PtyApp::spawn(110, 35);
+    app.wait_for("startup", |s| s.contains("owned-codex-worker"));
+    app.send(b"discard this draft");
+    app.wait_for("draft", |s| s.contains("discard this draft"));
+    app.send(CTRL_C);
+    app.wait_for("draft discarded", |s| {
+        s.contains("owned-codex-worker") && !s.contains("discard this draft")
+    });
+    app.send(CTRL_C);
+    app.send(b"fresh input");
+    app.wait_for("dashboard still accepts input", |s| {
+        s.contains("fresh input") && !s.contains("discard this draft")
+    });
+}
 
 #[test]
 fn notification_click_clears_the_filter_selects_and_opens_the_exact_session() {
