@@ -163,6 +163,53 @@ impl MigrationServices {
     }
 }
 
+/// Use the local durable-wake helper, without cancelling or rewriting its brief.
+fn save_schedule_visibility(
+    app: &App,
+    session_id: &str,
+    defer: Option<&str>,
+) -> anyhow::Result<String> {
+    use crate::process::{CommandRequest, CommandRunner, ProcessRunner};
+    let session = app
+        .snapshot
+        .sessions
+        .iter()
+        .find(|s| s.id == session_id)
+        .context("session is no longer visible")?;
+    let home = std::env::var_os("HOME").context("HOME is not set")?;
+    let script = PathBuf::from(home).join(".claude/scripts/wake-later.py");
+    anyhow::ensure!(script.is_file(), "wake-later.py is not installed");
+    let mut args = vec![script.to_string_lossy().into_owned()];
+    match defer {
+        None => args.extend(["keep".into(), session.provider_session_id.clone()]),
+        Some("") => args.extend(["defer-session".into(), session.provider_session_id.clone()]),
+        Some(value) => {
+            let (when, text) = value
+                .split_once(char::is_whitespace)
+                .context("use /defer +2d <what to check>, or /defer for an existing reminder")?;
+            anyhow::ensure!(
+                !text.trim().is_empty(),
+                "include what the agent should check"
+            );
+            args.extend([
+                "defer".into(),
+                session.provider_session_id.clone(),
+                session.cwd.to_string_lossy().into_owned(),
+                when.into(),
+                text.trim().into(),
+            ]);
+        }
+    }
+    let output = ProcessRunner.run(&CommandRequest::new("python3", args))?;
+    anyhow::ensure!(output.status == 0, "{}", output.stderr_lossy());
+    Ok(if defer.is_some() {
+        "Deferred until its next reminder."
+    } else {
+        "Kept in main list. Reminders unchanged."
+    }
+    .into())
+}
+
 /// Persist a pause the screen already shows, then show what the registry
 /// actually holds, so a failed save puts the row back where it was.
 fn save_pause(
@@ -1113,6 +1160,19 @@ pub fn run_dashboard(
                             );
                         }
                         let mut effect = match action {
+                            AppAction::ScheduleVisibility { session_id, defer } => {
+                                match save_schedule_visibility(&app, &session_id, defer.as_deref())
+                                {
+                                    Ok(message) => app.set_notice(message),
+                                    Err(error) => app.set_notice(format!(
+                                        "could not change reminder: {error:#}"
+                                    )),
+                                }
+                                ActionEffect {
+                                    refresh: true,
+                                    ..ActionEffect::default()
+                                }
+                            }
                             AppAction::SetPaused { session_id, paused } => {
                                 save_pause(&mut app, &paused_sessions, &session_id, paused);
                                 ActionEffect::default()
@@ -2976,6 +3036,7 @@ fn dispatch_action<T: DashboardTerminal, C: DashboardControl>(
             }
         }
         AppAction::SetPaused { .. }
+        | AppAction::ScheduleVisibility { .. }
         | AppAction::SetSortKeys { .. }
         | AppAction::ToggleVoice
         | AppAction::SaveVoiceKey { .. }
@@ -3090,6 +3151,7 @@ fn handle_action_legacy<T: DashboardTerminal, C: DashboardControl>(
         | AppAction::Migrate { .. }
         | AppAction::Hide { .. }
         | AppAction::SetPaused { .. }
+        | AppAction::ScheduleVisibility { .. }
         | AppAction::SetSortKeys { .. }
         | AppAction::BrowseHidden
         | AppAction::ToggleVoice
@@ -3751,6 +3813,7 @@ mod tests {
                 cwd: PathBuf::from("/work"),
                 state: SessionState::Working,
                 summary: "working".into(),
+                wake: None,
                 raw_state: None,
                 pid: None,
                 started_at: None,

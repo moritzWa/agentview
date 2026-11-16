@@ -250,6 +250,7 @@ fn normalize_record(record: ClaudeRecord, runtime: Runtime) -> AgentSession {
     };
 
     AgentSession {
+        wake: None,
         id: format!("claude:{runtime_id}:{}", record.session_id),
         provider_session_id: record.session_id,
         provider: Provider::Claude,

@@ -1041,6 +1041,7 @@ fn normalize_managed(session: &ManagedCopilotSession) -> AgentSession {
         cwd: session.cwd.clone(),
         state: session.state,
         summary: session.summary.clone(),
+        wake: None,
         raw_state: Some(if !session.connection_owned {
             "native".into()
         } else if session.permission.is_some() {
@@ -1575,6 +1576,7 @@ while read remaining; do :; done
             cwd: workspace,
             state: SessionState::Unknown,
             summary: String::new(),
+            wake: None,
             raw_state: None,
             pid: None,
             started_at: None,
@@ -1616,6 +1618,7 @@ while read remaining; do :; done
             cwd: workspace,
             state: SessionState::Unknown,
             summary: String::new(),
+            wake: None,
             raw_state: None,
             pid: None,
             started_at: None,

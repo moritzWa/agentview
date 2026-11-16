@@ -473,6 +473,7 @@ mod tests {
             cwd: "/work".into(),
             state,
             summary: summary.into(),
+            wake: None,
             raw_state: Some(raw_state.into()),
             pid: None,
             started_at: None,

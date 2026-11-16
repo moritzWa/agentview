@@ -204,6 +204,9 @@ pub struct AgentSession {
     pub state: SessionState,
     pub summary: String,
     pub raw_state: Option<String>,
+    /// A future follow-up is independent of the turn's current status.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wake: Option<crate::holds::Wake>,
     pub pid: Option<u32>,
     #[serde(default, with = "optional_system_time_millis")]
     pub started_at: Option<SystemTime>,
@@ -304,6 +307,7 @@ mod tests {
             cwd: PathBuf::from("/work"),
             state: SessionState::Working,
             summary: String::new(),
+            wake: None,
             raw_state: Some("working".into()),
             pid: None,
             started_at: None,
@@ -334,6 +338,7 @@ mod tests {
             cwd: PathBuf::from("/work"),
             state: SessionState::Working,
             summary: String::new(),
+            wake: None,
             raw_state: None,
             pid: None,
             started_at: Some(time),

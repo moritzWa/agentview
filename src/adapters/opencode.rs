@@ -33,7 +33,7 @@ use crate::process::{CancellableProcessRunner, CommandRequest, CommandRunner};
 // read through the (session_id, time_created) index, which live state needs;
 // `child` is when the newest unfinished turn of a subagent session began,
 // leaving out the memory plugin's housekeeping sessions (`opencode-memory ...`).
-pub(super) const GLOBAL_SESSION_ROWS: &str = "SELECT json_object('id', s.id, 'title', s.title, 'created', s.time_created, 'updated', s.time_updated, 'projectId', s.project_id, 'directory', s.directory, 'last', json((SELECT json_object('role', json_extract(m.data, '$.role'), 'created', m.time_created, 'completed', json_extract(m.data, '$.time.completed'), 'midTurn', json_extract(m.data, '$.midTurn'), 'question', EXISTS (SELECT 1 FROM part p WHERE p.message_id = m.id AND json_extract(p.data, '$.tool') = 'question' AND json_extract(p.data, '$.state.status') IN ('pending', 'running'))) FROM message m WHERE m.session_id = s.id ORDER BY m.time_created DESC, m.id DESC LIMIT 1)), 'child', (SELECT MAX(m.time_created) FROM session c JOIN message m ON m.id = (SELECT m2.id FROM message m2 WHERE m2.session_id = c.id ORDER BY m2.time_created DESC, m2.id DESC LIMIT 1) WHERE c.parent_id = s.id AND COALESCE(c.title, '') NOT LIKE 'opencode-memory %' AND (json_extract(m.data, '$.role') = 'user' OR json_extract(m.data, '$.time.completed') IS NULL))) AS record FROM session s WHERE s.parent_id IS NULL";
+pub(super) const GLOBAL_SESSION_ROWS: &str = "SELECT json_object('id', s.id, 'title', s.title, 'created', s.time_created, 'updated', s.time_updated, 'projectId', s.project_id, 'directory', s.directory, 'userCreated', (SELECT m.time_created FROM message m WHERE m.session_id = s.id AND json_extract(m.data, '$.role') = 'user' ORDER BY m.time_created DESC, m.id DESC LIMIT 1), 'last', json((SELECT json_object('role', json_extract(m.data, '$.role'), 'created', m.time_created, 'completed', json_extract(m.data, '$.time.completed'), 'midTurn', json_extract(m.data, '$.midTurn'), 'question', EXISTS (SELECT 1 FROM part p WHERE p.message_id = m.id AND json_extract(p.data, '$.tool') = 'question' AND json_extract(p.data, '$.state.status') IN ('pending', 'running'))) FROM message m WHERE m.session_id = s.id ORDER BY m.time_created DESC, m.id DESC LIMIT 1)), 'child', (SELECT MAX(m.time_created) FROM session c JOIN message m ON m.id = (SELECT m2.id FROM message m2 WHERE m2.session_id = c.id ORDER BY m2.time_created DESC, m2.id DESC LIMIT 1) WHERE c.parent_id = s.id AND COALESCE(c.title, '') NOT LIKE 'opencode-memory %' AND (json_extract(m.data, '$.role') = 'user' OR json_extract(m.data, '$.time.completed') IS NULL))) AS record FROM session s WHERE s.parent_id IS NULL";
 const MODEL_DISCOVERY_TIMEOUT_SECS: u64 = 30;
 const MAX_MODEL_CATALOG_BYTES: usize = 4 * 1024 * 1024;
 const LAUNCH_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(8);
@@ -2067,6 +2067,7 @@ fn apply_holds<'a>(
         return;
     };
     for session in sessions {
+        session.wake = crate::holds::next_wake(root, "opencode", &session.provider_session_id);
         let direct = crate::holds::live_hold(root, "opencode", &session.provider_session_id);
         let child = inherited.get(&session.provider_session_id);
         if let Some(reason) = child.filter(|reason| !reason.starts_with("wake-later ")) {
@@ -2075,6 +2076,16 @@ fn apply_holds<'a>(
             apply_hold(session, &reason);
         } else if let Some(reason) = child {
             apply_hold(session, reason);
+        }
+        if let Some(wake) = &session.wake {
+            let last_user =
+                crate::last_message::facts_for(&session.id).map_or(0, |facts| facts.last_user_ms);
+            if wake.deferred_at_ms.is_some_and(|at| last_user <= at) {
+                apply_hold(
+                    session,
+                    &format!("wake-later {}: {}", wake.label, wake.text),
+                );
+            }
         }
     }
 }
@@ -2243,6 +2254,7 @@ fn agent_session_from_managed(managed: &ManagedOpenCodeSession) -> AgentSession 
         cwd: managed.cwd.clone(),
         state: managed.state,
         summary: managed.summary.clone(),
+        wake: None,
         raw_state: Some(managed.raw_state.into()),
         pid: Some(managed.server_pid),
         started_at: Some(SystemTime::UNIX_EPOCH + Duration::from_millis(managed.created_at_ms)),
@@ -2299,6 +2311,8 @@ struct OpenCodeRecord {
     last: Option<LastMessage>,
     #[serde(default)]
     child: Option<u64>,
+    #[serde(default)]
+    user_created: Option<u64>,
 }
 
 pub fn parse_opencode_session_list(input: &str, runtime: Runtime) -> Result<Vec<AgentSession>> {
@@ -2428,8 +2442,13 @@ fn normalize_record(record: OpenCodeRecord, runtime: Runtime) -> AgentSession {
         // container. Explicit Docker control needs its own enrolled controller.
         BTreeSet::new()
     };
+    let id = format!("opencode:{runtime_id}:{}", record.id);
+    if let Some(at) = record.user_created {
+        let tail = crate::last_message::facts_for(&id).map_or(String::new(), |facts| facts.tail);
+        crate::last_message::remember_facts(&id, at, &tail);
+    }
     AgentSession {
-        id: format!("opencode:{runtime_id}:{}", record.id),
+        id,
         provider_session_id: record.id,
         provider: Provider::OpenCode,
         runtime,
@@ -2439,6 +2458,7 @@ fn normalize_record(record: OpenCodeRecord, runtime: Runtime) -> AgentSession {
         // The list command is a history API and exposes no live status.
         state: SessionState::Completed,
         summary: record.title,
+        wake: None,
         raw_state: Some("persisted".into()),
         pid: None,
         started_at: Some(SystemTime::UNIX_EPOCH + Duration::from_millis(record.created)),
@@ -2553,6 +2573,59 @@ mod tests {
         assert!(shells_with_memory(&mut seen, Ok(BTreeMap::new()), after).is_empty());
         let failed = Err(anyhow::anyhow!("timed out"));
         assert!(shells_with_memory(&mut seen, failed, after).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_defer_ends_on_the_next_user_message_but_its_reminder_survives() {
+        let root = tempfile::tempdir().unwrap();
+        let mut session = parse_opencode_session_list(
+            r#"[{"id":"ses_defer_test","title":"outreach","updated":1,"created":1,"projectId":"global","directory":"/work"}]"#,
+            Runtime::Host,
+        ).unwrap().remove(0);
+        let dir = root.path().join("opencode/ses_defer_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let write = |defer| {
+            std::fs::write(dir.join("wake.json"), serde_json::json!({
+            "pid": std::process::id(), "reason": "wake-later Mon 10:00",
+            "wake": {"label":"Mon 10:00","text":"Check replies","due_ms":500,"deferred_at_ms":defer}
+        }).to_string()).unwrap()
+        };
+        let apply = |s: &mut AgentSession| {
+            apply_holds(Some(root.path()), std::iter::once(s), &BTreeMap::new())
+        };
+        write(None::<u64>);
+        apply(&mut session);
+        assert_eq!(session.state, SessionState::Completed);
+        assert!(session.wake.is_some());
+        write(Some(100));
+        crate::last_message::remember_facts(&session.id, 90, "last reply");
+        apply(&mut session);
+        assert_eq!(session.state, SessionState::Scheduled);
+        // An assistant finishing the turn does not undo defer. A new user does.
+        crate::last_message::remember_facts(&session.id, 101, "new reply");
+        // The managed server may return an older user timestamp when a long
+        // tool-heavy turn pushes that message outside its bounded history.
+        crate::last_message::remember_facts(&session.id, 90, "latest reply");
+        session.state = SessionState::Completed;
+        session.raw_state = Some("managed_server".into());
+        apply(&mut session);
+        assert_eq!(session.state, SessionState::Completed);
+        assert_eq!(session.wake.as_ref().unwrap().label, "Mon 10:00");
+        // Remains visible on subsequent refreshes and can explicitly defer again.
+        apply(&mut session);
+        assert_eq!(session.state, SessionState::Completed);
+        write(Some(102));
+        apply(&mut session);
+        assert_eq!(session.state, SessionState::Scheduled);
+        session.state = SessionState::NeedsInput;
+        session.raw_state = Some("permission".into());
+        apply(&mut session);
+        assert_eq!(session.state, SessionState::NeedsInput);
+        session.state = SessionState::Working;
+        session.raw_state = Some("running turn".into());
+        apply(&mut session);
+        assert_eq!(session.state, SessionState::Working);
     }
 
     #[test]

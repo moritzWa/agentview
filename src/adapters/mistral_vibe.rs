@@ -711,6 +711,7 @@ fn normalize_session(
         cwd,
         state,
         summary: summarize(status_summary.unwrap_or(&session.preview), 160),
+        wake: None,
         raw_state: Some(raw_state.into()),
         pid: None,
         started_at: Some(UNIX_EPOCH + Duration::from_millis(session.created_at)),

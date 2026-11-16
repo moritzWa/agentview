@@ -808,12 +808,26 @@ fn render_tree_session_row(
     // The right edge is a real column, not text appended to the summary. Keep
     // it padded even when there are no pull requests so a truncated summary
     // can never visually run into the age (for example, `summary…1d`).
+    let reminder = session
+        .wake
+        .as_ref()
+        .filter(|_| !scheduled_section)
+        .map(|wake| format!("↻ {}  ", wake.label))
+        .unwrap_or_default();
+    // Preserve the reply preview; reminders have their own compact column.
     let right = if prs.is_empty() {
-        format!("{age:>5}")
+        format!("{reminder}{age:>5}")
     } else {
-        format!("{prs:>7} {age:>5}")
+        format!("{reminder}{prs:>7} {age:>5}")
     };
     let name_gap = if width >= 70 { "   " } else { " " };
+    // At narrow widths shorten the name, not the attention status, to make
+    // room for the reminder. Wide rows keep the normal aligned name column.
+    let name_width = if width < 100 && !reminder.is_empty() {
+        name_width.saturating_sub(display_width(&reminder)).max(10)
+    } else {
+        name_width
+    };
     let fixed = indent
         + 3
         + name_gap.len()
@@ -1969,6 +1983,8 @@ fn help_sections(app: &App) -> Vec<HelpSection> {
         entries: vec![
             ("/filter text", "filter sessions"),
             ("/scheduled", "toggle scheduled"),
+            ("/defer", "put away until reminder"),
+            ("/keep", "keep visible; retain reminder"),
             ("/restore", "bring back a hidden session"),
             ("/completed", "show or hide finished"),
             ("/cd path", "start in any directory"),
@@ -3427,6 +3443,44 @@ mod tests {
             0,
         );
         assert_eq!(completed.spans[0].content, " • ");
+    }
+
+    #[test]
+    fn a_reminder_keeps_the_reply_and_normal_status_visible() {
+        for state in [
+            SessionState::Completed,
+            SessionState::NeedsInput,
+            SessionState::Working,
+        ] {
+            let mut item = session("outreach", state);
+            item.summary = "VC and lawyer introductions".into();
+            item.wake = Some(crate::holds::Wake {
+                label: "Mon 10:00".into(),
+                text: "Check delivery outcomes".into(),
+                due_ms: 500,
+                deferred_at_ms: None,
+            });
+            for width in [70, 120] {
+                let row = render_session_row(
+                    &item,
+                    ViewMode::Directory,
+                    width,
+                    false,
+                    false,
+                    true,
+                    None,
+                    0,
+                );
+                let text: String = row.spans.iter().map(|span| span.content.as_ref()).collect();
+                assert!(text.contains("↻ Mon 10:00"), "{text}");
+                assert!(text.contains(short_state(state)), "{text}");
+                assert!(!text.contains("Check delivery"), "{text}");
+                if width == 120 {
+                    assert!(text.contains("VC and lawyer introductions"), "{text}");
+                }
+                assert_eq!(display_width(&text), width as usize);
+            }
+        }
     }
 
     #[test]
@@ -5054,6 +5108,7 @@ mod tests {
             cwd: PathBuf::from("/work"),
             state,
             summary: format!("latest summary from {name}"),
+            wake: None,
             raw_state: None,
             pid: None,
             started_at: Some(SystemTime::now()),

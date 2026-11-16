@@ -714,6 +714,7 @@ fn stored_to_agent(
             SessionState::Completed
         },
         summary: sanitize(&record.summary, 180, &fallback_name),
+        wake: None,
         raw_state: Some(raw_state),
         pid: None,
         started_at: record.created_at.or_else(|| {

@@ -417,6 +417,7 @@ pub fn parse_antigravity_last_conversations(
             // The documented cache contains no lifecycle or activity fields.
             state: SessionState::Unknown,
             summary: "Most recent Antigravity conversation for this workspace".into(),
+            wake: None,
             raw_state: Some("cached_last_conversation".into()),
             pid: None,
             started_at: None,
@@ -476,6 +477,7 @@ fn owned_antigravity_session(
                     "Antigravity conversation completed".into()
                 }
             }),
+        wake: None,
         raw_state: Some(if backgrounded {
             "native_backgrounded".into()
         } else {
@@ -513,6 +515,7 @@ fn pending_antigravity_session(pending: &PendingAntigravityConversation) -> Agen
         } else {
             "Antigravity is starting".into()
         },
+        wake: None,
         raw_state: Some("native_launch_pending".into()),
         pid: None,
         started_at: Some(SystemTime::UNIX_EPOCH + Duration::from_millis(pending.created_at_ms)),

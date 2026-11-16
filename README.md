@@ -72,9 +72,12 @@ own interface.
 - **Pause sessions you're waiting on** with `Ctrl+T`. They move into a Paused
   group that stays collapsed until you press `Enter` on it. Reorder rows with
   `Option+↑` / `↓`.
-- **Scheduled sessions stay out of the way.** Future reminders go into a collapsed
-  Scheduled section in both views. `Ctrl+Y` or `/scheduled` expands it, grouped by
-  directory. Sessions return automatically when they resume or need input.
+- **Reminders don't hide ongoing work.** Follow-ups show their wake time beside
+  the normal status. Only explicitly deferred sessions go into Scheduled
+  (`Ctrl+Y` to expand). `/defer` puts a session away; `/keep` brings it back
+  without cancelling its reminder. Sending a new message also brings it back.
+- **Available apps aren't ongoing work.** Mark preview servers as services so
+  the session still shows Done or Needs input, rather than Background.
 - **Start in any folder** with `/cd` or `Ctrl+O` (`Cmd+O` in terminals that
   forward it, like Ghostty and kitty). Multi-line tasks and pastes
   stay one draft. A long paste shows as `[Pasted ~12 lines]` and `Ctrl+V`

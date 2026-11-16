@@ -457,6 +457,7 @@ fn muse_session(
         } else {
             parsed.summary
         },
+        wake: None,
         raw_state: Some(
             if backgrounded {
                 "backgrounded"

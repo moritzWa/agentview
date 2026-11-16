@@ -630,6 +630,7 @@ fn agent_session_from_managed(managed: &ManagedPiSession) -> AgentSession {
         cwd: managed.cwd.clone(),
         state: managed.state,
         summary: managed.summary.clone(),
+        wake: None,
         raw_state: Some(if managed.alive {
             "managed_rpc".into()
         } else {
@@ -821,6 +822,7 @@ pub fn parse_pi_session(
             .map(|text| truncate_chars(text, 160))
             .or(first_user_text)
             .unwrap_or_default(),
+        wake: None,
         raw_state: Some(match state {
             SessionState::Completed => "persisted_complete".into(),
             SessionState::NeedsInput => "persisted_error".into(),

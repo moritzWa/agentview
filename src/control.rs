@@ -79,6 +79,7 @@ impl RestorableSession {
             cwd: self.cwd.clone(),
             state: SessionState::Completed,
             summary: self.name.clone(),
+            wake: None,
             raw_state: Some(
                 if self.provider == Provider::Claude {
                     "history"
@@ -3233,6 +3234,7 @@ exit 0
             cwd: PathBuf::from("/work"),
             state: SessionState::Working,
             summary: String::new(),
+            wake: None,
             raw_state: None,
             pid: None,
             started_at: None,

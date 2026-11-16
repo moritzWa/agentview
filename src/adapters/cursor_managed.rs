@@ -498,6 +498,7 @@ impl CursorSupervisor {
                 } else {
                     log.summary
                 },
+                wake: None,
                 raw_state: Some(raw_state.into()),
                 pid: running
                     .then(|| record.process.as_ref().map(|process| process.pid))

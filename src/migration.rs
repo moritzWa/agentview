@@ -499,6 +499,7 @@ fn record_to_session(record: &MigrationRecord) -> AgentSession {
         } else {
             format!("Migrated from {}", record.source_provider.label())
         },
+        wake: None,
         raw_state: Some("session-migrate import".into()),
         pid: None,
         started_at: Some(migrated_at),
@@ -756,6 +757,7 @@ mod tests {
             cwd: PathBuf::from("/work/project"),
             state: SessionState::Completed,
             summary: String::new(),
+            wake: None,
             raw_state: None,
             pid: None,
             started_at: None,

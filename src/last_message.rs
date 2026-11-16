@@ -73,6 +73,11 @@ fn facts() -> &'static Mutex<HashMap<String, Facts>> {
 
 pub fn remember_facts(session_id: &str, last_user_ms: u64, tail: &str) {
     if let Ok(mut facts) = facts().lock() {
+        // A bounded managed-server history can miss the latest user message
+        // even after SQLite saw it. Older overlays must not resurrect a defer.
+        let last_user_ms = facts
+            .get(session_id)
+            .map_or(last_user_ms, |known| known.last_user_ms.max(last_user_ms));
         let entry = Facts {
             last_user_ms,
             tail: tail.to_owned(),
@@ -94,6 +99,20 @@ pub fn get(session_id: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_older_overlay_cannot_undo_a_new_user_message() {
+        let id = "last-message-monotonic-user-test";
+        remember_facts(id, 200, "previous reply");
+        remember_facts(id, 100, "new assistant reply");
+        assert_eq!(
+            facts_for(id),
+            Some(Facts {
+                last_user_ms: 200,
+                tail: "new assistant reply".into()
+            })
+        );
+    }
 
     #[test]
     fn the_excerpt_starts_at_a_sentence_when_one_is_close() {

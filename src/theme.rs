@@ -71,7 +71,7 @@ impl Palette {
             selected_fg: Color::Rgb(30, 30, 30),
             accent: Color::Rgb(40, 75, 245),
             attention: Color::Rgb(135, 90, 0),
-            complete: Color::Rgb(36, 112, 36),
+            complete: Color::Rgb(0, 120, 40),
             danger: Color::Rgb(175, 30, 45),
         }
     }

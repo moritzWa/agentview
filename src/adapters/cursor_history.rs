@@ -202,6 +202,7 @@ impl SessionSource for CursorHistorySource {
                 cwd: chat.cwd.clone(),
                 state,
                 summary,
+                wake: None,
                 raw_state: Some(raw_state.into()),
                 pid,
                 started_at: chat.created_at,

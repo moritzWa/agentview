@@ -156,6 +156,7 @@ mod tests {
             cwd: PathBuf::from("/work/project"),
             state,
             summary: String::new(),
+            wake: None,
             raw_state: None,
             pid: None,
             started_at: None,

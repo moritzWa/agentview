@@ -10,6 +10,13 @@ and released versions are intended to follow Semantic Versioning.
 
 ### Fixed
 
+- Follow-up reminders no longer hide ongoing sessions in Scheduled. Only explicit
+  defers put a session away; a new user message clears defer without cancelling
+  the reminder. `/defer` and `/keep` control the selected session's visibility.
+- Explicitly marked preview services no longer replace Done or Needs input with
+  Background. Real background jobs still count, including alongside a service.
+- Done uses a brighter, more saturated green in light mode, retaining readable
+  contrast on normal and selected rows.
 - A session waiting on a background shell no longer reads "Needs input" because
   an old session ran in a folder that has since been deleted. The server's 404
   for that folder failed the whole shell listing, so every waiting session
