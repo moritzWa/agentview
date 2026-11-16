@@ -1,0 +1,11 @@
+{
+  "name": "agentvoice-private",
+  "main": "private/worker.mjs",
+  "compatibility_date": "2026-11-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "vars": {"ISSUER": "https://agentvoice-private.moritzw.workers.dev"},
+  "durable_objects": {"bindings": [{"name": "GATE", "class_name": "WakeGate"}]},
+  "migrations": [{"tag": "v1", "new_sqlite_classes": ["WakeGate"]}],
+  "observability": {"enabled": false}
+}

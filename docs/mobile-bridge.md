@@ -4,8 +4,29 @@ The opt-in bridge copies visible conversation text to a private MCP server.
 ChatGPT can search the copy while the Mac is offline. An explicit send enters a
 separate queue. OpenCode receives it when the connector reconnects.
 
-Deploy [voizecode/bridge](https://github.com/moritzWa/voizecode/tree/main/bridge)
-and configure owner login before pairing.
+The cloud implementation lives in [bridge](../bridge/README.md). Operators can
+[deploy it and configure owner login](../bridge/SETUP.md) before pairing. Existing
+paired installations need no changes after the repository move.
+
+## Connect ChatGPT mobile voice
+
+In ChatGPT's app/connector settings, add the private server's `/mcp` URL with
+OAuth. The existing deployment is
+`https://agentvoice-private.moritzw.workers.dev/mcp`. Sign in with the configured
+Google owner and approve the requested read/send scopes. ChatGPT must allow
+custom MCP apps for your account. Connect on the web if the mobile app does not
+offer setup, then use the connected **AgentVoice** app in ChatGPT on your phone.
+
+ChatGPT mobile Live voice can search history and send approved instructions to
+existing sessions. It cannot create sessions, stop agents, or answer native
+permission/question prompts through this bridge. Check `message_status` for
+delivery and completion; a queued receipt is not proof of execution.
+
+This is **separate from [built-in Voice Mode](voice.md)**, which runs OpenAI/Grok
+audio in Agent View. ChatGPT mobile voice uses ChatGPT's audio and MCP connection.
+It needs neither Agent View's voice API keys nor an open dashboard.
+
+## Pair the Mac
 
 ```console
 agentview --opencode-bin ~/.local/bin/opencode-dev bridge pair
