@@ -73,7 +73,7 @@ own interface.
   group that stays collapsed until you press `Enter` on it. Reorder rows with
   `Option+↑` / `↓`.
 - **Reminders don't hide ongoing work.** Follow-ups show their wake time beside
-  the normal status. Only explicitly deferred sessions go into Scheduled
+  the normal status. Only explicitly deferred sessions go into Scheduled, below Paused
   (`Ctrl+Y` to expand). `/defer` puts a session away; `/keep` brings it back
   without cancelling its reminder. Sending a new message also brings it back.
 - **Available apps aren't ongoing work.** Mark preview servers as services so

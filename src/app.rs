@@ -2436,6 +2436,9 @@ impl App {
         if let Some(group) = self.paused_group(paused) {
             groups.push(group);
         }
+        if let Some(group) = self.scheduled_group(scheduled) {
+            groups.push(group);
+        }
         groups.extend(SessionState::DISPLAY_ORDER.iter().filter_map(|state| {
             let sessions = grouped.remove(state).unwrap_or_default();
             (!sessions.is_empty()).then(|| {
@@ -2448,9 +2451,6 @@ impl App {
                 }
             })
         }));
-        if let Some(group) = self.scheduled_group(scheduled) {
-            groups.push(group);
-        }
         groups
     }
 
@@ -2604,6 +2604,9 @@ impl App {
         if let Some(group) = self.paused_group(paused) {
             ordered.push(group);
         }
+        if let Some(group) = self.scheduled_group(scheduled) {
+            ordered.push(group);
+        }
         ordered.extend(groups.into_iter().map(|(path, mut sessions)| {
             // Keep rows still while sessions change state, so replying to one
             // does not move it (and the cursor) elsewhere in its directory.
@@ -2622,9 +2625,6 @@ impl App {
                 depths,
             }
         }));
-        if let Some(group) = self.scheduled_group(scheduled) {
-            ordered.push(group);
-        }
         ordered
     }
 
@@ -4040,7 +4040,7 @@ mod tests {
             let mut app = App::new(snapshot());
             app.view_mode = mode;
             app.rebuild_group_cache();
-            assert_eq!(app.groups().last().unwrap().key, SCHEDULED_GROUP_KEY);
+            assert_eq!(app.groups().first().unwrap().key, SCHEDULED_GROUP_KEY);
             assert!(!app
                 .selectable_keys()
                 .contains(&SelectionKey::Session("later".into())));
@@ -4062,6 +4062,37 @@ mod tests {
                     .contains(&SelectionKey::Session("later".into())));
                 assert!(!app.groups().iter().any(|g| g.key == SCHEDULED_GROUP_KEY));
             }
+        }
+    }
+
+    #[test]
+    fn scheduled_is_pinned_immediately_below_paused_in_both_views() {
+        for mode in [ViewMode::Directory, ViewMode::Status] {
+            let mut app = App::new(SessionSnapshot {
+                sessions: vec![
+                    session("paused", SessionState::Completed),
+                    session("scheduled", SessionState::Scheduled),
+                    session("active", SessionState::Working),
+                ],
+                ..SessionSnapshot::default()
+            });
+            app.paused.insert("paused".into(), 1);
+            app.view_mode = mode;
+            app.rebuild_group_cache();
+            let keys: Vec<_> = app
+                .groups()
+                .iter()
+                .map(|group| group.key.as_str())
+                .collect();
+            assert_eq!(&keys[..2], &[PAUSED_GROUP_KEY, SCHEDULED_GROUP_KEY]);
+            assert!(!app
+                .selectable_keys()
+                .contains(&SelectionKey::Session("scheduled".into())));
+            app.toggle_scheduled();
+            assert!(app
+                .selectable_keys()
+                .contains(&SelectionKey::Session("scheduled".into())));
+            assert_eq!(app.groups()[1].key, SCHEDULED_GROUP_KEY);
         }
     }
 

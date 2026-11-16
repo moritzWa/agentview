@@ -10,6 +10,9 @@ and released versions are intended to follow Semantic Versioning.
 
 ### Fixed
 
+- Reminder rows share the same name, status and preview columns as other rows.
+  Scheduled sits directly below Paused in both views. Automated shell-exit
+  notifications no longer clear defers as though the person sent a new message.
 - Follow-up reminders no longer hide ongoing sessions in Scheduled. Only explicit
   defers put a session away; a new user message clears defer without cancelling
   the reminder. `/defer` and `/keep` control the selected session's visibility.

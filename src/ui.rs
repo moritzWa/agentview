@@ -373,6 +373,11 @@ fn render_session_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let show_provider = providers
         .next()
         .is_some_and(|first| providers.any(|provider| provider != first));
+    let reminder_column = groups
+        .iter()
+        .filter(|group| group.key != crate::app::SCHEDULED_GROUP_KEY)
+        .flat_map(|group| group.sessions.iter())
+        .any(|index| app.snapshot.sessions[*index].wake.is_some());
 
     for (group_position, group) in groups.iter().enumerate() {
         if group_position > 0 {
@@ -441,6 +446,7 @@ fn render_session_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 ChildActivity::of(app, group, position),
                 queued_note(app, session).as_deref(),
                 scheduled_section,
+                reminder_column,
             ));
         }
         let hidden = app.hidden_session_count(group);
@@ -651,6 +657,7 @@ fn render_session_row(
         ChildActivity::default(),
         None,
         false,
+        session.wake.is_some(),
     )
 }
 
@@ -709,6 +716,7 @@ fn render_tree_session_row(
     children: ChildActivity,
     queued: Option<&str>,
     scheduled_section: bool,
+    reminder_column: bool,
 ) -> Line<'static> {
     let soft_ask = session.state == SessionState::NeedsInput
         && session.raw_state.as_deref() == Some(crate::turn_classifier::ASKED_IN_MESSAGE);
@@ -750,6 +758,14 @@ fn render_tree_session_row(
         base_name_width
     } else {
         base_name_width + provider_width
+    };
+    // Reserve the same columns for every row, including ones without a wake.
+    // Apply tree indentation last so child status columns remain aligned.
+    const REMINDER_WIDTH: usize = 14;
+    let name_width = if width < 100 && reminder_column {
+        name_width.saturating_sub(REMINDER_WIDTH).max(10)
+    } else {
+        name_width
     }
     .saturating_sub(indent);
     let provider_column = if show_provider {
@@ -812,22 +828,21 @@ fn render_tree_session_row(
         .wake
         .as_ref()
         .filter(|_| !scheduled_section)
-        .map(|wake| format!("↻ {}  ", wake.label))
+        .map(|wake| format!("↻ {}", wake.label))
         .unwrap_or_default();
+    let reminder = if reminder_column {
+        pad_to_width(reminder, REMINDER_WIDTH)
+    } else {
+        String::new()
+    };
+    let reminder_gap = if reminder_column { " " } else { "" };
     // Preserve the reply preview; reminders have their own compact column.
     let right = if prs.is_empty() {
-        format!("{reminder}{age:>5}")
+        format!("{reminder_gap}{reminder}{age:>5}")
     } else {
-        format!("{reminder}{prs:>7} {age:>5}")
+        format!("{reminder_gap}{reminder}{prs:>7} {age:>5}")
     };
     let name_gap = if width >= 70 { "   " } else { " " };
-    // At narrow widths shorten the name, not the attention status, to make
-    // room for the reminder. Wide rows keep the normal aligned name column.
-    let name_width = if width < 100 && !reminder.is_empty() {
-        name_width.saturating_sub(display_width(&reminder)).max(10)
-    } else {
-        name_width
-    };
     let fixed = indent
         + 3
         + name_gap.len()
@@ -3446,6 +3461,70 @@ mod tests {
     }
 
     #[test]
+    fn reminder_and_plain_rows_share_status_and_preview_columns() {
+        for width in [70, 85, 100, 120, 140] {
+            for show_provider in [false, true] {
+                let mut item = session("outreach", SessionState::Completed);
+                item.summary = "Shared preview".into();
+                let plain = render_tree_session_row(
+                    &item,
+                    ViewMode::Directory,
+                    width,
+                    show_provider,
+                    false,
+                    true,
+                    None,
+                    0,
+                    ChildActivity::default(),
+                    None,
+                    false,
+                    true,
+                );
+                item.wake = Some(crate::holds::Wake {
+                    label: "Mon 10:00".into(),
+                    text: "Check replies".into(),
+                    due_ms: 500,
+                    deferred_at_ms: None,
+                });
+                let reminder = render_tree_session_row(
+                    &item,
+                    ViewMode::Directory,
+                    width,
+                    show_provider,
+                    false,
+                    true,
+                    None,
+                    0,
+                    ChildActivity::default(),
+                    None,
+                    false,
+                    true,
+                );
+                let text = |row: &Line<'_>| {
+                    row.spans
+                        .iter()
+                        .map(|span| span.content.as_ref())
+                        .collect::<String>()
+                };
+                let (plain, reminder) = (text(&plain), text(&reminder));
+                assert_eq!(
+                    plain.find("Done"),
+                    reminder.find("Done"),
+                    "{plain}\n{reminder}"
+                );
+                assert_eq!(
+                    plain.find("Shared"),
+                    reminder.find("Shared"),
+                    "{plain}\n{reminder}"
+                );
+                assert_eq!(display_width(&plain), width as usize);
+                assert_eq!(display_width(&reminder), width as usize);
+                assert!(reminder.contains(" ↻ Mon 10:00"), "{reminder}");
+            }
+        }
+    }
+
+    #[test]
     fn a_reminder_keeps_the_reply_and_normal_status_visible() {
         for state in [
             SessionState::Completed,
@@ -3559,6 +3638,7 @@ mod tests {
                 children,
                 None,
                 false,
+                false,
             )
             .spans
             .iter()
@@ -3580,7 +3660,7 @@ mod tests {
         let row_text = |state, view_mode| {
             let item = session("manager", state);
             render_tree_session_row(
-                &item, view_mode, 120, true, false, true, None, 0, children, None, false,
+                &item, view_mode, 120, true, false, true, None, 0, children, None, false, false,
             )
             .spans
             .iter()
@@ -3609,6 +3689,7 @@ mod tests {
             0,
             ChildActivity::default(),
             None,
+            false,
             false,
         );
         let quiet: String = quiet
@@ -4952,6 +5033,7 @@ mod tests {
                 0,
                 ChildActivity::default(),
                 note,
+                false,
                 false,
             )
             .spans
