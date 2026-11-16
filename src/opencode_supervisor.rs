@@ -340,6 +340,10 @@ impl OpenCodeSupervisor {
                         && Some(previous.port) == url.port()
                         && info["password"].as_str() == Some(previous.password.as_str())))
                 && !verify_server(previous)?
+                // The registration may already describe a replacement after
+                // reboot. Its live PID must reach fresh ownership/HTTP checks;
+                // matching port/password do not make that new lease stale.
+                && !registered_process_alive(pid)?
             {
                 return Ok(());
             }
@@ -2231,6 +2235,15 @@ impl OpenCodeSupervisor {
         body: Option<&Value>,
     ) -> Result<()> {
         self.request_json(record, method, path, body).map(|_| ())
+    }
+}
+
+fn registered_process_alive(pid: u32) -> Result<bool> {
+    match process_state(pid) {
+        Ok(Some(state)) => Ok(state != "Z"),
+        Ok(None) => Ok(false),
+        Err(error) if is_missing_process(&error) || is_foreign_process(&error) => Ok(false),
+        Err(error) => Err(error),
     }
 }
 
@@ -5083,6 +5096,7 @@ mod tests {
     #[test]
     fn live_process_identity_is_stable_and_an_exited_process_is_missing() {
         let pid = std::process::id();
+        assert!(registered_process_alive(pid).unwrap());
         assert_eq!(
             process_start_token(pid).unwrap(),
             process_start_token(pid).unwrap()
@@ -5104,6 +5118,7 @@ mod tests {
             .unwrap();
         let exited = child.id();
         child.wait().unwrap();
+        assert!(!registered_process_alive(exited).unwrap());
         assert_eq!(process_state(exited).unwrap(), None);
         assert!(is_missing_process(
             &process_start_token(exited).unwrap_err()
