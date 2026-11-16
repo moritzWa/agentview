@@ -57,6 +57,9 @@ The journal retains exact unacknowledged batches across process replacement.
 Missing event-body ranges trigger reconciliation from a consistent source
 snapshot. Watermark regression, changed database identity or a legacy-to-V2
 transition stops sync instead of silently overwriting history.
+One encoded message must fit the 850 KB transport budget. The full local source
+audit verifies this before rollout. Larger future messages require transport
+fragmentation; the connector stops rather than truncating them.
 
 The Mac must be awake and logged in to execute work. This bridge does not wake
 it. Revoke retired devices through `/revoke` with the connector token. Revocation

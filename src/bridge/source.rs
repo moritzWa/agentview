@@ -295,9 +295,6 @@ pub fn project(
     } else {
         String::new()
     };
-    if text.chars().count() > 500_000 {
-        bail!("source message exceeds sync size limit");
-    }
     Ok(Some(Message {
         id: id.to_owned(),
         role: kind.to_owned(),

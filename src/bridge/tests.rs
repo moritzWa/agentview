@@ -221,3 +221,50 @@ fn legacy_sessions_are_included_once_with_text_only_and_edited_parts() {
         "Edited legacy reply"
     );
 }
+
+#[test]
+#[ignore = "set AGENTVIEW_BRIDGE_SOURCE for a read-only full source projection audit; never uploads"]
+fn real_source_projection_audit_without_upload() {
+    let path = std::env::var("AGENTVIEW_BRIDGE_SOURCE").expect("set AGENTVIEW_BRIDGE_SOURCE");
+    let mut db = source::open(Path::new(&path)).unwrap();
+    let ids = source::sessions(&db).unwrap();
+    let mut messages = 0usize;
+    let mut bytes = 0usize;
+    let mut largest = 0usize;
+    for id in &ids {
+        let capture = source::capture(&mut db, id, None)
+            .unwrap_or_else(|error| panic!("source projection failed for {id}: {error}"));
+        if let Some(capture) = capture {
+            messages += capture.messages.len();
+            bytes += capture.messages.iter().map(|m| m.text.len()).sum::<usize>();
+            for message in capture.messages {
+                largest = largest.max(serde_json::to_vec(&message).unwrap().len());
+            }
+        }
+    }
+    eprintln!("Read-only source audit: {} sessions, {messages} visible messages, {bytes} UTF-8 text bytes, largest encoded message {largest} bytes. No upload.",ids.len());
+    assert!(largest<=850_000,"a source message needs transport fragmentation before upload");
+}
+
+#[test]
+fn large_visible_paste_is_not_silently_dropped_or_truncated() {
+    let text = "visible text ".repeat(57_000);
+    let message = source::project(
+        "long-message",
+        "user",
+        1,
+        1,
+        1,
+        &json!({"text":text}).to_string(),
+    )
+    .unwrap()
+    .unwrap();
+    assert!(message.text.len() > 500_000);
+    let dir = tempdir().unwrap();
+    let mut journal = Journal::open(&dir.path().join("j.sqlite")).unwrap();
+    journal.stage("s",Capture{through:1,state:json!({"title":"Large paste","archived":false,"deleted":false,"visible_before":null}),ids:[message.id.clone()].into_iter().collect(),messages:vec![message.clone()],cwd:"/fixture".into()},true).unwrap();
+    assert_eq!(
+        journal.pending().unwrap().unwrap()["messages"][0]["text"],
+        message.text
+    );
+}
