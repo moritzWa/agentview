@@ -39,8 +39,8 @@ TAKES = [
         34,
     ),
     (
-        "bouncer-separate.mp3",
-        "Agent bouncer queues heavy builds and tests, so they don’t all run at once.",
+        "bouncer-freeze.mp3",
+        "Agent-bouncer queues heavy builds and tests, so they don’t freeze your computer.",
         34.15,
         40,
     ),

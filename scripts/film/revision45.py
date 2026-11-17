@@ -5,6 +5,7 @@ import io
 import json
 from pathlib import Path
 
+import numpy as np
 import resvg_py
 from PIL import Image
 from propose45 import morph_box
@@ -19,7 +20,6 @@ from visual import (
     W,
     font,
     image,
-    navigation_uri,
     rect,
     rounded_image,
     txt,
@@ -68,25 +68,52 @@ def keycap(x, y, label, pressed=False, scale=1):
     return out + "</g>"
 
 
-def shortcut_overlay(keys, label, pressed=False, x=480, y=728):
+def shortcut_overlay(keys, label, pressed=False, x=None, y=728):
+    """One glass pill. Keys and label share its vertical center."""
     scale = 1.25
-    width = 640
-    height = 104
+    width = 720
+    height = 92
+    # The stage group is translate(-44) scale(1.055); local 800 stays frame-center.
+    if x is None:
+        x = 800 - width / 2
     key_width = (
         sum(80 if key == "Ctrl" else 56 for key in keys) * scale + (len(keys) - 1) * 12
     )
     total = key_width + 28 + font(26, True).getlength(label)
     start = x + (width - total) / 2
+    key_body = 52 * scale
+    key_y = y + (height - key_body) / 2
     out = (
-        '<g data-shortcut-overlay="shared"><g opacity=".72">'
-        + rect(x, y, width, height, 26, "#d8edff")
-        + "</g>"
+        '<g data-shortcut-overlay="shared" data-glass="0.32">'
+        + f'<g opacity=".32">{rect(x, y, width, height, 26, "#d8edff")}</g>'
     )
     for key in keys:
-        out += keycap(start, y + 23, key, pressed, scale)
+        out += keycap(start, key_y, key, pressed, scale)
         start += (80 if key == "Ctrl" else 56) * scale + 12
-    out += txt(start + 16, y + 66, label, 26, BLUE, True)
+    out += txt(start + 16, y + height / 2 + 9, label, 26, BLUE, True)
     return out + "</g>"
+
+
+def footer_window(im, hide_setup=False, display_width=1460, max_height=560):
+    """Crop so the path/footer line is complete, never sliced mid-glyph."""
+    gray = np.asarray(im.convert("L"))
+    text = np.where((gray < 160).any(axis=1))[0]
+    last = int(text[-1]) if len(text) else gray.shape[0] - 1
+    bottom = min(gray.shape[0], last + 40)
+    top = 636 if hide_setup and gray.shape[0] > 900 else 0
+    # Walk off any glyph row the setup crop might land on.
+    while top > 0 and (gray[top] < 160).any():
+        top -= 1
+    height = display_width * (bottom - top) / gray.shape[1]
+    if height > max_height:
+        keep = int(max_height / display_width * gray.shape[1])
+        top = max(0, bottom - keep)
+        while top > 0 and (gray[top] < 160).any():
+            top -= 1
+    if top >= last:
+        top = 0
+    assert bottom > last, "Footer crop still slices the path line"
+    return top, bottom
 
 
 def word_slots(lines, size=30):
@@ -190,6 +217,7 @@ class Film45(Film):
         self.native_frames = sorted(self.native_frames_dir.glob("*.png"))
         assert len(self.native_frames) >= 186, "Moving native6.2s excerpt missing"
         self.still = None
+        self.session_uris = {}
 
     @staticmethod
     def _image_uri(im):
@@ -317,20 +345,33 @@ class Film45(Film):
                 (t - right) / (left - right) if phase == "open" else (t - left) / 0.6
             )
             n = min(len(frames) - 1, max(0, int(progress * len(frames))))
-            out += image(
-                navigation_uri(
-                    self.output / "navigation" / frames[n]["file"], phase == "open"
-                ),
-                70,
-                200,
-                1460,
-                620,
+            out += self.session_image(
+                self.output / "navigation" / frames[n]["file"], phase == "open"
             )
         if t < left:
-            out += shortcut_overlay(["Right"], "Zoom in", right <= t < right + 0.22)
+            out += shortcut_overlay(
+                ["Right"], "Zoom in", right <= t < right + 0.22, y=760
+            )
         else:
-            out += shortcut_overlay(["Left"], "Zoom out", left <= t < left + 0.22)
+            out += shortcut_overlay(
+                ["Left"], "Zoom out", left <= t < left + 0.22, y=760
+            )
         return out
+
+    def session_image(self, path, hide_setup):
+        key = (str(path), hide_setup)
+        if key not in self.session_uris:
+            source = Image.open(path)
+            top, bottom = footer_window(source, hide_setup)
+            cropped = source.crop((0, top, source.width, bottom))
+            height = 1460 * cropped.height / cropped.width
+            self.session_uris[key] = (
+                self._image_uri(cropped),
+                height,
+                bottom > top,
+            )
+        data, height, _complete = self.session_uris[key]
+        return image(data, 70, 168, 1460, height).replace("xMidYMid meet", "none")
 
     def voice_intro(self, t):
         active = t >= KEY_EVENTS["CmdK"]
@@ -342,8 +383,7 @@ class Film45(Film):
             ["Cmd", "K"],
             "Start Voice",
             KEY_EVENTS["CmdK"] <= t < KEY_EVENTS["CmdK"] + 0.3,
-            x=820,
-            y=830,
+            y=790,
         )
 
     def dialogue(self, t):
@@ -409,43 +449,31 @@ class Film45(Film):
             1460,
             790,
         )
-        out += shortcut_overlay(
+        return out + shortcut_overlay(
             ["Cmd", "Shift", "B"],
             "Work only",
             KEY_EVENTS["Work"] <= t < KEY_EVENTS["Work"] + 0.3,
+            y=760,
         )
-        return out + txt(
-            800,
-            825,
-            "Configured global shortcut for this setup",
-            13,
-            MUTED,
-            anchor="middle",
-        )
+
+    def zoom_region(self, shot, region, color):
+        """Same treatment as the 0:36 queue card: dim, enlarge, outline."""
+        out = image(self.crop(shot), 70, 200, 1460, 610)
+        out += '<g opacity=".88">' + rect(70, 200, 1460, 610, 12, "white") + "</g>"
+        out += image(self.crop(shot, region), 95, 340, 1410, 200)
+        return out + rect(80, 324, 1440, 232, 16, "none", color)
 
     def scheduled(self, t):
-        jumped = t >= 31.15
-        shot = "continued" if jumped else "scheduled"
-        out = image(self.crop(shot), 70, 200, 1460, 610)
-        out += rect(76, 327, 1448, 105, 12, "none", BLUE)
-        if jumped:
-            out += txt(
-                1450, 800, "Tomorrow 09:00 · staged time jump", 17, MUTED, anchor="end"
-            )
-        return out
+        # Hold Scheduled through the explanation. Resume only after that hold.
+        if t < 32.4:
+            return self.zoom_region("scheduled", (0, 145, 1616, 250), BLUE)
+        out = image(self.crop("continued"), 70, 200, 1460, 610)
+        return out + txt(
+            1450, 800, "Tomorrow 09:00 · staged time jump", 17, MUTED, anchor="end"
+        )
 
     def bouncer(self, t):
-        out = image(self.crop("scheduled"), 70, 200, 1460, 610)
-        out += rect(76, 588, 1448, 118, 12, "none", "#179299")
-        # Zoom into the actual integrated queue, separately from Scheduled.
-        if t >= 35:
-            out = image(self.crop("scheduled"), 70, 200, 1460, 610)
-            out += '<g opacity=".88">' + rect(70, 200, 1460, 610, 12, "white") + "</g>"
-            out += image(
-                self.crop("scheduled", (0, 440, 1000, 560)), 95, 400, 1410, 170
-            )
-            out += rect(80, 378, 1440, 200, 16, "none", "#179299")
-        return out
+        return self.zoom_region("scheduled", (0, 440, 1000, 560), "#179299")
 
     def aligned_narration(self, t):
         for cue in reversed(self.cues):

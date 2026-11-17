@@ -87,7 +87,7 @@ class FilmTests(unittest.TestCase):
         film = revision45.Film45.__new__(revision45.Film45)
         film.crop = lambda *args, **kwargs: ""
         self.assertNotIn("Configured global shortcut", film.projects(30))
-        self.assertIn("Configured global shortcut", film.work_scope(33))
+        self.assertNotIn("Configured global shortcut", film.work_scope(33))
 
     def test_reveal_keeps_fixed_two_line_slots_and_hides_future_words(self):
         lines = list(visual.VOICE_CHOICE)
@@ -118,10 +118,16 @@ class FilmTests(unittest.TestCase):
             ["Ctrl", "S"],
             ["Cmd", "Shift", "B"],
         ]:
-            self.assertIn(
-                'data-shortcut-overlay="shared"',
-                revision45.shortcut_overlay(keys, "Test"),
-            )
+            pill = revision45.shortcut_overlay(keys, "Test")
+            self.assertIn('data-shortcut-overlay="shared"', pill)
+            self.assertIn('data-glass="0.32"', pill)
+            self.assertNotIn('opacity=".72"', pill)
+        revision45.footer_window(__import__("PIL").Image.new("L", (100, 80), 255))
+        marked = __import__("PIL").Image.new("L", (100, 80), 255)
+        marked.putpixel((10, 60), 0)
+        top, bottom = revision45.footer_window(marked)
+        self.assertLess(top, 60)
+        self.assertGreater(bottom, 60)
         bed = soundtrack.loop_excerpt(
             np.ones((3000, 2), dtype=np.float32), seconds=45, rate=100
         )

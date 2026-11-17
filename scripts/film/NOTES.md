@@ -13,6 +13,10 @@ WAVs and aligned word timebases. Waveforms analyze those final WAVs. Native
 ChatGPT video stays at its recorded speed. Separate27–34s scheduling and34–40s
 agent-bouncer queue beats replace the combined explanation. Scheduling here
 means the shown OpenCode integration, not a universal harness capability.
+The native-session path line is cropped in PIL past the last glyph row and shown at that crop’s exact aspect, so the SVG box cannot slice it. Shortcut pills are one glass overlay, opacity 0.32, with the keycaps and label on the same center. Scheduled stays enlarged through its explanation; the resumed state follows only after that hold.
+
+ChatGPT around 18–20s was measured in the source movies, not assumed to be a RAM drop. Both 60fps captures change on only about ten paints per half-minute; the selected window’s median frame delta is zero because the app paints a finished message and then holds. A new capture of that settled chat would not be smoother, so the real read/send excerpt is unchanged and is not retimed.
+
 The exact8 solid-black bottom rows of ChatGPT capture are removed in addition
 to its shadow/green-edge trim; main and bento share those same sources.
 
