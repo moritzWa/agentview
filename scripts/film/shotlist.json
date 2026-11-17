@@ -1,7 +1,8 @@
 {
   "duration_seconds": 30,
   "delivery_resolution": [3840,2160],
-  "source_ui_resolution": [4848,2028],
+  "source_ui_resolution": [4848,3120],
+  "native_desktop_recording_resolution": [1024,738],
   "shots": [
     {
       "start": 0,
@@ -12,25 +13,25 @@
     {
       "start": 3,
       "end": 12,
-      "beat": "Voice question, checkout decision, Sent",
+      "beat": "Kanban-like attention view, voice question, actual Right zoom/double-Left return, checkout decision",
       "evidence": "Actual overview render; full two-line illustrated exchange; ElevenLabs voices; actual app moves checkout to Working through a staged fixture update",
-      "missing_capture": "Actual Voice Mode footer, real synthetic-session send, then resumed checkout TUI",
+      "navigation_evidence": "Actual Agent View opens a dedicated tools-denied synthetic OpenCode session with Right; double-Left returns. Not a drawn zoom.",
+      "missing_capture": "Opening ElevenLabs exchange is editorial, not the native call's captured speech",
       "replacement_path": "Muted macOS Space; isolated Agent View HOME/XDG plus a disposable OpenCode server/session. Feed prerecorded user prompts through a virtual mic, capture the app footer and receiver transcript. Keep the current editorial narration only outside the live exchange."
     },
     {
       "start": 12,
       "end": 15.8,
-      "beat": "Reserved real ChatGPT desktop Voice capture",
-      "evidence": "Explicit recording-blocker card. No conceptual phone or fabricated call substituted.",
-      "missing_capture": "Native desktop Voice exact-target AgentVoice read/send on a dedicated synthetic OpenCode session",
-      "blocker": "Real signed-in ChatGPT desktop Codex and Work fail Voice startup with NotReadableError: Microphone is already in use. Virtual input also failed. Dedicated synthetic session deleted after attempt; pairing unchanged.",
-      "replacement_path": "Resolve recording-environment microphone separately, then capture only a new dedicated synthetic target. Desktop Voice availability does not establish MCP tool support."
+      "beat": "Actual ChatGPT desktop Work Voice + AgentVoice read/send",
+      "evidence": "Real VM window recordings. Active Voice, Used AgentVoice integration, correct coupon question, actual targeted send. Receiver message metadata source=agentvoice and acknowledgment independently verified.",
+      "input_provenance": "Typed prompts inside active native Voice. Microphone speech recognition not tested. No ElevenLabs words presented as recorded native dialogue.",
+      "safety": "Only dedicated synthetic session targeted, tools denied on receiver; no private list/search or re-pair. Dedicated session deleted and temporary VM mic permission restored after capture."
     },
     {
       "start": 15.8,
       "end": 18.8,
-      "beat": "Work-only view hides personal sessions",
-      "evidence": "Actual before/after app renders; view work command exercised and asserted",
+      "beat": "Ctrl+S status/directory switch, then Work scope hides personal directories",
+      "evidence": "20 plausible synthetic sessions across six directories. Actual Ctrl+S input. All/work snapshots share identical state; work shows three directories. Actual usage fixture: claude, claude2, codex (claude1 is not a supported key).",
       "limitation": "Global binding caption reflects this user's configured setup, not an intrinsic app shortcut. Background work continuing is not exercised by this fixture."
     },
     {
@@ -44,7 +45,7 @@
       "start": 25,
       "end": 30,
       "beat": "Five-second bento and URL hold",
-      "evidence": "Apple WWDC reference-led, screenshot bento with central identity and all 18 harness logos. Actual UI crops; no Apple artwork. Missing desktop capture remains visibly pending."
+      "evidence": "Screenshot bento, central identity, all18 logos, real native desktop capture. Concentric clips fit actual inner image extents, including Heavy Jobs. No Apple artwork."
     }
   ],
   "music": "Lorn TIMESINK 0:00–0:30. User reports personal artist permission. Music-bearing master and separate stem private pending review.",

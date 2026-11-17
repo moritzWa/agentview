@@ -2,7 +2,8 @@
 
 The revised review film is 30 seconds at native 3840 × 2160, 30 fps. SVG
 typography and graphics are rasterized directly at 4K. Actual terminal-cell
-captures are 4848 × 2028 with fresh 60-pixel Menlo glyphs, not enlarged images
+captures are 4848 pixels wide (3120 tall for busy views, 2028 for compact views),
+with fresh 60-pixel Menlo glyphs, not enlarged images
 from the first draft. The final bento holds for five seconds.
 
 ## Reproduce
@@ -33,11 +34,20 @@ video or playing audio. No test plays audio or opens a GUI on the host.
   stages its later Working state, with an explicit time-jump caption.
 - The built-in voice exchange and checkout state change are staged. They are
   not a live call, real send or resumed native session.
-- The requested native ChatGPT desktop Voice recording is blocked in the
-  recording VM. Codex and Work both failed with `NotReadableError: Microphone
-  is already in use`, including a BlackHole input attempt. The reserved slot
-  says so. No conceptual phone or fabricated call substitutes for that proof.
-  Diagnostic evidence stays in the private working folder.
+- A real Right-arrow/double-Left recording opens a dedicated synthetic native
+  OpenCode session and returns to Agent View. No fake successful open.
+- The ChatGPT desktop recording is actual Work Voice + AgentVoice read/send.
+  Prompts were typed inside active Voice; speech recognition is untested.
+  The initial microphone error was resolved by a temporary VM app TCC grant,
+  restored to its prior absent state after capture. Receiver-side message
+  metadata confirms the actual send. The dedicated tools-denied synthetic
+  session was deleted afterward. No pairing or account-auth settings changed.
+- Native desktop footage is a 1024 × 738 window inset, unlike the independently
+  high-resolution Agent View sources. Do not claim that source is native 4K.
+- The busy fixture has20 synthetic agents across6 work/personal directories.
+  All/work comparison preserves identical state. Ctrl+S actually changes
+  status/directory grouping, separately from scope. Supported usage account
+  keys are `claude`, `claude2`, `codex`; `claude1` is ignored by the parser.
 - All 18 coding harnesses come from `Provider::CODING_HARNESSES`. AgentVoice's
   demonstrated read/search/send surface is for OpenCode sessions, not all 18.
 - Vector keycaps depict this user's configured global Cmd+Shift+B binding.
@@ -85,6 +95,6 @@ python3 scripts/film/package.py --output "$HOME/Movies/agentview-film-draft"
 This writes ignored `target/film-review/`. The durable requested player remains
 `~/Movies/agentview-film-draft/review.html`, muted and without autoplay.
 
-Before public release, resolve and record the real ChatGPT desktop call and
-exact-target synthetic read/send. The current rough cut is not evidence that
-those actions succeeded. Creative review remains ongoing.
+Native Voice read/send is now evidenced independently from the staged opening
+exchange. The short movie shows an excerpt, not the full wall-clock tool wait.
+Creative review remains ongoing; microphone speech recognition is not verified.

@@ -41,15 +41,17 @@ def main():
         "captures/layout.json",
         "captures/scheduled.png",
         "captures/continued.png",
+        "captures/directories.png",
+        "captures/work-directories.png",
         "captures/provenance.json",
     ]
     files += [f"audio/{i:02d}.mp3" for i in range(9)]
     files += [
         f"agentview-film-evidence/{name}"
         for name in [
-            "voice-blocker.json",
-            "voice-blocker.log",
-            "chatgpt-desktop-blocker.png",
+            "native-voice-proof.json",
+            "native-voice-send-proof.png",
+            "native-voice-receiver.json",
         ]
         if (args.output / "agentview-film-evidence" / name).exists()
     ]

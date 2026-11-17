@@ -25,7 +25,7 @@ import pyte
 from PIL import Image, ImageDraw, ImageFont
 
 ROOT = Path(__file__).resolve().parents[2]
-COLS, ROWS = 132, 23
+COLS, ROWS = 132, 36
 RASTER_SCALE = 3
 PALETTE = [
     "5c5f77",
@@ -54,11 +54,11 @@ def picture(screen, path):
     font = ImageFont.truetype("/System/Library/Fonts/Menlo.ttc", 20 * RASTER_SCALE)
     im = Image.new(
         "RGB",
-        ((COLS * 12 + 32) * RASTER_SCALE, (ROWS * 28 + 32) * RASTER_SCALE),
+        ((COLS * 12 + 32) * RASTER_SCALE, (screen.lines * 28 + 32) * RASTER_SCALE),
         "white",
     )
     draw = ImageDraw.Draw(im)
-    for y in range(ROWS):
+    for y in range(screen.lines):
         for x in range(COLS):
             c = screen.buffer[y][x]
             fg, bg = color(c.fg, "#000000"), color(c.bg, "#ffffff")
@@ -122,6 +122,68 @@ def main():
             pid=None,
         )
         data["sessions"].append(devin)
+        # Busy but entirely synthetic. Multiple work and personal directories
+        # make filtering visible without changing any session's state.
+        roots = [
+            work,
+            home / "Code/payments",
+            home / "Code/docs",
+            personal,
+            home / "Code/recipes",
+            home / "Code/home-lab",
+        ]
+        for root in roots:
+            root.mkdir(parents=True, exist_ok=True)
+        (conf / "work-roots.json").write_text(
+            json.dumps({"roots": [str(p) for p in roots[:3]]})
+        )
+        names = [
+            "webhook-retries",
+            "invoice-export",
+            "api-pagination",
+            "docs-search",
+            "oauth-callback",
+            "preview-deploy",
+            "receipt-parser",
+            "meal-planner",
+            "garden-sensors",
+            "backup-photos",
+            "weekend-map",
+            "home-dashboard",
+            "reading-list",
+            "recipe-import",
+            "trip-budget",
+        ]
+        for i, name in enumerate(names):
+            s = copy.deepcopy(devin)
+            provider = ["opencode", "codex", "claude", "cursor"][i % 4]
+            s.update(
+                id=f"{provider}:host:film-{i}",
+                provider=provider,
+                provider_session_id=f"synthetic-film-{i}",
+                name=name,
+                cwd=str(roots[[1, 1, 1, 2, 0, 0, 4, 4, 5, 5, 3, 5, 3, 4, 3][i]]),
+                state="needs_input" if i in [0, 4, 9] else "working",
+                summary="Waiting for a design decision"
+                if i in [0, 4, 9]
+                else [
+                    "Reviewing test results",
+                    "Checking test coverage",
+                    "Building the preview",
+                    "Checking edge cases",
+                ][i % 4],
+                raw_state="waiting_on_user_input" if i in [0, 4, 9] else "running",
+            )
+            data["sessions"].append(s)
+        usage = data["demo"]["usage"]
+        # Supported account keys are claude + claude2; claude1 is ignored by
+        # the real fixture parser. Keep the actual UI labels honest.
+        usage[0]["provider"] = "claude"
+        second = copy.deepcopy(usage[0])
+        second["provider"] = "claude2"
+        second["windows"][0]["percent"] = 62
+        second["windows"][1]["percent"] = 34
+        usage.insert(1, second)
         fixture = home / "film.json"
         fixture.write_text(json.dumps(data))
         queue_dir = home / "queue"
@@ -204,6 +266,21 @@ def main():
                     i for i, line in enumerate(screen.display) if name in line
                 )
             (args.output / "layout.json").write_text(json.dumps(rows, indent=2))
+            os.write(master, b"\x13")  # Actual Ctrl+S, not scope filtering.
+            drain(0.7)
+            picture(screen, args.output / "directories.png")
+            before_filter = copy.deepcopy(data)
+            subprocess.run(
+                [args.binary, "view", "work"], env=env, check=True, capture_output=True
+            )
+            drain(0.7)
+            picture(screen, args.output / "work-directories.png")
+            subprocess.run(
+                [args.binary, "view", "all"], env=env, check=True, capture_output=True
+            )
+            drain(0.5)
+            os.write(master, b"\x13")
+            drain(0.5)
             # This is a staged fixture update, not a voice send. Capture the real
             # app moving the same synthetic checkout row into Working.
             checkout = next(
@@ -232,6 +309,10 @@ def main():
             picture(screen, args.output / "work.png")
             assert "Work only" in "\n".join(screen.display)
             assert "plan-weekend" not in "\n".join(screen.display)
+            fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", 23, COLS, 0, 0))
+            screen.resize(lines=23, columns=COLS)
+            os.killpg(proc.pid, signal.SIGWINCH)
+            drain(0.4)
             scheduled = copy.deepcopy(data["sessions"][2])
             scheduled.update(
                 id="opencode:host:review-checkout",
@@ -299,6 +380,9 @@ def main():
                             (ROWS * 28 + 32) * RASTER_SCALE,
                         ],
                         "font_pixels": 20 * RASTER_SCALE,
+                        "synthetic_session_count": len(before_filter["sessions"]),
+                        "synthetic_directory_count": len(roots),
+                        "same_state_scope_comparison": True,
                         "queue_source": "isolated read-only synthetic agent-bouncer status; actual app widget",
                         "data": "isolated synthetic fixture; no live calls or sends",
                         "checks": [

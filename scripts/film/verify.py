@@ -124,12 +124,14 @@ def main():
         "true_peak_dbtp": float(loudness["input_tp"]),
         "decode": "all frames and audio packets passed",
         "voice_overlap": False,
-        "live_call_recording": False,
+        "live_call_recording": True,
         "public_assets_replaced": False,
         "source_ui_resolution": provenance["raster_size"],
         "source_glyph_pixels": provenance["font_pixels"],
         "music": "Lorn · TIMESINK, 30-second excerpt, user-reported artist permission",
-        "native_chatgpt_voice": "blocked in recording VM: NotReadableError, Microphone is already in use",
+        "native_chatgpt_voice": "active Work Voice; actual AgentVoice exact-target read/send, receiver verified",
+        "native_input": "typed within active Voice; microphone speech recognition not tested",
+        "native_desktop_source_resolution": [1024, 738],
         "creative_review_complete": False,
     }
     (args.output / "verification.json").write_text(json.dumps(report, indent=2))

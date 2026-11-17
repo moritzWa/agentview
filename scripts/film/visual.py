@@ -91,6 +91,19 @@ def image(data, x, y, w, h):
     return f'<image href="{data}" x="{x}" y="{y}" width="{w}" height="{h}" preserveAspectRatio="xMidYMid meet"/>'
 
 
+def rounded_image(path, x, y, w, h, radius=15):
+    with Image.open(path) as source:
+        scale = min(w / source.width, h / source.height)
+        iw, ih = source.width * scale, source.height * scale
+    ix, iy = x + (w - iw) / 2, y + (h - ih) / 2
+    key = f"photo{abs(hash((str(path), x, y, w, h)))}"
+    return (
+        f'<defs><clipPath id="{key}">{rect(ix, iy, iw, ih, radius)}</clipPath></defs><g clip-path="url(#{key})">'
+        + image(uri(path), ix, iy, iw, ih)
+        + "</g>"
+    )
+
+
 def mark(x, y, s=1, color=BLUE):
     out = ""
     for dx, dy in [(-15, -25), (15, -25), (-27, 0), (27, 0), (-15, 25), (15, 25)]:
@@ -120,7 +133,15 @@ class Film:
         self.output = Path(output)
         self.shots = {
             n: Image.open(self.output / "captures" / f"{n}.png").convert("RGB")
-            for n in ["overview", "resumed", "work", "scheduled", "continued"]
+            for n in [
+                "overview",
+                "resumed",
+                "work",
+                "scheduled",
+                "continued",
+                "directories",
+                "work-directories",
+            ]
         }
         self.rows = json.loads((self.output / "captures/layout.json").read_text())
         self.crops = {}
@@ -251,8 +272,22 @@ class Film:
     def voice(self, t):
         resumed = t >= 11.35
         out = self.header(
-            "One terminal. One voice.", "Ask once. Unblock the right agent."
+            "See who needs you.",
+            "A kanban-like attention view. Open the waiting session, then return.",
         ) + self.terminal("resumed" if resumed else "overview")
+        recording = self.output / "navigation/recording.json"
+        if 6.2 <= t < 9.8 and recording.exists():
+            meta = json.loads(recording.read_text())
+            frames = [f for f in meta["frames"] if f["phase"] in ["open", "return"]]
+            n = min(len(frames) - 1, int((t - 6.2) / 3.6 * len(frames)))
+            out = self.header(
+                "Open the agent that needs you.",
+                "Actual keyboard capture · dedicated synthetic OpenCode session",
+            )
+            out += image(
+                uri(self.output / "navigation" / frames[n]["file"]), 70, 190, 1460, 610
+            )
+            out += txt(1480, 180, "→ open   ← ← back", 24, BLUE, True, "end")
         if t < 5.25:
             who, lines = "YOU", ["Which sessions need my attention?"]
         elif t < 10.1:
@@ -281,14 +316,23 @@ class Film:
 
     def chatgpt(self, t):
         out = self.header(
-            "ChatGPT desktop Voice.", "AgentVoice MCP · existing OpenCode sessions"
+            "ChatGPT Voice, in the desktop app.",
+            "Actual VM recording · typed prompts in Voice · dedicated synthetic OpenCode target",
         )
         clip = self.output / "chatgpt-desktop" / "frames"
         frames = sorted(clip.glob("*.png")) if clip.exists() else []
         if frames:
             n = min(len(frames) - 1, max(0, int((t - 12) * 30)))
-            out += rect(70, 200, 1460, 610, 24) + image(
-                uri(frames[n]), 82, 212, 1436, 586
+            out += rect(70, 200, 1460, 610, 24) + rounded_image(
+                frames[n], 82, 212, 1436, 586, 12
+            )
+            out += txt(
+                800,
+                850,
+                "Real AgentVoice integration. No private sessions shown.",
+                20,
+                MUTED,
+                anchor="middle",
             )
         else:
             # Never silently substitute a concept phone for requested real proof.
@@ -316,13 +360,29 @@ class Film:
         return out
 
     def work(self, t):
+        changing = t < 17.1
         out = self.header(
-            "Work stays in view.", "Hide personal sessions. Keep their work running."
-        ) + self.terminal("resumed" if t < 16.45 else "work")
+            "Two views. One busy dashboard." if changing else "Work stays in view.",
+            "Ctrl+S: status ↔ directory. This does not filter sessions."
+            if changing
+            else "Same moment. Six directories become three. Personal work keeps running.",
+        ) + self.terminal(
+            "overview"
+            if t < 16.35
+            else "directories"
+            if t < 17.5
+            else "work-directories"
+        )
         out += (
-            rect(570, 748, 460, 90, 24, "#edf2fd")
-            + keycaps(595, 763, 0.9)
-            + txt(988, 797, "Work only", 26, BLUE, True, "end")
+            '<g opacity=".72">'
+            + rect(480, 728, 640, 110, 28, "#d8edff")
+            + "</g>"
+            + (
+                txt(800, 797, "Ctrl + S   status ↔ directory", 30, BLUE, True, "middle")
+                if changing
+                else keycaps(510, 746, 1.35)
+                + txt(1085, 797, "Work only", 30, BLUE, True, "end")
+            )
         )
         return out + txt(
             800,
@@ -358,11 +418,20 @@ class Film:
 
     def crop_tile(self, shot, region, x, y, w, h, label, fill="white", cover=True):
         identifier = f"t{abs(hash((x, y, w, h, label)))}"
+        ix, iy, iw, ih = x + 12, y + 12, w - 24, h - 62
+        if not cover:
+            # Round the fitted image itself, not the larger letterbox. This is
+            # why the earlier Heavy Jobs source still showed square corners.
+            ratio = min(iw / (region[2] - region[0]), ih / (region[3] - region[1]))
+            iw, ih = (region[2] - region[0]) * ratio, (region[3] - region[1]) * ratio
+            ix = x + (w - iw) / 2
+            iy = y + 12 + (h - 62 - ih) / 2
+        radius = max(3, 27 - min(ix - x, iy - y))
         return (
             rect(x, y, w, h, 27, fill)
-            + f'<defs><clipPath id="{identifier}">{rect(x + 12, y + 12, w - 24, h - 62, 15)}</clipPath></defs>'
+            + f'<defs><clipPath id="{identifier}">{rect(ix, iy, iw, ih, radius)}</clipPath></defs>'
             + f'<g clip-path="url(#{identifier})">'
-            + image(self.crop(shot, region), x + 12, y + 12, w - 24, h - 62).replace(
+            + image(self.crop(shot, region), ix, iy, iw, ih).replace(
                 "xMidYMid meet", "xMinYMin slice" if cover else "xMidYMid meet"
             )
             + "</g>"
@@ -382,7 +451,13 @@ class Film:
             "middle",
         )
         out += self.crop_tile(
-            "overview", (0, 105, 920, 355), 35, 105, 565, 250, "All your coding agents"
+            "directories",
+            (0, 155, 950, 700),
+            35,
+            105,
+            565,
+            250,
+            "All: six directories, 20 agents",
         )
         out += rect(615, 105, 535, 170, 27)
         for i, (_, asset) in enumerate(HARNESSES):
@@ -397,11 +472,19 @@ class Film:
         frames = sorted((self.output / "chatgpt-desktop/frames").glob("*.png"))
         out += rect(1165, 105, 400, 275, 27)
         if frames:
-            out += image(uri(frames[-1]), 1177, 117, 376, 213)
+            out += rounded_image(frames[-1], 1177, 117, 376, 213, 15)
         else:
             out += txt(1365, 235, "Capture pending", 24, MUTED, anchor="middle")
         out += txt(1365, 358, "ChatGPT Voice · OpenCode", 22, INK, True, "middle")
-        out += self.crop_tile("work", (0, 0, 950, 395), 35, 370, 565, 365, "Work view")
+        out += self.crop_tile(
+            "work-directories",
+            (0, 155, 950, 700),
+            35,
+            370,
+            565,
+            365,
+            "Work: three directories",
+        )
         out += (
             rect(615, 290, 535, 330, 28, "url(#hero)")
             + mark(882, 387, 1.7, "white")
@@ -421,7 +504,7 @@ class Film:
         )
         out += self.crop_tile(
             "scheduled",
-            (500, 100, 1200, 245),
+            (0, 145, 1050, 245),
             615,
             635,
             535,
@@ -429,7 +512,14 @@ class Film:
             "Scheduled follow-ups",
         )
         out += self.crop_tile(
-            "scheduled", (84, 36, 980, 94), 35, 750, 565, 95, "Subscription usage"
+            "scheduled",
+            (84, 36, 980, 122),
+            35,
+            750,
+            565,
+            95,
+            "Claude · Claude2 · Codex",
+            cover=False,
         )
         out += (
             rect(1165, 635, 400, 210, 27, "#edf2fd")
