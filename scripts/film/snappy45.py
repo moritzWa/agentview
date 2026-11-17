@@ -1,0 +1,130 @@
+"""Measured1.5x speech conform and separate schedule/queue explanation."""
+
+import argparse
+import json
+from itertools import pairwise
+from pathlib import Path
+
+from propose45 import NARRATOR, credential, generate_take, timed_words
+from soundtrack import RATE, decode, write
+
+SCENES = [
+    (0, 4, "Overload to dashboard"),
+    (4, 7, "Arrow zoom"),
+    (7, 10, "Start Voice"),
+    (10, 15.5, "Dialogue"),
+    (15.5, 21.7, "ChatGPT MCP"),
+    (21.7, 24.3, "Project grouping"),
+    (24.3, 27, "Work scope"),
+    (27, 34, "Scheduled followup"),
+    (34, 40, "Heavy build/test queue"),
+    (40, 45, "Bento"),
+]
+OFFSETS = {
+    "intro.mp3": 0.15,
+    "navigation-followup.mp3": 4.1,
+    "voice-intro.mp3": 7.05,
+    "question.mp3": 10.1,
+    "answer.mp3": 11.4,
+    "checkout.mp3": 14.25,
+    "chatgpt-followup.mp3": 15.6,
+    "projects.mp3": 21.8,
+    "work.mp3": 24.35,
+}
+TAKES = [
+    (
+        "self-schedule.mp3",
+        "Agents can schedule their own follow-ups. They wait here, then resume when it’s time.",
+        27.2,
+        34,
+    ),
+    (
+        "bouncer-separate.mp3",
+        "Agent bouncer queues heavy builds and tests, so they don’t all run at once.",
+        34.15,
+        40,
+    ),
+]
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--output", type=Path, required=True)
+    args = ap.parse_args()
+    root = args.output
+    plan = json.loads((root / "followup45/script-timeline.json").read_text())
+    folder = root / "proposal45/audio"
+    key = None
+    cues = [
+        dict(c, at=OFFSETS[c["file"]]) for c in plan["cues"] if c["file"] in OFFSETS
+    ]
+    for filename, text, at, end in TAKES:
+        path = folder / filename
+        alignment = folder / filename.replace(".mp3", ".alignment.json")
+        if not path.exists() or not alignment.exists():
+            key = key or credential()
+            generate_take(path, alignment, text, NARRATOR, key)
+        cues.append(
+            {
+                "file": filename,
+                "text": text,
+                "at": at,
+                "speaker": "NARRATOR",
+                "scene_end": end,
+            }
+        )
+    final = root / "audio/final45"
+    final.mkdir(exist_ok=True)
+    for c in cues:
+        source = folder / c["file"]
+        pcm = decode(source, tempo=1.5)
+        c.update(
+            speed=1.5,
+            final_file="audio/final45/" + source.stem + ".wav",
+            duration=len(pcm) / RATE,
+        )
+        c["end"] = c["at"] + c["duration"]
+        c["scene_end"] = next(end for start, end, _ in SCENES if start <= c["at"] < end)
+        c["fits_scene"] = c["end"] <= c["scene_end"]
+        assert c["fits_scene"], c
+        write(root / c["final_file"], pcm)
+        original = json.loads(
+            (folder / c["file"].replace(".mp3", ".alignment.json")).read_text()
+        )
+        words = timed_words(original, c["text"])
+        for word in words:
+            word["start"] /= 1.5
+            if "end" in word:
+                word["end"] = min(c["duration"], word["end"] / 1.5)
+        (final / (source.stem + ".words.json")).write_text(json.dumps(words, indent=2))
+    cues.sort(key=lambda c: c["at"])
+    for left, right in pairwise(cues):
+        assert left["end"] + 0.08 < right["at"], (left["file"], right["file"])
+    plan.update(
+        status="Approved headerless demo,1.5x spoken playback",
+        scenes=[{"start": s, "end": e, "title": t} for s, e, t in SCENES],
+        cues=cues,
+        speech_tempo=1.5,
+        pitch_preserved=True,
+        presentation_headers=False,
+        public_release_approved=False,
+        duration_approved=True,
+    )
+    (root / "edit45.json").write_text(json.dumps(plan, indent=2))
+    print(
+        json.dumps(
+            [
+                {
+                    "file": c["file"],
+                    "at": c["at"],
+                    "end": round(c["end"], 3),
+                    "speed": c["speed"],
+                }
+                for c in cues
+            ]
+        )
+    )
+
+
+if __name__ == "__main__":
+    main()

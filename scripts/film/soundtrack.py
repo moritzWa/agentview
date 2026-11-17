@@ -91,15 +91,15 @@ def audio(output):
     samples = np.zeros((RATE * seconds, 2), dtype=np.float32)
     cues = []
     for i, c in enumerate(clips):
-        pcm = decode(output / "proposal45/audio" / c["file"])
+        pcm = decode(output / c["final_file"])
         budget = (clips[i + 1]["at"] - 0.08 if i + 1 < len(clips) else 40) - c["at"]
         assert len(pcm) / RATE <= budget, (
-            "Approved speech must fit without time compression"
+            "Final1.5x pitch-preserved speech must fit measured timeline"
         )
         start = round(c["at"] * RATE)
         samples[start : start + len(pcm)] = pcm
         cues.append(
-            dict(c, duration=len(pcm) / RATE, end=c["at"] + len(pcm) / RATE, speed=1)
+            dict(c, duration=len(pcm) / RATE, end=c["at"] + len(pcm) / RATE, speed=1.5)
         )
     write(output / "voice-mix.wav", samples)
     normalize(output / "voice-mix.wav", output / "narration.wav")

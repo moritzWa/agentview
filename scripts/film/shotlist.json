@@ -1,8 +1,8 @@
 {
   "duration_seconds": 45,
   "superseded_shots_below":true,
-  "active_timeline":"followup45/script-timeline.json (copied to edit45.json); previous scene entries retained as review history, not active edit",
-  "active_revision":{"morph_seconds":0.9,"arrow_zoom":[5.6,10.3],"cmd_k_voice_intro":[10.3,15],"dialogue":[15,23],"moving_chatgpt_mcp":[23,29.2],"ctrl_s":[29.2,32.8],"work_scope":[32.8,35.6],"schedule_bouncer":[35.6,40],"bento":[40,45],"native_source_dimensions":[3000,1270],"captions":"Dialogue cards only, no narrator captions or player tracks","music":"Continuously looped same30s source excerpt,0.8s equal-power crossfade","shortcuts":"One shared work-style vector3D overlay for arrows,CmdK,CtrlS,CmdShiftB","labels":["ChatGPT MCP","Talk to your agents from anywhere","All your subscriptions"]},
+  "active_timeline":"snappy45.py generates edit45.json with measured1.5x final audio; previous scene entries below retained as history, not active edit",
+  "active_revision":{"presentation_headers":false,"speech_tempo":1.5,"pitch_preserved":true,"morph_seconds":0.9,"arrow_zoom":[4,7],"cmd_k_voice_intro":[7,10],"dialogue":[10,15.5],"moving_chatgpt_mcp":[15.5,21.7],"ctrl_s":[21.7,24.3],"work_scope":[24.3,27],"schedule_resume":[27,34],"heavy_queue":[34,40],"bento":[40,45],"native_source_dimensions":[3000,1270],"bottom_black_rows_removed":8,"captions":"Dialogue cards only, no narrator captions or player tracks","music":"Continuously looped same30s source excerpt,0.8s equal-power crossfade","shortcuts":"One shared work-style vector3D overlay for arrows,CmdK,CtrlS,CmdShiftB","labels":["ChatGPT MCP","Talk to your agents from anywhere","All your subscriptions"]},
   "duration_approval": "User: 45 is fine",
   "delivery_resolution": [3840,2160],
   "source_ui_resolution": [4848,3120],

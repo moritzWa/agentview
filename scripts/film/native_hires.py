@@ -78,7 +78,8 @@ def main():
     assert (stream["width"], stream["height"]) == (3068, 1338)
     assert (other["width"], other["height"]) == (3068, 1338)
     # 34px native shadow, then the4px capture-edge trim already approved.
-    crop = "crop=2996:1270:38:34"
+    # Last8 source rows are100%black window-edge pixels, not app content.
+    crop = "crop=2996:1262:38:34"
     _, scores1 = activity(first, crop)
     _, scores2 = activity(second, crop)
     peak1 = choose_peak(scores1, 10, min(80, duration - 4))
@@ -121,7 +122,7 @@ def main():
     sheet = Image.new("RGB", (1500, 600), "white")
     for i, path in enumerate(paths):
         with Image.open(path) as im:
-            assert im.size == (2996, 1270)
+            assert im.size == (2996, 1262)
             hashes.append(hashlib.sha256(im.tobytes()).hexdigest())
             gray.append(
                 np.asarray(im.resize((384, 164)).convert("L"), dtype=np.float32)[
@@ -135,7 +136,7 @@ def main():
                 sheet.paste(thumb, ((slot % 5) * 300, (slot // 5) * 300))
                 ImageDraw.Draw(sheet).text(
                     ((slot % 5) * 300 + 8, (slot // 5) * 300 + 270),
-                    f"{23 + i / 30:.2f}s movie",
+                    f"{15.5 + i / 30:.2f}s movie",
                     fill="black",
                 )
     gray = np.asarray(gray)
@@ -143,20 +144,22 @@ def main():
     unique = len(set(hashes)) / len(hashes)
     moving_fraction = float((changes > 0.01).mean())
     late = float(np.abs(gray[165] - gray[135]).mean())
-    assert late > 0.05, "Native app must visibly move around movie28s, not hold a still"
+    assert late > 0.05, (
+        "Native app must visibly move near excerpt end, not hold a still"
+    )
     assert unique > 0.3 and (changes > 0.1).sum() >= 12, (
         "Selected native excerpt is too static"
     )
     metadata = {
         "source_dimensions": [3000, 1270],
         "raw_capture_dimensions": [3068, 1338],
-        "frame_dimensions": [2996, 1270],
+        "frame_dimensions": [2996, 1262],
         "moving": True,
         "frames": 186,
         "fps": 30,
         "unique_frame_fraction": unique,
         "moving_transition_fraction": moving_fraction,
-        "motion_near_movie28s": late,
+        "motion_near_excerpt_end": late,
         "segments": [
             {"source": first.name, "start": start1, "duration": 3.0},
             {"source": second.name, "start": start2, "duration": 3.2},
@@ -164,7 +167,8 @@ def main():
         "retimed": False,
         "editorial_freeze": False,
         "provenance": "Actual native ChatGPT Work Voice, typed prompts, exact-target AgentVoice read/send; idle footage trimmed. No screenshot animation or artificial UI motion.",
-        "border_trim": "34px native shadow plus4 left-edge pixels; app content retained.",
+        "border_trim": "34px shadow,4 left-edge pixels,8 solid-black bottom rows; app content retained.",
+        "bottom_black_rows_removed": 8,
     }
     (folder / "native-hires-clip.json").write_text(json.dumps(metadata, indent=2))
     sheet.save(root / "native-hires-motion-sheet.jpg", quality=96)

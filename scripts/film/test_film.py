@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """uv run --with pillow --with resvg-py --with numpy scripts/film/test_film.py"""
 
+import tempfile
 import unittest
 from html.parser import HTMLParser
 from itertools import pairwise
+from pathlib import Path
 
 import narrate
 import numpy as np
@@ -128,6 +130,19 @@ class FilmTests(unittest.TestCase):
         html = __import__("pathlib").Path(__file__).with_name("review.html").read_text()
         self.assertNotIn("addTextTrack", html)
         self.assertNotIn("<track", html)
+
+    def test_pitch_preserving_one_and_half_speed_and_headerless_stage(self):
+        pcm = np.sin(2 * np.pi * 220 * np.arange(48000) / 48000) * 0.1
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "tone.wav"
+            soundtrack.write(path, np.stack([pcm, pcm], axis=1))
+            fast = soundtrack.decode(path, tempo=1.5)
+        self.assertAlmostEqual(len(fast) / 48000, 1 / 1.5, delta=0.04)
+        spectrum = np.abs(np.fft.rfft(fast[:, 0]))
+        pitch = np.fft.rfftfreq(len(fast), 1 / 48000)[spectrum.argmax()]
+        self.assertAlmostEqual(pitch, 220, delta=3)
+        film = revision45.Film45.__new__(revision45.Film45)
+        self.assertEqual(film.header("A presentation heading", "subtitle"), "")
 
     def test_all_eighteen_supported_harnesses_have_artwork(self):
         self.assertEqual(len(visual.HARNESSES), 18)

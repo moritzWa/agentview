@@ -31,17 +31,21 @@ def main():
                 edge[:, :, 1] - edge[:, :, 2] > 8
             )
             assert not green.any(), f"Green capture border remains in {path.name}"
+            bottom = np.asarray(im.convert("RGB"))[-1, 30:-30]
+            black_fraction = float((bottom.max(axis=1) < 45).mean())
+            assert black_fraction < 0.01, "Solid black bottom capture bar remains"
             samples.append(
                 {
                     "frame": path.name,
                     "green_edge_pixels": int(green.sum()),
+                    "bottom_black_fraction": black_fraction,
                     "size": list(im.size),
                 }
             )
     (args.output / "agentview-film-evidence/native-edge-trim.json").write_text(
         json.dumps(
             {
-                "crop": "4 source pixels from left edge; recording unchanged",
+                "crop": "4 left-edge pixels and8 bottom solid-black rows; app content unchanged",
                 "samples": samples,
             },
             indent=2,

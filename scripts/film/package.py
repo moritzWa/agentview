@@ -31,6 +31,7 @@ def main():
         "review.html",
         "contact-sheet.jpg",
         "frame-00.0.png",
+        "frame-schedule-resumed.png",
         "verification.json",
         "audio/manifest.json",
         "audio/timing.json",
@@ -51,6 +52,11 @@ def main():
         "audio/waveform-check.json",
         "waveform-strip.jpg",
         "captures/provenance.json",
+    ]
+    files += [
+        str(p.relative_to(args.output))
+        for p in (args.output / "audio/final45").glob("*")
+        if p.suffix in [".wav", ".json"]
     ]
     files += [
         "proposal45/script-timeline.json",

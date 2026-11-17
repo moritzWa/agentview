@@ -6,6 +6,16 @@ captures are 4848 pixels wide (3120 tall for busy views, 2028 for compact views)
 with fresh 60-pixel Menlo glyphs, not enlarged images
 from the first draft. The final bento holds for five seconds.
 
+The latest approved edit is software-first: no presentation scene headings,
+recurring editorial top logo or faux window chrome. `snappy45.py` applies
+pitch-preserving FFmpeg atempo1.5 once to every spoken clip, then writes final
+WAVs and aligned word timebases. Waveforms analyze those final WAVs. Native
+ChatGPT video stays at its recorded speed. Separate27–34s scheduling and34–40s
+agent-bouncer queue beats replace the combined explanation. Scheduling here
+means the shown OpenCode integration, not a universal harness capability.
+The exact8 solid-black bottom rows of ChatGPT capture are removed in addition
+to its shadow/green-edge trim; main and bento share those same sources.
+
 ## Reproduce
 
 Run from the checkout. Use a current Agent View binary with `view work` support.
@@ -65,9 +75,9 @@ video or playing audio. No test plays audio or opens a GUI on the host.
 The opening uses a dense animated4×4 synthetic coding-terminal grid. Stable
 normalized IDs tie every pane title/provider/state to its captured session row.
 Each pane rectangle and text anchor moves into the exact measured cell bounds;
-matching captured row pixels complete the0.9s handoff, from2.0–2.9s. Arrow-key
-navigation is5.6–10.3s; Command K introduces built-in Voice at10.3–15s, before
-the15–23s editorial voice exchange. Native footage omits test
+matching captured row pixels complete the0.9s handoff, from1.4–2.3s. Arrow-key
+navigation is4–7s; Command K introduces built-in Voice at7–10s, before
+the10–15.5s editorial voice exchange. Native footage omits test
 setup instructions above the actual coupon question. After a genuine return,
 the edit cuts back to the busy20-session fixture instead of lingering on capture
 commands or the sparse dedicated-session setup.
@@ -83,8 +93,9 @@ The spoken intro names the problem and Agent View. Navigation says “Use the
 arrow keys to zoom into or zoom out of the session.” No double-tap claim or
 shortcut changes. Large vector keycaps flash at recorded input-phase boundaries.
 Actual ElevenLabs character timings reveal dialogue words at fixed positions,
-without reflow. YOU is purple, AGENT VIEW blue, both labeled. No narration is
-time-compressed. The final five seconds remain a readable music-only hold.
+without reflow. YOU is purple, AGENT VIEW blue, both labeled. All spoken clips
+use the requested1.5x pitch-preserving playback, applied once. The final five
+seconds remain a readable music-only hold.
 
 Moritz selected Lorn's “TIMESINK” and reports personal permission from Marcos
 Ortega for a short demo excerpt. The official artist Bandcamp stream supplied

@@ -55,13 +55,13 @@ def main():
     assert len(edge_check["samples"]) == 3
     assert all(s["green_edge_pixels"] == 0 for s in edge_check["samples"])
     wave_check = json.loads((args.output / "audio/waveform-check.json").read_text())
-    assert next(f for f in wave_check["frames"] if f["at"] == 16.95)["peak"] == 0
+    assert next(f for f in wave_check["frames"] if f["at"] == 11.3)["peak"] == 0
     native = json.loads(
         (args.output / "chatgpt-desktop/native-hires-clip.json").read_text()
     )
     assert native["moving"] and native["source_dimensions"][0] >= 2560
     assert (
-        native["motion_near_movie28s"] > 0.05
+        native["motion_near_excerpt_end"] > 0.05
         and native["moving_transition_fraction"] > 0.07
     )
     music = json.loads((args.output / "audio/music.json").read_text())
@@ -88,7 +88,7 @@ def main():
         s = 1460 / 1616
         assert item["destination"] == [70 + x * s, 200 + y * s, w * s, h * s]
     for i, c in enumerate(clips):
-        assert c["end"] <= 40 and c["speed"] == 1
+        assert c["end"] <= 40 and c["speed"] == 1.5
         if i:
             assert clips[i - 1]["end"] < c["at"]
     # Decode every frame/audio packet, not just the container header.
@@ -165,6 +165,9 @@ def main():
         "pane_row_morph": "16 stable normalized IDs, exact actual captured cell-bound destinations",
         "spoken_text": "Dialogue cards only: actual ElevenLabs alignment. No narrator captions or subtitle tracks.",
         "narrator_captions": False,
+        "spoken_playback_speed": 1.5,
+        "pitch_preserved": True,
+        "presentation_headers": False,
         "music_continuous": True,
         "speaker_colors": {"YOU": "#6f38c5", "AGENT VIEW": "#1e66f5"},
         "creative_review_complete": False,

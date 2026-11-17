@@ -32,6 +32,7 @@ def main():
     )
     for script in [
         "prepare45.py",
+        "snappy45.py",
         "trim_native_frames.py",
         "preview_waveform.py",
         "render.py",

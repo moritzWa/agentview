@@ -22,12 +22,12 @@ def main():
     report = []
     for i, (t, speaker) in enumerate(
         [
-            (15.4, "YOU"),
-            (16.0, "YOU"),
-            (16.95, "YOU"),
-            (17.5, "AGENT VIEW"),
-            (18.7, "AGENT VIEW"),
-            (21.8, "YOU"),
+            (10.4, "YOU"),
+            (10.8, "YOU"),
+            (11.3, "YOU"),
+            (11.7, "AGENT VIEW"),
+            (12.5, "AGENT VIEW"),
+            (14.5, "YOU"),
         ]
     ):
         levels = film.voice_tracks.at(t, speaker)

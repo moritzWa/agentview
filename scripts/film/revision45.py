@@ -3,10 +3,11 @@
 import base64
 import io
 import json
+from pathlib import Path
 
 import resvg_py
 from PIL import Image
-from propose45 import morph_box, timed_words
+from propose45 import morph_box
 from soundtrack import decode
 from visual import (
     BLUE,
@@ -29,11 +30,11 @@ SECONDS = 45
 PURPLE = "#6f38c5"
 SPEAKER_COLORS = {"YOU": PURPLE, "AGENT VIEW": BLUE, "NARRATOR": INK}
 KEY_EVENTS = {
-    "Right": 7.1,
-    "Left": 9.0,
-    "CmdK": 13.0,
-    "CtrlS": 30.2,
-    "Work": 33.55,
+    "Right": 4.85,
+    "Left": 6.2,
+    "CmdK": 8.9,
+    "CtrlS": 22.6,
+    "Work": 25.1,
 }
 
 
@@ -120,20 +121,22 @@ def line_wrap(text, size=23, max_width=1360):
 
 
 class Film45(Film):
+    def header(self, *args, **kwargs):
+        return ""
+
+    def terminal(self, shot, x=70, y=194, w=1460, h=790, region=None):
+        # Actual software pixels only, no editorial window title or traffic lights.
+        return image(self.crop(shot, region), x, y, w, h)
+
     def __init__(self, output):
         super().__init__(output)
         self.plan = json.loads((self.output / "edit45.json").read_text())
         self.cues = self.plan["cues"]
         self.alignments = {
-            c["file"]: timed_words(
-                json.loads(
-                    (
-                        self.output
-                        / "proposal45/audio"
-                        / c["file"].replace(".mp3", ".alignment.json")
-                    ).read_text()
-                ),
-                c["text"],
+            c["file"]: json.loads(
+                (
+                    self.output / Path(c["final_file"]).with_suffix(".words.json")
+                ).read_text()
             )
             for c in self.cues
         }
@@ -142,9 +145,7 @@ class Film45(Film):
                 {
                     "at": c["at"],
                     "speaker": c["speaker"],
-                    "levels": envelope(
-                        decode(self.output / "proposal45/audio" / c["file"])
-                    ),
+                    "levels": envelope(decode(self.output / c["final_file"])),
                 }
                 for c in self.cues
                 if c["speaker"] != "NARRATOR"
@@ -205,7 +206,7 @@ class Film45(Film):
         return image(data, 70, 200, 1460, self.morph_height * 1460 / 1616)
 
     def intro(self, t):
-        p = max(0, min(1, (t - 2.0) / 0.9))
+        p = max(0, min(1, (t - 1.4) / 0.9))
         p = p * p * (3 - 2 * p)
         out = self.header(
             "Too many agents. Too many windows."
@@ -307,8 +308,8 @@ class Film45(Film):
             "Zoom into or out of your session.",
             "Use the arrow keys.",
         )
-        if t < right or t >= 9.6:
-            out += self.status_image(selected=6.6 <= t < right)
+        if t < right or t >= 6.65:
+            out += self.status_image(selected=4.5 <= t < right)
         else:
             phase = "open" if t < left else "return"
             frames = [f for f in self.navigation_meta["frames"] if f["phase"] == phase]
@@ -335,14 +336,14 @@ class Film45(Film):
         active = t >= KEY_EVENTS["CmdK"]
         out = self.header("Agent View Voice", "Talk to your sessions.")
         out += image(
-            self.crop("voice-start" if active else "overview"), 70, 200, 1460, 620
+            self.crop("voice-start" if active else "overview"), 70, 200, 1460, 790
         )
         return out + shortcut_overlay(
             ["Cmd", "K"],
             "Start Voice",
             KEY_EVENTS["CmdK"] <= t < KEY_EVENTS["CmdK"] + 0.3,
             x=820,
-            y=690,
+            y=830,
         )
 
     def dialogue(self, t):
@@ -352,9 +353,9 @@ class Film45(Film):
             if c["file"]
             == (
                 "question.mp3"
-                if t < 17.05
+                if t < 11.4
                 else "answer.mp3"
-                if t < 21.4
+                if t < 14.25
                 else "checkout.mp3"
             )
         )
@@ -362,20 +363,14 @@ class Film45(Film):
         color = SPEAKER_COLORS[who]
         out = self.header(
             "One terminal. One voice.", "Ask once. Unblock the right agent."
-        ) + self.terminal("resumed" if t >= 22.5 else "overview")
+        ) + self.terminal("resumed" if t >= 15 else "overview")
         out += rect(300, 614, 1000, 192, 25, "white", "#d3def8") + txt(
             333, 645, who, 15, color, True
         )
         out += self.waves(1070, 641, t, 170, 36, color, speaker=who)
         lines = list(VOICE_CHOICE) if cue["file"] == "answer.mp3" else [cue["text"]]
         out += reveal(lines, self.alignments[cue["file"]], t - cue["at"], 333, 687, 30)
-        return out + txt(
-            333,
-            782,
-            "Editorial voiceover · synthetic app state, not live microphone input",
-            14,
-            MUTED,
-        )
+        return out
 
     def chatgpt(self, t):
         out = self.header(
@@ -383,7 +378,7 @@ class Film45(Film):
             "Your authenticated connection to Agent View, wherever you are.",
         )
         out += rect(70, 200, 1460, 610, 24)
-        n = min(len(self.native_frames) - 1, max(0, int((t - 23) * 30)))
+        n = min(len(self.native_frames) - 1, max(0, int((t - 15.5) * 30)))
         return out + rounded_image(self.native_frames[n], 82, 212, 1436, 586, 12)
 
     def projects(self, t):
@@ -396,7 +391,7 @@ class Film45(Film):
             70,
             200,
             1460,
-            620,
+            790,
         )
         pressed = KEY_EVENTS["CtrlS"] <= t < KEY_EVENTS["CtrlS"] + 0.3
         out += shortcut_overlay(["Ctrl", "S"], "Switch view", pressed)
@@ -412,7 +407,7 @@ class Film45(Film):
             70,
             200,
             1460,
-            620,
+            790,
         )
         out += shortcut_overlay(
             ["Cmd", "Shift", "B"],
@@ -429,18 +424,28 @@ class Film45(Film):
         )
 
     def scheduled(self, t):
-        jumped = t >= 37.8
-        out = self.header(
-            "Review checkout tomorrow at 9.",
-            "Tomorrow 09:00 · staged time jump to background review."
-            if jumped
-            else "A follow-up you don’t have to remember. Synthetic schedule and queue.",
-        )
-        return (
-            out
-            + self.terminal("continued" if jumped else "scheduled")
-            + txt(1500, 63, "agent-bouncer", 22, "#179299", True, "end")
-        )
+        jumped = t >= 31.15
+        shot = "continued" if jumped else "scheduled"
+        out = image(self.crop(shot), 70, 200, 1460, 610)
+        out += rect(76, 327, 1448, 105, 12, "none", BLUE)
+        if jumped:
+            out += txt(
+                1450, 800, "Tomorrow 09:00 · staged time jump", 17, MUTED, anchor="end"
+            )
+        return out
+
+    def bouncer(self, t):
+        out = image(self.crop("scheduled"), 70, 200, 1460, 610)
+        out += rect(76, 588, 1448, 118, 12, "none", "#179299")
+        # Zoom into the actual integrated queue, separately from Scheduled.
+        if t >= 35:
+            out = image(self.crop("scheduled"), 70, 200, 1460, 610)
+            out += '<g opacity=".88">' + rect(70, 200, 1460, 610, 12, "white") + "</g>"
+            out += image(
+                self.crop("scheduled", (0, 440, 1000, 560)), 95, 400, 1410, 170
+            )
+            out += rect(80, 378, 1440, 200, 16, "none", "#179299")
+        return out
 
     def aligned_narration(self, t):
         for cue in reversed(self.cues):
@@ -461,33 +466,31 @@ class Film45(Film):
     def frame(self, t):
         if t >= 40 and self.still is not None:
             return self.still.copy()
-        if t < 5.6:
+        if t < 4:
             content = self.intro(t)
-        elif t < 10.3:
+        elif t < 7:
             content = self.navigation(t)
-        elif t < 15:
+        elif t < 10:
             content = self.voice_intro(t)
-        elif t < 23:
+        elif t < 15.5:
             content = self.dialogue(t)
-        elif t < 29.2:
+        elif t < 21.7:
             content = self.chatgpt(t)
-        elif t < 32.8:
+        elif t < 24.3:
             content = self.projects(t)
-        elif t < 35.6:
+        elif t < 27:
             content = self.work_scope(t)
-        elif t < 40:
+        elif t < 34:
             content = self.scheduled(t)
+        elif t < 40:
+            content = self.bouncer(t)
         else:
             content = super().bento(t)
         if t < 40:
-            content += txt(
-                70,
-                897,
-                "REVIEW · Real app UI, synthetic sessions · editorial narration · native Voice uses typed prompts",
-                10,
-                MUTED,
+            content = (
+                '<g transform="translate(-44 -150) scale(1.055)">' + content + "</g>"
             )
-        background = "#e3e5e9" if t >= 40 else "#f0f1f5"
+        background = "#e3e5e9" if t >= 40 else "white"
         svg = f'<svg xmlns="http://www.w3.org/2000/svg" width="3840" height="2160" viewBox="0 0 1600 900">{rect(0, 0, 1600, 900, 0, background)}{content}</svg>'
         raw = resvg_py.svg_to_bytes(
             svg_string=svg,
