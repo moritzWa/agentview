@@ -6,36 +6,43 @@
   "shots": [
     {
       "start": 0,
-      "end": 3,
-      "beat": "Four overlapping terminals converge into their matching Agent View rows",
-      "evidence": "Editorial animation with existing provider artwork; destinations use actual captured terminal row positions"
+      "end": 2.5,
+      "beat": "Overwhelming4x4 coding-agent grid collapses into one calm status list",
+      "evidence": "Representative synthetic grid with16 panes, scrolling logs/code, mixed provider labels, activity and a buried decision. No competitor screenshots or product-ridicule branding. Onscreen tagline over music, not spoken."
     },
     {
-      "start": 3,
-      "end": 12,
-      "beat": "Kanban-like attention view, voice question, actual Right zoom/double-Left return, checkout decision",
+      "start":2.5,
+      "end":7,
+      "beat":"Standalone status grouping and arrow navigation BEFORE voice",
+      "evidence":"NeedsInput/Working overview, actual Down selects row, actual native Right opens dedicated synthetic OpenCode session, doubleLeft returns. No voice overlay obscures action.",
+      "narration":"2.55–6.822: Group agents by status. Use the arrows to open the one that needs you."
+    },
+    {
+      "start": 7,
+      "end": 15,
+      "beat": "Recognizable attention question, concrete coupon choice and checkout answer",
       "evidence": "Actual overview render; full two-line illustrated exchange; ElevenLabs voices; actual app moves checkout to Working through a staged fixture update",
-      "navigation_evidence": "Actual Agent View opens a dedicated tools-denied synthetic OpenCode session with Right; double-Left returns. Not a drawn zoom.",
+      "waveform":"Actual active speaker's isolated narration clip RMS+31-bandFFT, absolute cue offsets; nearflat silence. Not music-driven or simulated live microphone input. Native ChatGPT UI untouched.",
       "missing_capture": "Opening ElevenLabs exchange is editorial, not the native call's captured speech",
       "replacement_path": "Muted macOS Space; isolated Agent View HOME/XDG plus a disposable OpenCode server/session. Feed prerecorded user prompts through a virtual mic, capture the app footer and receiver transcript. Keep the current editorial narration only outside the live exchange."
     },
     {
-      "start": 12,
-      "end": 15.8,
+      "start": 15,
+      "end": 18,
       "beat": "Actual ChatGPT desktop Work Voice + AgentVoice read/send",
       "evidence": "Real VM window recordings. Active Voice, Used AgentVoice integration, correct coupon question, actual targeted send. Receiver message metadata source=agentvoice and acknowledgment independently verified.",
       "input_provenance": "Typed prompts inside active native Voice. Microphone speech recognition not tested. No ElevenLabs words presented as recorded native dialogue.",
       "safety": "Only dedicated synthetic session targeted, tools denied on receiver; no private list/search or re-pair. Dedicated session deleted and temporary VM mic permission restored after capture."
     },
     {
-      "start": 15.8,
-      "end": 18.8,
+      "start": 18,
+      "end": 20.5,
       "beat": "Ctrl+S status/directory switch, then Work scope hides personal directories",
       "evidence": "20 plausible synthetic sessions across six directories. Actual Ctrl+S input. All/work snapshots share identical state; work shows three directories. Actual usage fixture: claude, claude2, codex (claude1 is not a supported key).",
       "limitation": "Global binding caption reflects this user's configured setup, not an intrinsic app shortcut. Background work continuing is not exercised by this fixture."
     },
     {
-      "start": 18.8,
+      "start": 20.5,
       "end": 25,
       "beat": "Scheduled continuation and agent-bouncer queue",
       "evidence": "Actual integrated Scheduled and Heavy jobs widgets. Isolated synthetic schedule/queue state. Ctrl+Y expands real section; explicit staged time jump to Background state.",
@@ -45,7 +52,7 @@
       "start": 25,
       "end": 30,
       "beat": "Five-second bento and URL hold",
-      "evidence": "Screenshot bento, central identity, all18 logos, real native desktop capture. Concentric clips fit actual inner image extents, including Heavy Jobs. No Apple artwork."
+      "evidence": "White/neutral screenshot tiles on gray canvas, selective saturated teal/blue accents, aligned varied tile proportions. Exact docs/assets/logo.svg embedded unmodified, gray elongated-hexagon rings and blue center preserved. Concentric inner screenshot clips. No Apple artwork."
     }
   ],
   "music": "Lorn TIMESINK 0:00–0:30. User reports personal artist permission. Music-bearing master and separate stem private pending review.",

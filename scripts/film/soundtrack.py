@@ -70,9 +70,9 @@ def normalize(source, dest):
 
 def audio(output):
     clips = json.loads((output / "audio/manifest.json").read_text())
-    # Faster transitions free two seconds for a legible integrated schedule flow.
-    clips[6]["at"] = 16.05
-    clips[7]["at"] = 19.25
+    # Text-only tagline over the music intro. Omit redundant Sent, Work and
+    # closing narration to protect the separate navigation and five-second hold.
+    clips = [c for c in clips if c["file"] not in ["04.mp3", "06.mp3", "08.mp3"]]
     samples = np.zeros((RATE * 30, 2), dtype=np.float32)
     cues = []
     for i, c in enumerate(clips):

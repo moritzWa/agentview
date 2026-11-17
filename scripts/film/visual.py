@@ -3,13 +3,13 @@
 import base64
 import io
 import json
-import math
 from functools import lru_cache
 from html import escape
 from pathlib import Path
 
 import resvg_py
 from PIL import Image, ImageFont
+from waveform import VoiceTracks
 
 ROOT = Path(__file__).resolve().parents[2]
 W, H, FPS, SECONDS = 3840, 2160, 30, 30
@@ -68,6 +68,18 @@ def uri(path):
 
 
 @lru_cache(maxsize=24)
+def navigation_uri(path, focus_question):
+    if not focus_question:
+        return uri(path)
+    with Image.open(path) as source:
+        # Framing only: omit the long synthetic setup above the real answer.
+        source = source.crop((0, 636, source.width, source.height))
+        out = io.BytesIO()
+        source.save(out, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(out.getvalue()).decode()
+
+
+@lru_cache(maxsize=24)
 def provider(name, size):
     p = ROOT / "site/providers" / name
     if p.suffix == ".svg":
@@ -105,10 +117,10 @@ def rounded_image(path, x, y, w, h, radius=15):
 
 
 def mark(x, y, s=1, color=BLUE):
-    out = ""
-    for dx, dy in [(-15, -25), (15, -25), (-27, 0), (27, 0), (-15, 25), (15, 25)]:
-        out += f'<circle cx="{x + dx * s}" cy="{y + dy * s}" r="{4.3 * s}" fill="none" stroke="{color}" stroke-width="{s}"/>'
-    return out + f'<circle cx="{x}" cy="{y}" r="{5.4 * s}" fill="{color}"/>'
+    # Embed the source, without rebuilding circles, changing aspect or colors.
+    return image(
+        uri(ROOT / "docs/assets/logo.svg"), x - 32 * s, y - 40 * s, 64 * s, 80 * s
+    )
 
 
 def keycaps(x, y, scale=1):
@@ -141,11 +153,13 @@ class Film:
                 "continued",
                 "directories",
                 "work-directories",
+                "selected",
             ]
         }
         self.rows = json.loads((self.output / "captures/layout.json").read_text())
         self.crops = {}
         self.still = None
+        self.voice_tracks = VoiceTracks.load(self.output / "audio")
 
     def crop(self, shot, region=None):
         key = (shot, region)
@@ -193,113 +207,147 @@ class Film:
             + txt(72, 174, sub, 23, MUTED)
         )
 
-    def waves(self, x, y, t, w=180, h=35, color=BLUE):
+    def waves(self, x, y, t, w=180, h=35, color=BLUE, speaker="AGENT VIEW"):
+        levels = self.voice_tracks.at(t, speaker)
         return "".join(
-            rect(
-                x + i * w / 31,
-                y
-                - (
-                    a := (0.25 + 0.75 * abs(math.sin(i * 0.62 + t * 5)))
-                    * h
-                    * math.sin(math.pi * (i + 1) / 32)
-                )
-                / 2,
-                3,
-                a,
-                1.5,
-                color,
-            )
-            for i in range(31)
+            rect(x + i * w / 31, y - (a := 2 + float(level) * h) / 2, 3, a, 1.5, color)
+            for i, level in enumerate(levels)
         )
 
     def opening(self, t):
         out = self.header("All your coding agents.", "One terminal. One voice.")
-        p = ease((t - 0.7) / 1.6)
-        beneath = self.terminal("overview")
-        out += f'<g opacity="{ease((p - 0.35) / 0.65)}">{beneath}</g>'
-        cards = [
-            ("openai.png", "Codex", "Review checkout.", "db-migration", 85, 235, -4),
-            (
-                "claude.svg",
-                "Claude Code",
-                "Where should coupons go?",
-                "checkout-redesign",
-                650,
-                300,
-                4,
-            ),
-            (
-                "devin.png",
-                "Devin",
-                "Build the storefront.",
-                "storefront-build",
-                165,
-                490,
-                2,
-            ),
-            (
-                "opencode.svg",
-                "OpenCode",
-                "Find the flaky test.",
-                "fix-flaky-tests",
-                755,
-                530,
-                -3,
-            ),
+        p = ease((t - 1.7) / 0.8)
+        out += f'<g opacity="{p}">' + self.terminal("overview") + "</g>"
+        logs = [
+            "$ pnpm test checkout --watch",
+            "  PASS  payment.spec.ts (23 tests)",
+            "  compiling src/routes/cart.tsx…",
+            "@@ -38,7 +38,11 @@ checkout",
+            "+ const total = applyCoupon(cart);",
+            "  tool: inspect failing request",
+            "  GET /api/checkout 200  182ms",
+            "  retrying flaky suite (3 of 20)",
+            "  ███████░░░ 72% building",
+            "  watching 184 changed files",
+            "  npm run typecheck -- --strict",
+            "  → tracing webhook retries",
+            "  ✓ migrated 12 schema changes",
+            '  import { Checkout } from "./ui";',
         ]
-        for asset, name, line, dest, x, y, tilt in cards:
-            target = 194 + 36 + (16 + self.rows[dest] * 28) * (1440 / 1616)
-            xx, yy = mix(x, 85, p), mix(y, target, p)
-            sx, sy = mix(1, 0.46, p), mix(1, 0.14, p)
-            card = (
-                rect(0, 0, 740, 227, 24, "white", "#e2e4ed")
-                + image(uri(ROOT / "site/providers" / asset), 28, 24, 42, 42)
-                + txt(90, 54, name, 28, bold=True)
-                + txt(30, 124, "› " + line, 24, mono=True)
+        for i in range(16):
+            name, asset = HARNESSES[i]
+            x, y = 70 + (i % 4) * 366, 200 + (i // 4) * 153
+            xx, yy = mix(x, 80, p), mix(y, 240 + (i % 16) * 19, p)
+            pane = rect(0, 0, 360, 147, 3, "#fff", "#aeb4c1") + rect(
+                0, 0, 360, 23, 3, "#e1e4eb"
             )
-            card += "".join(
-                rect(30, 165 + i * 13, n, 4, 2, "#e5e8f0")
-                for i, n in enumerate([500, 600, 420])
+            pane += image(uri(ROOT / "site/providers" / asset), 8, 5, 13, 13) + txt(
+                27,
+                16,
+                name + "  / " + ["shop", "payments", "docs", "home-lab"][i % 4],
+                11,
+                bold=True,
             )
-            out += f'<g opacity="{1 - ease((p - 0.67) / 0.33)}" transform="translate({xx} {yy}) rotate({tilt * (1 - p)}) scale({sx} {sy})">{card}</g>'
-        # Every supported harness is represented, not just the four story actors.
-        for i, (_, asset) in enumerate(HARNESSES):
-            out += image(
-                uri(ROOT / "site/providers" / asset), 135 + i * 73, 816, 31, 31
+            pane += txt(
+                344, 16, "●", 11, "#179299" if i != 10 else "#ba7600", True, "end"
             )
+            shift = (int(t * (3 + i % 3)) + i * 3) % len(logs)
+            for j in range(8):
+                line = logs[(shift + j) % len(logs)][:49]
+                if i == 10 and j == 5:
+                    line = "? NEEDS INPUT: where should coupons go?"
+                pane += txt(
+                    8,
+                    36 + j * 13,
+                    line,
+                    10.2,
+                    "#a56800"
+                    if i == 10 and j == 5
+                    else ["#343744", "#6d7280", "#176d89"][j % 3],
+                    mono=True,
+                )
+            out += f'<g opacity="{1 - p}" transform="translate({xx} {yy}) scale({mix(1, 0.22, p)} {mix(1, 0.10, p)})">{pane}</g>'
+        out += txt(
+            800,
+            860,
+            "16 busy terminals. One buried decision."
+            if t < 1.7
+            else "Everything organized by who needs you.",
+            22,
+            MUTED,
+            anchor="middle",
+        )
         return out
 
-    def voice(self, t):
-        resumed = t >= 11.35
+    def navigation(self, t):
         out = self.header(
-            "See who needs you.",
-            "A kanban-like attention view. Open the waiting session, then return.",
+            "Group agents by status.", "Use the arrows to open the one that needs you."
+        )
+        if t < 3.6 or t >= 6.05:
+            return (
+                out
+                + self.terminal("selected" if 3.1 <= t < 3.6 else "overview")
+                + txt(
+                    1450,
+                    840,
+                    "↓ select" if t < 3.6 else "← ← back",
+                    26,
+                    BLUE,
+                    True,
+                    "end",
+                )
+            )
+        meta = json.loads((self.output / "navigation/recording.json").read_text())
+        phase = "open" if t < 5.85 else "return"
+        frames = [f for f in meta["frames"] if f["phase"] == phase]
+        progress = (
+            0.25 + 0.75 * (t - 3.6) / 2.25
+            if phase == "open"
+            else 0.8 + 0.2 * (t - 5.85) / 0.2
+        )
+        n = min(len(frames) - 1, max(0, int(progress * len(frames))))
+        out += image(
+            navigation_uri(
+                self.output / "navigation" / frames[n]["file"], phase == "open"
+            ),
+            70,
+            190,
+            1460,
+            620,
+        )
+        out += txt(
+            1450,
+            850,
+            "→ open session" if phase == "open" else "← ← back to overview",
+            28,
+            BLUE,
+            True,
+            "end",
+        )
+        return out + txt(
+            70,
+            850,
+            "Actual keyboard recording · dedicated synthetic session",
+            16,
+            MUTED,
+        )
+
+    def voice(self, t):
+        resumed = t >= 14.65
+        out = self.header(
+            "One terminal. One voice.",
+            "Ask once. Unblock the right agent.",
         ) + self.terminal("resumed" if resumed else "overview")
-        recording = self.output / "navigation/recording.json"
-        if 6.2 <= t < 9.8 and recording.exists():
-            meta = json.loads(recording.read_text())
-            frames = [f for f in meta["frames"] if f["phase"] in ["open", "return"]]
-            n = min(len(frames) - 1, int((t - 6.2) / 3.6 * len(frames)))
-            out = self.header(
-                "Open the agent that needs you.",
-                "Actual keyboard capture · dedicated synthetic OpenCode session",
-            )
-            out += image(
-                uri(self.output / "navigation" / frames[n]["file"]), 70, 190, 1460, 610
-            )
-            out += txt(1480, 180, "→ open   ← ← back", 24, BLUE, True, "end")
-        if t < 5.25:
+        if t < 9:
             who, lines = "YOU", ["Which sessions need my attention?"]
-        elif t < 10.1:
+        elif t < 13.4:
             who, lines = "AGENT VIEW", VOICE_CHOICE
-        elif not resumed:
-            who, lines = "YOU", ["Tell it checkout."]
         else:
-            who, lines = "AGENT VIEW", ["Sent."]
+            who, lines = "YOU", ["Tell it checkout."]
         out += (
             rect(300, 614, 1000, 192, 25, "white", "#d3def8")
             + txt(333, 645, who, 15, BLUE, True)
-            + self.waves(1070, 641, t, 170, 23)
+            + self.waves(1070, 641, t, 170, 23, speaker=who)
         )
         for i, line in enumerate(lines):
             out += txt(333, 687 + i * 37, line, 30, bold=True)
@@ -322,7 +370,7 @@ class Film:
         clip = self.output / "chatgpt-desktop" / "frames"
         frames = sorted(clip.glob("*.png")) if clip.exists() else []
         if frames:
-            n = min(len(frames) - 1, max(0, int((t - 12) * 30)))
+            n = min(len(frames) - 1, max(0, int((t - 15) / 3 * len(frames))))
             out += rect(70, 200, 1460, 610, 24) + rounded_image(
                 frames[n], 82, 212, 1436, 586, 12
             )
@@ -360,7 +408,7 @@ class Film:
         return out
 
     def work(self, t):
-        changing = t < 17.1
+        changing = t < 19.4
         out = self.header(
             "Two views. One busy dashboard." if changing else "Work stays in view.",
             "Ctrl+S: status ↔ directory. This does not filter sessions."
@@ -368,9 +416,9 @@ class Film:
             else "Same moment. Six directories become three. Personal work keeps running.",
         ) + self.terminal(
             "overview"
-            if t < 16.35
+            if t < 18.4
             else "directories"
-            if t < 17.5
+            if t < 19.7
             else "work-directories"
         )
         out += (
@@ -399,7 +447,7 @@ class Film:
         )
 
     def continuation(self, t):
-        jumped = t >= 22
+        jumped = t >= 23
         out = self.header(
             "Review checkout tomorrow at 9.",
             "The same session wakes up and continues."
@@ -421,7 +469,9 @@ class Film:
         )
         return out
 
-    def crop_tile(self, shot, region, x, y, w, h, label, fill="white", cover=True):
+    def crop_tile(
+        self, shot, region, x, y, w, h, label, fill="white", cover=True, label_color=INK
+    ):
         identifier = f"t{abs(hash((x, y, w, h, label)))}"
         ix, iy, iw, ih = x + 12, y + 12, w - 24, h - 62
         if not cover:
@@ -440,7 +490,7 @@ class Film:
                 "xMidYMid meet", "xMinYMin slice" if cover else "xMidYMid meet"
             )
             + "</g>"
-            + txt(x + w / 2, y + h - 20, label, 22, INK, True, "middle")
+            + txt(x + w / 2, y + h - 20, label, 22, label_color, True, "middle")
         )
 
     def bento(self, t):
@@ -491,10 +541,10 @@ class Film:
             "Work: three directories",
         )
         out += (
-            rect(615, 290, 535, 330, 28, "url(#hero)")
-            + mark(882, 387, 1.7, "white")
-            + txt(882, 493, "Agent View", 62, "white", True, "middle")
-            + txt(882, 553, "Open source · Built in Rust", 22, "white", anchor="middle")
+            rect(615, 290, 535, 330, 28, "white")
+            + mark(882, 387, 1.7)
+            + txt(882, 493, "Agent View", 62, INK, True, "middle")
+            + txt(882, 553, "Open source · Built in Rust", 22, BLUE, anchor="middle")
         )
         out += self.crop_tile(
             "continued",
@@ -504,8 +554,9 @@ class Film:
             400,
             225,
             "Heavy jobs · agent-bouncer",
-            "#edf8f7",
+            "#007f86",
             cover=False,
+            label_color="white",
         )
         out += self.crop_tile(
             "scheduled",
@@ -527,9 +578,9 @@ class Film:
             cover=False,
         )
         out += (
-            rect(1165, 635, 400, 210, 27, "#edf2fd")
+            rect(1165, 635, 400, 210, 27, "#1459df")
             + keycaps(1245, 678, 1.0)
-            + txt(1365, 807, "Work only", 26, BLUE, True, "middle")
+            + txt(1365, 807, "Work only", 26, "white", True, "middle")
         )
         out += txt(
             800,
@@ -545,13 +596,15 @@ class Film:
     def frame(self, t):
         if t >= 25.35 and self.still is not None:
             return self.still.copy()
-        if t < 3:
+        if t < 2.5:
             content = self.opening(t)
-        elif t < 12:
+        elif t < 7:
+            content = self.navigation(t)
+        elif t < 15:
             content = self.voice(t)
-        elif t < 15.8:
+        elif t < 18:
             content = self.chatgpt(t)
-        elif t < 18.8:
+        elif t < 20.5:
             content = self.work(t)
         elif t < 25:
             content = self.continuation(t)
@@ -565,7 +618,8 @@ class Film:
                 12,
                 MUTED,
             )
-        svg = f'<svg xmlns="http://www.w3.org/2000/svg" width="3840" height="2160" viewBox="0 0 1600 900"><defs><linearGradient id="hero" x2="1" y2="1"><stop stop-color="#179be9"/><stop offset=".53" stop-color="#506cf7"/><stop offset="1" stop-color="#a58be8"/></linearGradient></defs>{rect(0, 0, 1600, 900, 0, "#f0f1f5")}{content}</svg>'
+        background = "#e3e5e9" if t >= 25 else "#f0f1f5"
+        svg = f'<svg xmlns="http://www.w3.org/2000/svg" width="3840" height="2160" viewBox="0 0 1600 900">{rect(0, 0, 1600, 900, 0, background)}{content}</svg>'
         raw = resvg_py.svg_to_bytes(
             svg_string=svg,
             width=W,

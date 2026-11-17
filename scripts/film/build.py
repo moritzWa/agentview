@@ -3,7 +3,8 @@
 
 python3 ~/.claude/scripts/heavy-job.py --wait -- uv run --with pillow --with pyte --with resvg-py --with numpy scripts/film/build.py --output ~/Movies/agentview-film-draft
 
-Requires existing audio clips. No API call, browser, playback or public deploy.
+Requires existing audio clips and private native recording frames. No API call,
+browser, playback or public deploy.
 """
 
 import argparse
@@ -29,7 +30,13 @@ def main():
         ],
         check=True,
     )
-    for script in ["render.py", "verify.py", "package.py"]:
+    for script in [
+        "trim_native_frames.py",
+        "preview_waveform.py",
+        "render.py",
+        "verify.py",
+        "package.py",
+    ]:
         subprocess.run(
             [sys.executable, str(directory / script), "--output", str(args.output)],
             check=True,

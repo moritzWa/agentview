@@ -55,6 +55,24 @@ video or playing audio. No test plays audio or opens a GUI on the host.
 
 ## Music and visual references
 
+The opening uses a dense animated4×4 synthetic coding-terminal grid, then
+collapses into the real status list. The2.5–7s arrow-navigation beat is separate
+from the7–15s editorial voice exchange. Native footage is framed to omit test
+setup instructions above the actual coupon question. After a genuine return,
+the edit cuts back to the busy20-session fixture instead of lingering on capture
+commands or the sparse dedicated-session setup.
+
+`waveform.py` precomputes RMS and31 FFT bands from each active speaker's dry
+clip at30fps. Cue offsets select the correct speaker; gaps return flat2-pixel
+bars. Music never drives these bars. `preview_waveform.py` writes a frame strip
+and numerical check from the real clips. Tests cover silence, relative level,
+speaker switches, offsets and determinism. This is voiceover visualization,
+not original microphone evidence. Recorded ChatGPT UI is never redrawn.
+
+The tagline is on screen over the music intro. Natural navigation narration
+runs2.55–6.822s; the core dialogue runs7–14.561s. Redundant Sent, Work and closing
+voice cues are omitted; the final five seconds remain a readable music-only hold.
+
 Moritz selected Lorn's “TIMESINK” and reports personal permission from Marcos
 Ortega for a short demo excerpt. The official artist Bandcamp stream supplied
 the working source. `soundtrack.py` extracts only 0:00–0:30, ducks it under
@@ -68,10 +86,15 @@ The bento was studied from actual Apple slides, not generic web cards:
 
 - [WWDC24 macOS, iOS, iPadOS and Apple Intelligence summaries](https://thatvirtualboy.com/wwdc24-bentos)
 - [WWDC25 summaries](https://www.macstories.net/news/wwdc-2025-all-the-small-things-bento-box-version/)
+- [Primary Apple iPadOS26 design reference](https://www.apple.com/newsroom/2025/06/ipados-26-introduces-powerful-new-features-that-push-ipad-even-further/)
 - [Apple event slide collection](https://www.figma.com/community/file/1150817983915754582/all-apple-event-summary-slides-2019-2026)
 
-Unequal tile sizes, focused screenshot crops, a colored central identity and
-short labels carry the design. No Apple artwork is used in the film.
+Unequal aligned tiles, focused screenshot crops and short labels carry the design.
+White/neutral tiles separate from a gray canvas; selective saturated teal/blue
+accents replace barely distinguishable pastels. The canonical
+`docs/assets/logo.svg` is embedded verbatim everywhere: original elongated hexagon,
+gray outlined rings and blue center, never white or re-spaced on a gradient.
+No Apple artwork is used in the film.
 
 ## Review and site integration
 

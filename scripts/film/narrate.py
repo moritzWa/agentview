@@ -13,23 +13,27 @@ import urllib.request
 from pathlib import Path
 
 LINES = [
-    (0.15, "All your coding agents. One terminal. One voice.", "JBFqnCBsd6RMkjVDRZzb"),
-    (3.25, "Which sessions need my attention?", "nPczCjzI2devNBz1zQrb"),
     (
-        5.25,
+        2.55,
+        "Group agents by status. Use the arrows to open the one that needs you.",
+        "JBFqnCBsd6RMkjVDRZzb",
+    ),
+    (7.0, "Which sessions need my attention?", "nPczCjzI2devNBz1zQrb"),
+    (
+        9.0,
         "Your checkout agent asked whether coupons belong in the cart or at checkout.",
         "JBFqnCBsd6RMkjVDRZzb",
     ),
-    (10.1, "Tell it checkout.", "nPczCjzI2devNBz1zQrb"),
-    (11.35, "Sent.", "JBFqnCBsd6RMkjVDRZzb"),
-    (12.6, "Take your agents with you.", "JBFqnCBsd6RMkjVDRZzb"),
+    (13.4, "Tell it checkout.", "nPczCjzI2devNBz1zQrb"),
+    (14.6, "Sent.", "JBFqnCBsd6RMkjVDRZzb"),
+    (15.3, "Take your agents with you.", "JBFqnCBsd6RMkjVDRZzb"),
     (
-        16.05,
+        18.25,
         "Keep work in view. Everything else keeps running.",
         "JBFqnCBsd6RMkjVDRZzb",
     ),
     (
-        19.25,
+        20.35,
         "Tomorrow at nine, review checkout. Agent bouncer queues the heavy jobs.",
         "JBFqnCBsd6RMkjVDRZzb",
     ),

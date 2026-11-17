@@ -43,6 +43,9 @@ def main():
         "captures/continued.png",
         "captures/directories.png",
         "captures/work-directories.png",
+        "captures/selected.png",
+        "audio/waveform-check.json",
+        "waveform-strip.jpg",
         "captures/provenance.json",
     ]
     files += [f"audio/{i:02d}.mp3" for i in range(9)]
@@ -52,6 +55,7 @@ def main():
             "native-voice-proof.json",
             "native-voice-send-proof.png",
             "native-voice-receiver.json",
+            "native-edge-trim.json",
         ]
         if (args.output / "agentview-film-evidence" / name).exists()
     ]

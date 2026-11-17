@@ -32,7 +32,7 @@ def main():
     args = ap.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     film = Film(args.output)
-    times = [0, 2.2, 6.7, 11.6, 13.7, 16.7, 20.0, 23.1, 27.5]
+    times = [0, 2.2, 4.8, 6.3, 10.5, 16.5, 19.0, 23.1, 27.5]
     sheet = Image.new("RGB", (1920, 1080), "white")
     for i, t in enumerate(times):
         im = film.frame(t)
@@ -47,6 +47,7 @@ def main():
         return
     audio(args.output)
     dest = args.output / "agentview-30s-review.mp4"
+    encoding = args.output / "agentview-30s-review.rendering.mp4"
     cmd = [
         "ffmpeg",
         "-v",
@@ -87,7 +88,7 @@ def main():
         "30",
         "-movflags",
         "+faststart",
-        str(dest),
+        str(encoding),
     ]
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
     try:
@@ -100,6 +101,7 @@ def main():
         if proc.poll() is None:
             proc.kill()
             proc.wait()
+    encoding.replace(dest)
     print(f"Rendered native 4K: {dest}; 30 seconds, 900 frames. No playback.")
 
 

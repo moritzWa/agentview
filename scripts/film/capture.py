@@ -255,6 +255,11 @@ def main():
             )
             assert "plan-weekend" in "\n".join(screen.display)
             picture(screen, args.output / "overview.png")
+            os.write(master, b"\x1b[B")
+            drain(0.35)
+            picture(screen, args.output / "selected.png")
+            os.write(master, b"\x1b[A")
+            drain(0.2)
             rows = {}
             for name in [
                 "checkout-redesign",

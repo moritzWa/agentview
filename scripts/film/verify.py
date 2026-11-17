@@ -49,6 +49,13 @@ def main():
         "UI sources must be genuinely high resolution"
     )
     clips = json.loads((args.output / "audio/timing.json").read_text())
+    edge_check = json.loads(
+        (args.output / "agentview-film-evidence/native-edge-trim.json").read_text()
+    )
+    assert len(edge_check["samples"]) == 3
+    assert all(s["green_edge_pixels"] == 0 for s in edge_check["samples"])
+    wave_check = json.loads((args.output / "audio/waveform-check.json").read_text())
+    assert next(f for f in wave_check["frames"] if f["at"] == 8.95)["peak"] == 0
     for i, c in enumerate(clips):
         assert c["end"] <= 30 and c["speed"] <= 1.35
         if i:
@@ -132,6 +139,9 @@ def main():
         "native_chatgpt_voice": "active Work Voice; actual AgentVoice exact-target read/send, receiver verified",
         "native_input": "typed within active Voice; microphone speech recognition not tested",
         "native_desktop_source_resolution": [1024, 738],
+        "native_edge_crop": "4 left-source pixels, first/middle/last green-edge checks passed",
+        "editorial_waveform": "actual isolated speaker clip RMS+31-band FFT, cue-synced; silence flat, not music or live mic",
+        "editorial_logo": "canonical docs/assets/logo.svg embedded unchanged",
         "creative_review_complete": False,
     }
     (args.output / "verification.json").write_text(json.dumps(report, indent=2))

@@ -1,22 +1,57 @@
 #!/usr/bin/env python3
-"""uv run --with pillow --with resvg-py scripts/film/test_film.py"""
+"""uv run --with pillow --with resvg-py --with numpy scripts/film/test_film.py"""
 
 import unittest
 from html.parser import HTMLParser
 
 import narrate
+import numpy as np
 import render
 import verify
 import visual
+import waveform
 from PIL import ImageStat
 
 
 class FilmTests(unittest.TestCase):
+    def test_waveform_is_flat_for_silence_and_larger_for_loud_voice(self):
+        rate = 48000
+        t = np.arange(rate) / rate
+        signal = np.sin(2 * np.pi * 440 * t)
+        pcm = np.concatenate(
+            [np.zeros(rate), signal * 0.01, signal * 0.4, np.zeros(rate)]
+        )
+        levels = waveform.envelope(pcm)
+        self.assertEqual(float(levels[:30].max()), 0)
+        self.assertEqual(float(levels[90:].max()), 0)
+        self.assertGreater(float(levels[60:90].max()), float(levels[30:60].max()) * 5)
+        np.testing.assert_array_equal(levels, waveform.envelope(pcm))
+
+    def test_waveform_obeys_speaker_and_absolute_cue_offset(self):
+        tracks = waveform.VoiceTracks(
+            [
+                {"at": 7.0, "speaker": "YOU", "levels": np.ones((30, 31))},
+                {"at": 9.0, "speaker": "AGENT VIEW", "levels": np.full((30, 31), 0.5)},
+            ]
+        )
+        self.assertEqual(tracks.at(6.99, "YOU").max(), 0)
+        self.assertEqual(tracks.at(7.5, "YOU").max(), 1)
+        self.assertEqual(tracks.at(7.5, "AGENT VIEW").max(), 0)
+        self.assertEqual(tracks.at(8.1, "YOU").max(), 0)
+        self.assertEqual(tracks.at(9.5, "AGENT VIEW").max(), 0.5)
+        self.assertEqual(tracks.at(9.5, "YOU").max(), 0)
+
+    def test_logo_embeds_unchanged_canonical_svg(self):
+        self.assertIn(
+            visual.uri(visual.ROOT / "docs/assets/logo.svg"), visual.mark(100, 100, 2)
+        )
+        self.assertNotIn("<circle", visual.mark(100, 100, 2))
+
     def test_ctrl_s_is_not_labeled_a_configured_global_shortcut(self):
         film = visual.Film.__new__(visual.Film)
         film.terminal = lambda *args, **kwargs: ""
-        self.assertNotIn("Global shortcut configured", film.work(16.7))
-        self.assertIn("Global shortcut configured", film.work(18.0))
+        self.assertNotIn("Global shortcut configured", film.work(19.0))
+        self.assertIn("Global shortcut configured", film.work(20.0))
 
     def test_all_eighteen_supported_harnesses_have_artwork(self):
         self.assertEqual(len(visual.HARNESSES), 18)
