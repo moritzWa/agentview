@@ -55,9 +55,17 @@ Native permissions are not bypassed. Queued does not mean executed.
   and a small recent set whose final replies still need assessment. Whole-set
   counts remove the need to page through completed rows looking for a blocker.
   `view="all"` retains exhaustive inventory access.
-- Each listed row includes bounded source-visible excerpts of the latest user
-  request and assistant reply, with full-message IDs when more detail is needed.
-  The assistant excerpt preserves the ending where questions usually appear.
+- Each listed row includes its exact working `directory` and a `project_name`
+  folder label, so ChatGPT can group sessions without guessing their project from
+  titles. The folder label is not a canonical Git repository identifier.
+- `recent_messages` contains the last two nonempty visible messages per role
+  (two user messages and two assistant text replies), in original source order.
+  Tool calls, results and reasoning are not conversation context. Latest-message
+  aliases remain for older clients, with full-message IDs for deeper reads.
+- Short messages remain complete. Long messages preserve their first 20% and
+  last 20%, capped by the shared 36K-character overview budget including aliases.
+  An explicit middle-omitted marker and character counts describe what was cut.
+  This preserves opening TLDRs and closing questions without copying huge replies.
   No extra summary-model call or copy of tool output is made. `done` means the
   latest turn ended; it is not proof that the task is finished or needs no reply.
 - The connector applies the desktop control/status overlay and reuses the exact

@@ -54,6 +54,8 @@ All dates and sessions are copied, including archived history and native forks.
 Only user text and assistant text are allowed. Tool output, reasoning, files and
 native provider payloads are excluded. Edits, removals and revert boundaries
 replace the remote view after sync. Chunked changes stay hidden until committed.
+Session metadata also includes the working directory and its folder label, as
+requested for project grouping. No file contents or filesystem listings are sent.
 
 The backend can read copied text. ChatGPT/OpenAI can read retrieved text. HTTPS
 and encrypted disks do not hide it from those services. A local revert cannot
@@ -71,8 +73,11 @@ snapshots contain IDs and typed states, not tool output or conversation text.
 Offline results are last-known, not proof that a session is still working.
 The default list is a small human-recent overview, not a page of old completed
 sessions. `status="active"` returns working/waiting sessions and recent replies
-whose need for input has not been assessed. Rows include the latest user request
-and the end of the latest assistant reply. Whole-set counts and those excerpts
+whose need for input has not been assessed. Rows include the last two visible
+messages per role, in source order. Long messages preserve their
+first and last 20%, subject to the shared text budget, with an explicit middle-
+omitted marker. Tool-only assistant messages cannot displace actual text replies.
+Whole-set counts, directory metadata and those excerpts
 let the phone answer and ask a pending decision without opening each history.
 The connector reuses the dashboard's status overlays and saved turn judgements.
 Missing judgements are explicit; a finished turn alone does not mean no reply is

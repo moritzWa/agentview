@@ -187,3 +187,38 @@ test('overview context excludes reverted/staged text and child sessions, and fla
  runtime.truncated=true;
  const truncated=await rpc('list_sessions',{});assert.equal(truncated.counts_complete,false);assert.equal(truncated.active_counts_complete,true);
 });
+
+test('overview includes working-directory metadata and the last two actual text messages per role in source order',async()=>{
+ const id='two-turn-context';
+ await seed(id,[message(1,'Old request, excluded'),message(2,'Old answer, excluded'),
+  message(3,'First retained request'),message(4,'TLDR A '+ 'x'.repeat(5000)+' Question A?'),
+  message(5,'Second retained request'),message(6,'TLDR B '+ 'y'.repeat(5000)+' Question B?'),
+  message(7,'   ')].map(m=>({...m,role:[1,3,5].includes(m.order)?'user':'assistant'})));
+ runtime={available:true,partial:false,checked_at:Date.now(),statuses:[{session_id:id,status:'needs_you',reason:'reply',updated_at:Date.now(),last_user_message_id:'msg_5',directory:'/Users/test/Code/project-alpha',attention_assessed:true,top_level:true}]};
+ const result=await rpc('list_sessions',{status:'active'}),session=result.sessions[0];
+ assert.equal(session.directory,'/Users/test/Code/project-alpha');assert.equal(session.project_name,'project-alpha');
+ assert.deepEqual(session.recent_messages.map(m=>[m.message_order,m.role]),[[3,'user'],[4,'assistant'],[5,'user'],[6,'assistant']]);
+ assert.equal(session.last_user_message.message_id,'msg_5');assert.equal(session.last_assistant_message.message_id,'msg_6');
+ assert(session.recent_messages[1].text.startsWith('TLDR A '));assert(session.recent_messages[1].text.endsWith('Question A?'));
+ assert(session.recent_messages[3].text.startsWith('TLDR B '));assert(session.recent_messages[3].text.endsWith('Question B?'));assert(session.recent_messages[3].text.includes('middle omitted'));
+ const byDirectory=await rpc('list_sessions',{query:'project-alpha'});assert.equal(byDirectory.sessions.length,1);
+ runtime.statuses[0].directory=null;
+ assert.equal((await rpc('list_sessions',{})).sessions[0].project_name,null,'never infer a path from title or message text');
+});
+
+test('two messages per role and legacy latest-message aliases stay within the 36K text budget even at 50 sessions',async()=>{
+ await db.query(`INSERT INTO av_sessions(owner_id,device_id,database_epoch,session_id,generation,cursor,state,synced_at)
+  SELECT 'test-owner','test-device','test-epoch','context-budget-'||n,'budget',10,
+   jsonb_build_object('title','Budget fixture '||n,'archived',false,'deleted',false,'visible_before',null),now() FROM generate_series(1,50) n`);
+ await db.query(`INSERT INTO av_messages(owner_id,device_id,database_epoch,session_id,generation,message_id,message_order,role,text,created_at,updated_at)
+  SELECT 'test-owner','test-device','test-epoch','context-budget-'||n,'budget','budget_msg_'||i,i,
+   CASE WHEN i%2=1 THEN 'user' ELSE 'assistant' END,repeat('😀',5000),i,i FROM generate_series(1,50) n CROSS JOIN generate_series(1,4) i`);
+ runtime={available:true,partial:false,checked_at:Date.now(),statuses:Array.from({length:50},(_,i)=>({session_id:'context-budget-'+(i+1),status:'needs_you',reason:'reply',updated_at:Date.now(),directory:'/projects/fixture',last_user_message_id:'budget_msg_3',attention_assessed:true}))};
+ const result=await rpc('list_sessions',{view:'all',limit:50});assert.equal(result.sessions.length,50);
+ let characters=0;
+ for(const session of result.sessions){
+  assert.equal(session.recent_messages.length,4);
+  for(const m of [...session.recent_messages,session.last_user_message,session.last_assistant_message]){characters+=[...m.text].length;assert(m.text.includes('middle omitted'));}
+ }
+ assert(characters<=36000);
+});

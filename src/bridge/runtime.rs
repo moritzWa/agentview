@@ -20,6 +20,7 @@ pub(super) struct RuntimeStatus {
     last_user_ms: u64,
     top_level: bool,
     attention_assessed: bool,
+    directory: Option<String>,
 }
 #[derive(Serialize)]
 pub(super) struct Snapshot {
@@ -66,6 +67,8 @@ pub(super) fn project(session: &AgentSession) -> RuntimeStatus {
             .map_or(0, |facts| facts.last_user_ms),
         top_level: true,
         attention_assessed: session.state == SessionState::NeedsInput,
+        directory: (!session.cwd.as_os_str().is_empty())
+            .then(|| session.cwd.to_string_lossy().into_owned()),
     }
 }
 
@@ -151,8 +154,8 @@ pub(super) fn snapshot(config: &Config) -> Result<Snapshot> {
             std::cmp::Reverse(s.updated_at),
         )
     });
-    let truncated = statuses.len() > 1000;
-    let partial =
+    let count_truncated = statuses.len() > 1000;
+    let mut partial =
         !discovery.warnings.is_empty() || statuses.iter().skip(1000).any(|s| s.status != "done");
     // Keep the durable wake snapshot small; never drop attention states merely
     // to make room for old completed history. Search still covers all history.
@@ -164,6 +167,21 @@ pub(super) fn snapshot(config: &Config) -> Result<Snapshot> {
             .query_row([&status.session_id], |row| row.get(0))
             .optional()?;
     }
+    // Full directory metadata can make a count-bounded snapshot too large.
+    // Keep its serialized body safely inside the existing 850 KB transport cap.
+    let mut bytes = 1024;
+    let mut keep = 0;
+    for status in &statuses {
+        let size = serde_json::to_vec(status)?.len() + 1;
+        if bytes + size > 750_000 {
+            break;
+        }
+        bytes += size;
+        keep += 1;
+    }
+    let truncated = count_truncated || keep < statuses.len();
+    partial |= statuses.iter().skip(keep).any(|s| s.status != "done");
+    statuses.truncate(keep);
     Ok(Snapshot {
         available: true,
         partial,

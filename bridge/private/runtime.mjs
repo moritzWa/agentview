@@ -3,4 +3,5 @@ export const RuntimeSnapshot=z.object({available:z.boolean(),partial:z.boolean()
   session_id:z.string().min(1).max(200),status:z.enum(['working','needs_you','done','scheduled','unknown']),
   reason:z.enum(['question','approval','failed','reply']).nullable(),updated_at:z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),can_message:z.boolean(),last_user_message_id:z.string().max(200).nullable().default(null),
   last_user_ms:z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0),top_level:z.boolean().default(true),attention_assessed:z.boolean().default(false),
+  directory:z.string().min(1).max(4096).nullable().default(null),
 }).strict()).max(1000)}).strict();
