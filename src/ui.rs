@@ -399,9 +399,6 @@ fn render_session_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
             sanitize_inline(&group.label),
             suffix.unwrap_or_default()
         ))];
-        if group.key == crate::app::SCHEDULED_GROUP_KEY {
-            spans.push(Span::styled("  ctrl+y", Style::default().fg(palette().dim)));
-        }
         if let Some(verb) = is_selected.then(|| app.pending_removal_verb()).flatten() {
             spans.push(Span::styled(
                 format!("  ctrl+x again to {verb}"),
@@ -3608,7 +3605,7 @@ mod tests {
                 let buffer = terminal.backend().buffer();
                 let rendered = buffer_text(buffer);
                 let lines = rendered.lines().collect::<Vec<_>>();
-                assert!(lines[0].starts_with("Scheduled  ctrl+y"), "{rendered}");
+                assert!(lines[0].starts_with("Scheduled"), "{rendered}");
                 assert!(lines[1].starts_with("  /work/alpha"), "{rendered}");
                 assert!(lines[2].starts_with("   • first reminder"), "{rendered}");
                 assert!(lines[3].trim().is_empty(), "{rendered}");
@@ -3632,7 +3629,7 @@ mod tests {
                 .draw(|frame| render_session_list(frame, &app, frame.size()))
                 .unwrap();
             let rendered = buffer_text(terminal.backend().buffer());
-            assert!(rendered.contains("Scheduled 2  ctrl+y"), "{rendered}");
+            assert!(rendered.contains("Scheduled 2"), "{rendered}");
             assert!(!rendered.contains("/work/alpha"), "{rendered}");
         }
     }
