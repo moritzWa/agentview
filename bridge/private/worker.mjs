@@ -7,6 +7,7 @@ import { SyncStore } from '../sync/store.mjs';
 import { privateHandler } from '../sync/http.mjs';
 import { digest, SyncError } from '../sync/projection.mjs';
 import { RuntimeSnapshot } from './runtime.mjs';
+import {publishArtifact} from './artifacts.mjs';
 export { WakeGate } from './gate.mjs';
 
 const AUTH_PATHS=new Set(['/register','/authorize','/token','/revoke','/pair/start','/pair/token','/pair','/consent','/auth/google/callback']);
@@ -70,6 +71,10 @@ export function application({database=openDatabase}={}) {
       }
       if(path==='/v1/connector/ack' && request.method==='POST') {
         const principal=await store.authenticate(token,'sync');return json(await outbox.ack(principal,await request.json()));
+      }
+      if(path==='/v1/artifacts' && request.method==='POST') {
+        const principal=await store.authenticate(token,'sync');
+        return json(await publishArtifact(db,principal,await request.json()));
       }
       return await privateHandler(store)(request);
     } catch(e) {

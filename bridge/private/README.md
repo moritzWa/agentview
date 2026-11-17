@@ -34,7 +34,48 @@ consent precede every new grant. Scopes are `history:read` and `messages:send`.
 Refresh tokens rotate. Replay revokes the token family.
 
 Tools: `list_sessions`, `search_history`, `read_session`, `read_message`,
-`send_session_message`, `message_status`, and `cancel_message`.
+`send_session_message`, `message_status`, `cancel_message`, `list_artifacts`,
+and `preview_artifact`.
+
+### Artifact previews
+
+`preview_artifact` always returns an original MCP file attachment and asks
+ChatGPT to present an **Open preview** link. There are no alternative widget,
+embedded-view or legacy-renderer tools to choose from. The tool does not claim
+that a file is visible before the user opens it. UTF-8 HTML uses the ordinary
+embedded text resource that worked in the native iPhone file viewer; binary
+files use base64 resource contents. It never returns an MCP Apps template.
+
+History sync does **not** discover files or upload paths mentioned in chats.
+Publish an exact file only after the owner approves its transfer to the private
+bridge and ChatGPT:
+
+```console
+agentview bridge publish-artifact --session-id ses_example --file ./output/index.html --confirmed
+```
+
+This uploads that one file unchanged, associated with the exact session. It
+does not collect sibling assets, resolve imports or publish a public website.
+This file transport does not yet implement the planned multi-file artifact
+registry. Do not call a relative-asset HTML page fully previewable merely
+because its entrypoint was uploaded. Folder registration and asset delivery
+remain separate work; authors are not required to flatten their source files.
+An explicit ZIP can carry a bundle for download, but is not a live HTML preview.
+
+Only files up to 512,000 bytes are accepted. Text must be UTF-8. HTML, text,
+PNG, JPEG, PDF and ZIP are accepted attachment types; only HTML has been
+visually verified on iPhone so far. There are at most 128 immutable published
+files per paired source. Repeating an identical command returns the same ID;
+changed bytes create a different revision. `list_artifacts(session_id)` returns
+metadata, and `preview_artifact(artifact_id)` returns bytes only after a live
+owner/source grant check. Deleted sessions hide their attachments. Revoking
+the bridge grant stops new retrievals, not copies already delivered to ChatGPT.
+
+Deployment needs the additive `av_artifacts` table from `private/schema.sql`
+and runtime SELECT/INSERT permission on that table. Do not re-provision or
+replace existing credentials. Apply this migration only with operator approval,
+then deploy the existing Worker and refresh its tools in ChatGPT. Nothing
+uploads automatically after installing this change.
 
 The instruction queue is separate from mirrored messages. Stable operation IDs
 deduplicate cloud writes. Stable OpenCode message IDs reconcile local admission

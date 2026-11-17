@@ -121,6 +121,8 @@ own interface.
 - **ChatGPT mobile voice:** opt-in text-only OpenCode history search and queued replies
   through a private ChatGPT MCP server. Runs without the dashboard.
   [Setup and privacy](docs/mobile-bridge.md).
+- **Artifact previews:** explicitly approved output files open through ChatGPT's
+  file viewer, without switching between embedded preview modes.
 
 ### Refresh time by harness
 

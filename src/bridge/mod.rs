@@ -1,4 +1,5 @@
 //! Opt-in private mobile history bridge. The dashboard does not own its lifecycle.
+mod artifacts;
 mod context;
 mod http;
 mod journal;
@@ -6,6 +7,7 @@ mod runtime;
 mod source;
 #[cfg(test)]
 mod tests;
+pub use artifacts::publish as publish_artifact;
 
 use anyhow::{bail, Context, Result};
 use journal::Journal;

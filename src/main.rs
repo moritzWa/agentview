@@ -150,6 +150,18 @@ enum BridgeCommand {
     SyncOnce,
     /// Deliver at most one already-authorized cloud message, then exit.
     DeliverOnce,
+    /// Upload one explicitly approved file for ChatGPT's Open preview attachment.
+    PublishArtifact {
+        #[arg(long)]
+        session_id: String,
+        #[arg(long)]
+        file: PathBuf,
+        #[arg(long)]
+        title: Option<String>,
+        /// Approval to upload this exact file to the private bridge and ChatGPT.
+        #[arg(long)]
+        confirmed: bool,
+    },
     /// Print connection and local journal counts without conversation text.
     Status,
     /// Install and start a macOS login item for the paired background service.
@@ -607,6 +619,21 @@ fn main() -> Result<()> {
                     BridgeCommand::DeliverOnce => println!(
                         "Delivery processed: {}",
                         agentview::bridge::deliver_once(&dir)?
+                    ),
+                    BridgeCommand::PublishArtifact {
+                        session_id,
+                        file,
+                        title,
+                        confirmed,
+                    } => println!(
+                        "{}",
+                        serde_json::to_string_pretty(&agentview::bridge::publish_artifact(
+                            &dir,
+                            session_id,
+                            file,
+                            title.as_deref(),
+                            *confirmed
+                        )?)?
                     ),
                     BridgeCommand::Status => println!(
                         "{}",
@@ -2589,6 +2616,45 @@ fn current_user_ids() -> Result<(u32, u32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn artifact_publication_never_assumes_consent() {
+        let args = [
+            "agentview",
+            "bridge",
+            "publish-artifact",
+            "--session-id",
+            "ses_fixture",
+            "--file",
+            "index.html",
+        ];
+        let cli = Cli::try_parse_from(args).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Bridge {
+                command: BridgeCommand::PublishArtifact {
+                    confirmed: false,
+                    ..
+                },
+                ..
+            })
+        ));
+        let cli = Cli::try_parse_from(args.into_iter().chain(["--confirmed"])).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Bridge {
+                command: BridgeCommand::PublishArtifact {
+                    confirmed: true,
+                    ..
+                },
+                ..
+            })
+        ));
+        assert!(
+            Cli::try_parse_from(["agentview", "bridge", "publish-artifact", "--confirmed"])
+                .is_err()
+        );
+    }
 
     fn docker_command(arguments: &[&str]) -> DockerCommand {
         let mut argv = vec!["agentview", "docker"];
