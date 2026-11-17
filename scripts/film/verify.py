@@ -18,7 +18,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--output", type=Path, required=True)
     args = ap.parse_args()
-    movie = args.output / "agentview-30s-review.mp4"
+    movie = args.output / "agentview-review.mp4"
     probe = json.loads(
         subprocess.check_output(
             [
@@ -37,12 +37,12 @@ def main():
     audio = next(s for s in probe["streams"] if s["codec_type"] == "audio")
     assert (video["width"], video["height"]) == (3840, 2160)
     assert video["r_frame_rate"] == "30/1"
-    assert int(video["nb_frames"]) == 900
+    assert int(video["nb_frames"]) == 1350
     assert video["pix_fmt"] == "yuv420p"
-    assert abs(float(probe["format"]["duration"]) - 30) < 0.05
+    assert abs(float(probe["format"]["duration"]) - 45) < 0.05
     assert audio["codec_name"] == "aac"
     assert int(audio["sample_rate"]) == 48000
-    assert float(audio["duration"]) >= 29.9, "Encoded narration is truncated"
+    assert float(audio["duration"]) >= 44.9, "Encoded narration is truncated"
     provenance = json.loads((args.output / "captures/provenance.json").read_text())
     assert provenance["font_pixels"] >= 60
     assert provenance["raster_size"][0] >= 3840, (
@@ -55,9 +55,26 @@ def main():
     assert len(edge_check["samples"]) == 3
     assert all(s["green_edge_pixels"] == 0 for s in edge_check["samples"])
     wave_check = json.loads((args.output / "audio/waveform-check.json").read_text())
-    assert next(f for f in wave_check["frames"] if f["at"] == 8.95)["peak"] == 0
+    assert next(f for f in wave_check["frames"] if f["at"] == 16.1)["peak"] == 0
+    approved = json.loads((args.output / "edit45.json").read_text())
+    assert approved["duration_approved"] and approved["seconds"] == 45
+    mapping = json.loads((args.output / "proposal45/morph-map.json").read_text())[
+        "mapping"
+    ]
+    anchors = {
+        a["id"]: a
+        for a in json.loads(
+            (args.output / "proposal45/captures/session-anchors.json").read_text()
+        )
+    }
+    assert len({a["id"] for a in mapping}) == 16
+    for item in mapping:
+        assert item["cell_bounds"] == anchors[item["id"]]["cell_bounds"]
+        x, y, w, h = item["cell_bounds"]
+        s = 1460 / 1616
+        assert item["destination"] == [70 + x * s, 200 + y * s, w * s, h * s]
     for i, c in enumerate(clips):
-        assert c["end"] <= 30 and c["speed"] <= 1.35
+        assert c["end"] <= 40 and c["speed"] == 1
         if i:
             assert clips[i - 1]["end"] < c["at"]
     # Decode every frame/audio packet, not just the container header.
@@ -73,7 +90,7 @@ def main():
             "-i",
             str(movie),
             "-vf",
-            "select=eq(n\\,0)+eq(n\\,450)+eq(n\\,899)",
+            "select=eq(n\\,0)+eq(n\\,750)+eq(n\\,1349)",
             "-fps_mode",
             "vfr",
             str(args.output / "verified-%02d.png"),
@@ -142,6 +159,9 @@ def main():
         "native_edge_crop": "4 left-source pixels, first/middle/last green-edge checks passed",
         "editorial_waveform": "actual isolated speaker clip RMS+31-band FFT, cue-synced; silence flat, not music or live mic",
         "editorial_logo": "canonical docs/assets/logo.svg embedded unchanged",
+        "pane_row_morph": "16 stable normalized IDs, exact actual captured cell-bound destinations",
+        "spoken_text": "Actual ElevenLabs character/word alignment, fixed-layout progressive reveal",
+        "speaker_colors": {"YOU": "#6f38c5", "AGENT VIEW": "#1e66f5"},
         "creative_review_complete": False,
     }
     (args.output / "verification.json").write_text(json.dumps(report, indent=2))

@@ -1,60 +1,70 @@
 {
-  "duration_seconds": 30,
+  "duration_seconds": 45,
+  "duration_approval": "User: 45 is fine",
   "delivery_resolution": [3840,2160],
   "source_ui_resolution": [4848,3120],
   "native_desktop_recording_resolution": [1024,738],
   "shots": [
     {
       "start": 0,
-      "end": 2.5,
-      "beat": "Overwhelming4x4 coding-agent grid collapses into one calm status list",
-      "evidence": "Representative synthetic grid with16 panes, scrolling logs/code, mixed provider labels, activity and a buried decision. No competitor screenshots or product-ridicule branding. Onscreen tagline over music, not spoken."
+      "end": 7,
+      "beat": "Problem and product introduction; dense16-pane grid geometrically morphs into matching actual rows",
+      "evidence": "Same16 normalized session IDs, names, providers and state tokens from actual fixture capture. Each pane rectangle, title and provider moves to measured cell-bound destinations. Actual matching row pixels complete the handoff. Not an unrelated list fade.",
+      "narration":"Too many agents. Too many windows. Agent View brings them into one terminal."
     },
     {
-      "start":2.5,
-      "end":7,
+      "start":7,
+      "end":14,
       "beat":"Standalone status grouping and arrow navigation BEFORE voice",
       "evidence":"NeedsInput/Working overview, actual Down selects row, actual native Right opens dedicated synthetic OpenCode session, doubleLeft returns. No voice overlay obscures action.",
-      "narration":"2.55–6.822: Group agents by status. Use the arrows to open the one that needs you."
+      "narration":"Quickly zoom into the session that needs you with the Right arrow. Double-tap Left to return.",
+      "keys":"Large vector Right/Left keycaps, pressed states conformed to the actual recorded open/return phase boundaries;150ms doubleLeft gap retained. Idle/warmup retimed."
     },
     {
-      "start": 7,
-      "end": 15,
+      "start": 14,
+      "end": 22.5,
       "beat": "Recognizable attention question, concrete coupon choice and checkout answer",
       "evidence": "Actual overview render; full two-line illustrated exchange; ElevenLabs voices; actual app moves checkout to Working through a staged fixture update",
-      "waveform":"Actual active speaker's isolated narration clip RMS+31-bandFFT, absolute cue offsets; nearflat silence. Not music-driven or simulated live microphone input. Native ChatGPT UI untouched.",
+      "waveform":"Actual active speaker's isolated clip RMS+31-bandFFT; nearflat silence. YOU purple, AGENT VIEW blue, both labeled. Actual ElevenLabs character/word timing reveals words in fixed two-line positions, no reflow. Native UI untouched.",
       "missing_capture": "Opening ElevenLabs exchange is editorial, not the native call's captured speech",
       "replacement_path": "Muted macOS Space; isolated Agent View HOME/XDG plus a disposable OpenCode server/session. Feed prerecorded user prompts through a virtual mic, capture the app footer and receiver transcript. Keep the current editorial narration only outside the live exchange."
     },
     {
-      "start": 15,
-      "end": 18,
+      "start": 22.5,
+      "end": 28.5,
       "beat": "Actual ChatGPT desktop Work Voice + AgentVoice read/send",
       "evidence": "Real VM window recordings. Active Voice, Used AgentVoice integration, correct coupon question, actual targeted send. Receiver message metadata source=agentvoice and acknowledgment independently verified.",
       "input_provenance": "Typed prompts inside active native Voice. Microphone speech recognition not tested. No ElevenLabs words presented as recorded native dialogue.",
+      "connection_explanation":"Connect Agent View to ChatGPT. Check in and send instructions from anywhere. Authorized MCP connection concept is explicitly editorial, not a new sign-in flow or OAuth proof. Existing OpenCode sessions only.",
       "safety": "Only dedicated synthetic session targeted, tools denied on receiver; no private list/search or re-pair. Dedicated session deleted and temporary VM mic permission restored after capture."
     },
     {
-      "start": 18,
-      "end": 20.5,
-      "beat": "Ctrl+S status/directory switch, then Work scope hides personal directories",
+      "start": 28.5,
+      "end": 32,
+      "beat": "Control S switches status and project grouping, with vector keycaps and narration",
       "evidence": "20 plausible synthetic sessions across six directories. Actual Ctrl+S input. All/work snapshots share identical state; work shows three directories. Actual usage fixture: claude, claude2, codex (claude1 is not a supported key).",
-      "limitation": "Global binding caption reflects this user's configured setup, not an intrinsic app shortcut. Background work continuing is not exercised by this fixture."
+      "limitation": "Project is user-facing wording for actual directory grouping. CtrlS is built in, not a configured global shortcut."
     },
     {
-      "start": 20.5,
-      "end": 25,
+      "start":32,
+      "end":35,
+      "beat":"Same-state Work filter: six directories become three",
+      "evidence":"Actual all/work app captures retain identical session state. CmdShiftB is a configured global binding; actual scope filtering was captured through view work. No background task execution inferred."
+    },
+    {
+      "start": 35,
+      "end": 40,
       "beat": "Scheduled continuation and agent-bouncer queue",
       "evidence": "Actual integrated Scheduled and Heavy jobs widgets. Isolated synthetic schedule/queue state. Ctrl+Y expands real section; explicit staged time jump to Background state.",
       "limitation": "A fixture state transition is not proof that a real scheduled session woke up. No production queue modified."
     },
     {
-      "start": 25,
-      "end": 30,
+      "start": 40,
+      "end": 45,
       "beat": "Five-second bento and URL hold",
       "evidence": "White/neutral screenshot tiles on gray canvas, selective saturated teal/blue accents, aligned varied tile proportions. Exact docs/assets/logo.svg embedded unmodified, gray elongated-hexagon rings and blue center preserved. Concentric inner screenshot clips. No Apple artwork."
     }
   ],
-  "music": "Lorn TIMESINK 0:00–0:30. User reports personal artist permission. Music-bearing master and separate stem private pending review.",
+  "music": "Same Lorn TIMESINK source excerpt0:00–0:30, placed at video0–22.5 and37.5–45. No additional song extract. User reports artist permission; master and separate stem stay private pending review.",
   "publication": "Review only. Existing website, README and checked-in first-draft media remain unchanged."
 }

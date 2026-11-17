@@ -1,6 +1,6 @@
 # Agent View film
 
-The revised review film is 30 seconds at native 3840 × 2160, 30 fps. SVG
+The approved runtime is45 seconds at native 3840 × 2160,30fps. SVG
 typography and graphics are rasterized directly at 4K. Actual terminal-cell
 captures are 4848 pixels wide (3120 tall for busy views, 2028 for compact views),
 with fresh 60-pixel Menlo glyphs, not enlarged images
@@ -12,7 +12,9 @@ Run from the checkout. Use a current Agent View binary with `view work` support.
 The scripts need macOS Menlo and Arial, `uv`, FFmpeg and FFprobe. Dry voice clips
 and the privately obtained artist stream must already be in the working audio
 folder. New voice takes use `ELEVENLABS_API_KEY` or `ELEVENLABS_OP_ITEM`; secrets
-are held in memory only. Cached clips need no API request.
+are held in memory only. Cached clips need no API request. The approved measured
+timeline and aligned takes live in `proposal45/`; `prepare45.py` conforms these
+cached inputs and native recording excerpts without new account interactions.
 
 ```sh
 python3 ~/.claude/scripts/heavy-job.py --wait -- uv run --with pillow --with pyte --with resvg-py --with numpy scripts/film/build.py --output "$HOME/Movies/agentview-film-draft"
@@ -55,9 +57,11 @@ video or playing audio. No test plays audio or opens a GUI on the host.
 
 ## Music and visual references
 
-The opening uses a dense animated4×4 synthetic coding-terminal grid, then
-collapses into the real status list. The2.5–7s arrow-navigation beat is separate
-from the7–15s editorial voice exchange. Native footage is framed to omit test
+The opening uses a dense animated4×4 synthetic coding-terminal grid. Stable
+normalized IDs tie every pane title/provider/state to its captured session row.
+Each pane rectangle and text anchor moves into the exact measured cell bounds;
+matching captured row pixels complete the handoff. The7–14s Right/double-Left
+beat is separate from the14–22.5s editorial voice exchange. Native footage omits test
 setup instructions above the actual coupon question. After a genuine return,
 the edit cuts back to the busy20-session fixture instead of lingering on capture
 commands or the sparse dedicated-session setup.
@@ -69,14 +73,18 @@ and numerical check from the real clips. Tests cover silence, relative level,
 speaker switches, offsets and determinism. This is voiceover visualization,
 not original microphone evidence. Recorded ChatGPT UI is never redrawn.
 
-The tagline is on screen over the music intro. Natural navigation narration
-runs2.55–6.822s; the core dialogue runs7–14.561s. Redundant Sent, Work and closing
-voice cues are omitted; the final five seconds remain a readable music-only hold.
+The spoken intro names the problem and Agent View. Navigation says Right and
+double-tap Left explicitly. Large vector keycaps flash at recorded input-phase
+boundaries. Actual ElevenLabs character timings reveal words at fixed positions,
+without reflow. YOU is purple, AGENT VIEW blue, both labeled. No narration is
+time-compressed. The final five seconds remain a readable music-only hold.
 
 Moritz selected Lorn's “TIMESINK” and reports personal permission from Marcos
 Ortega for a short demo excerpt. The official artist Bandcamp stream supplied
 the working source. `soundtrack.py` extracts only 0:00–0:30, ducks it under
-speech and normalizes the mix. The separate `audio/music-excerpt.mp3` stem is
+speech and normalizes the mix. The same30s excerpt plays at video0–22.5 and
+37.5–45; the connection/view explanation has a quiet middle. No extra part of the
+song is extracted. The separate `audio/music-excerpt.mp3` stem is
 replaceable. Neither the full song nor the separate stem is committed.
 
 The revised music-bearing master remains private pending creative/publication
@@ -98,9 +106,10 @@ No Apple artwork is used in the film.
 
 ## Review and site integration
 
-`propose45.py` writes only private `proposal45/` assets. It does not change the
-current30s movie, player or runtime. The proposed45s duration needs approval.
-It includes measured narration,16 stable pane/session IDs, exact captured row
+Moritz approved45 seconds with “45 is fine”. `propose45.py` retains the measured
+script and proof inputs in private `proposal45/`. The active edit is
+`revision45.py`; it reuses the canonical layout helpers from the earlier edit.
+The inputs include measured narration,16 stable pane/session IDs, exact captured row
 destinations, grid/midpoint/list keyframes, explicit vector keycaps and fixed-line
 subtitle reveals. Voice generation/alignment stays beside the matching takes.
 
@@ -108,11 +117,13 @@ The forced-alignment endpoint refused the key. Separate proposal takes use the
 supported ElevenLabs `with-timestamps` endpoint instead. Actual returned character
 timings drive their subtitles, never old recordings with guessed new timings.
 Human speech is purple and labeled YOU; Agent View is blue and labeled AGENT VIEW.
-No45s music mix, broader permission or public publishing is assumed.
+Runtime approval is not public publishing approval. The music excerpt stays30s.
 
 `review.html` is the standalone, muted-by-default player. Chapter buttons seek
 without starting playback. Verification creates synchronized WebVTT captions,
-checks all 900 decoded frames, duration, narration timing and loudness.
+checks all1350 decoded frames, duration, narration timing and loudness. The active
+movie is `agentview-review.mp4`; the earlier30s movie is retained separately.
+Captions are opt-in because word-timed text is already burned into the picture.
 
 The older checked-in first-draft package is not overwritten. Neither are `site/demo.mp4`, `site/demo.gif`,
 `site/demo-poster.png` and `docs/assets/demo.gif`. None is replaced or deployed.

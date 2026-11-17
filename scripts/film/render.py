@@ -9,8 +9,10 @@ import subprocess
 from pathlib import Path
 
 from PIL import Image, ImageDraw
+from revision45 import SECONDS
+from revision45 import Film45 as Film
 from soundtrack import audio
-from visual import FPS, SECONDS, VOICE_CHOICE, Film, H, W, ease, font, provider
+from visual import FPS, VOICE_CHOICE, H, W, ease, font, provider
 
 __all__ = [
     "FPS",
@@ -32,7 +34,7 @@ def main():
     args = ap.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     film = Film(args.output)
-    times = [0, 2.2, 4.8, 6.3, 10.5, 16.5, 19.0, 23.1, 27.5]
+    times = [0, 4.3, 10.4, 17.6, 25.0, 30.4, 33.8, 36.5, 42.5]
     sheet = Image.new("RGB", (1920, 1080), "white")
     for i, t in enumerate(times):
         im = film.frame(t)
@@ -46,8 +48,8 @@ def main():
     if args.stills:
         return
     audio(args.output)
-    dest = args.output / "agentview-30s-review.mp4"
-    encoding = args.output / "agentview-30s-review.rendering.mp4"
+    dest = args.output / "agentview-review.mp4"
+    encoding = args.output / "agentview-review.rendering.mp4"
     cmd = [
         "ffmpeg",
         "-v",
@@ -85,7 +87,7 @@ def main():
         "-b:a",
         "256k",
         "-t",
-        "30",
+        str(SECONDS),
         "-movflags",
         "+faststart",
         str(encoding),
@@ -102,7 +104,9 @@ def main():
             proc.kill()
             proc.wait()
     encoding.replace(dest)
-    print(f"Rendered native 4K: {dest}; 30 seconds, 900 frames. No playback.")
+    print(
+        f"Rendered native 4K: {dest}; {SECONDS} seconds, {FPS * SECONDS} frames. No playback."
+    )
 
 
 if __name__ == "__main__":

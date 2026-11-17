@@ -31,6 +31,7 @@ def main():
         check=True,
     )
     for script in [
+        "prepare45.py",
         "trim_native_frames.py",
         "preview_waveform.py",
         "render.py",

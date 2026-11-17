@@ -12,7 +12,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--output", type=Path, required=True)
     args = ap.parse_args()
-    folder = args.output / "chatgpt-desktop/frames"
+    folder = args.output / "chatgpt-desktop/frames45"
     frames = sorted(folder.glob("*.png"))
     assert frames, "Native recording frames missing"
     for path in frames:

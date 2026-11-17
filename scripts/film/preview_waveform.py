@@ -6,7 +6,9 @@ import json
 
 import resvg_py
 from PIL import Image
-from visual import Film, txt
+from revision45 import SPEAKER_COLORS
+from revision45 import Film45 as Film
+from visual import txt
 
 
 def main():
@@ -20,17 +22,17 @@ def main():
     report = []
     for i, (t, speaker) in enumerate(
         [
-            (7.35, "YOU"),
-            (7.8, "YOU"),
-            (8.95, "YOU"),
-            (9.4, "AGENT VIEW"),
-            (10.5, "AGENT VIEW"),
-            (13.8, "YOU"),
+            (14.4, "YOU"),
+            (15.0, "YOU"),
+            (16.1, "YOU"),
+            (16.7, "AGENT VIEW"),
+            (18.0, "AGENT VIEW"),
+            (21.0, "YOU"),
         ]
     ):
         levels = film.voice_tracks.at(t, speaker)
         content = txt(20, 30, f"{t:.2f}s · {speaker}", 21, bold=True) + film.waves(
-            20, 94, t, 440, 85, speaker=speaker
+            20, 94, t, 440, 85, color=SPEAKER_COLORS[speaker], speaker=speaker
         )
         svg = f'<svg xmlns="http://www.w3.org/2000/svg" width="480" height="160"><rect width="480" height="160" fill="white"/>{content}</svg>'
         panel = Image.open(io.BytesIO(resvg_py.svg_to_bytes(svg_string=svg))).convert(

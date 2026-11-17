@@ -9,6 +9,7 @@ import narrate
 import numpy as np
 import propose45
 import render
+import revision45
 import verify
 import visual
 import waveform
@@ -16,8 +17,8 @@ from PIL import ImageStat
 
 
 class FilmTests(unittest.TestCase):
-    def test_proposal_does_not_change_approved_runtime(self):
-        self.assertEqual(visual.SECONDS, 30)
+    def test_approved_runtime_matches_measured_timeline(self):
+        self.assertEqual(render.SECONDS, 45)
         self.assertEqual(propose45.SCENES[-1][1], 45)
         for left, right in pairwise(propose45.SCENES):
             self.assertEqual(left[1], right[0])
@@ -80,10 +81,32 @@ class FilmTests(unittest.TestCase):
         self.assertNotIn("<circle", visual.mark(100, 100, 2))
 
     def test_ctrl_s_is_not_labeled_a_configured_global_shortcut(self):
-        film = visual.Film.__new__(visual.Film)
-        film.terminal = lambda *args, **kwargs: ""
-        self.assertNotIn("Global shortcut configured", film.work(19.0))
-        self.assertIn("Global shortcut configured", film.work(20.0))
+        film = revision45.Film45.__new__(revision45.Film45)
+        film.crop = lambda *args, **kwargs: ""
+        self.assertNotIn("Configured global shortcut", film.projects(30))
+        self.assertIn("Configured global shortcut", film.work_scope(33))
+
+    def test_reveal_keeps_fixed_two_line_slots_and_hides_future_words(self):
+        lines = list(visual.VOICE_CHOICE)
+        slots = revision45.word_slots(lines)
+        words = [{"text": slot[0], "start": i * 0.25} for i, slot in enumerate(slots)]
+        early = revision45.reveal(lines, words, 0.1, 0, 0)
+        late = revision45.reveal(lines, words, 10, 0, 0)
+        self.assertIn("Your</text>", early)
+        self.assertNotIn("checkout</text>", early)
+        self.assertIn("checkout</text>", late)
+        self.assertEqual(next(s for s in slots if s[0] == "belong")[2], 39)
+
+    def test_speaker_identity_and_explicit_key_events(self):
+        self.assertNotEqual(
+            revision45.SPEAKER_COLORS["YOU"], revision45.SPEAKER_COLORS["AGENT VIEW"]
+        )
+        self.assertAlmostEqual(
+            revision45.KEY_EVENTS["Left2"] - revision45.KEY_EVENTS["Left1"], 0.15
+        )
+        self.assertIn("<path", revision45.keycap(0, 0, "Right", True))
+        self.assertIn("scale(-1 1)", revision45.keycap(0, 0, "Left"))
+        self.assertIn("Ctrl</text>", revision45.keycap(0, 0, "Ctrl"))
 
     def test_all_eighteen_supported_harnesses_have_artwork(self):
         self.assertEqual(len(visual.HARNESSES), 18)
@@ -91,8 +114,8 @@ class FilmTests(unittest.TestCase):
         for _, asset in visual.HARNESSES:
             self.assertTrue((visual.ROOT / "site/providers" / asset).is_file())
 
-    def test_edit_is_exactly_thirty_seconds(self):
-        self.assertEqual(render.FPS * render.SECONDS, 900)
+    def test_edit_is_exactly_forty_five_seconds(self):
+        self.assertEqual(render.FPS * render.SECONDS, 1350)
         self.assertEqual((render.W, render.H), (3840, 2160))
 
     def test_easing_is_bounded_and_monotonic(self):

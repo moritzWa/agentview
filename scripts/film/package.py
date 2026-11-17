@@ -18,7 +18,7 @@ def main():
     args = ap.parse_args()
     verification = json.loads((args.output / "verification.json").read_text())
     assert (
-        verification["frames"] == 900
+        verification["frames"] == 1350
         and verification["decode"] == "all frames and audio packets passed"
     )
     # The revised music-bearing master stays private until creative/publication
@@ -26,7 +26,8 @@ def main():
     dest = ROOT / "target/film-review"
     # Explicit allowlist. Never copy private runtime state or credentials.
     files = [
-        "agentview-30s-review.mp4",
+        "agentview-review.mp4",
+        "edit45.json",
         "review.html",
         "captions.vtt",
         "contact-sheet.jpg",
@@ -48,7 +49,21 @@ def main():
         "waveform-strip.jpg",
         "captures/provenance.json",
     ]
-    files += [f"audio/{i:02d}.mp3" for i in range(9)]
+    files += [
+        "proposal45/script-timeline.json",
+        "proposal45/morph-map.json",
+        "proposal45/captures/session-anchors.json",
+        "proposal45/captures/overview.png",
+    ]
+    files += [
+        str(p.relative_to(args.output))
+        for p in (args.output / "proposal45/audio").glob("*")
+        if p.suffix in [".mp3", ".json"]
+    ]
+    files += [
+        str(p.relative_to(args.output))
+        for p in (args.output / "chatgpt-desktop/frames45").glob("*.png")
+    ]
     files += [
         f"agentview-film-evidence/{name}"
         for name in [
@@ -56,6 +71,7 @@ def main():
             "native-voice-send-proof.png",
             "native-voice-receiver.json",
             "native-edge-trim.json",
+            "edit-key-events.json",
         ]
         if (args.output / "agentview-film-evidence" / name).exists()
     ]

@@ -69,26 +69,22 @@ def normalize(source, dest):
 
 
 def audio(output):
-    clips = json.loads((output / "audio/manifest.json").read_text())
-    # Text-only tagline over the music intro. Omit redundant Sent, Work and
-    # closing narration to protect the separate navigation and five-second hold.
-    clips = [c for c in clips if c["file"] not in ["04.mp3", "06.mp3", "08.mp3"]]
-    samples = np.zeros((RATE * 30, 2), dtype=np.float32)
+    plan = json.loads((output / "edit45.json").read_text())
+    assert plan["duration_approved"] and plan["seconds"] == 45
+    clips = plan["cues"]
+    seconds = 45
+    samples = np.zeros((RATE * seconds, 2), dtype=np.float32)
     cues = []
     for i, c in enumerate(clips):
-        pcm = decode(output / "audio" / c["file"])
-        budget = (clips[i + 1]["at"] - 0.1 if i + 1 < len(clips) else 29.6) - c["at"]
-        speed = max(1, len(pcm) / RATE / budget)
-        if speed > 1.35:
-            raise ValueError("Narration cue needs more time")
-        if speed > 1:
-            pcm = decode(output / "audio" / c["file"], tempo=speed)
+        pcm = decode(output / "proposal45/audio" / c["file"])
+        budget = (clips[i + 1]["at"] - 0.08 if i + 1 < len(clips) else 40) - c["at"]
+        assert len(pcm) / RATE <= budget, (
+            "Approved speech must fit without time compression"
+        )
         start = round(c["at"] * RATE)
         samples[start : start + len(pcm)] = pcm
         cues.append(
-            dict(
-                c, duration=len(pcm) / RATE, end=c["at"] + len(pcm) / RATE, speed=speed
-            )
+            dict(c, duration=len(pcm) / RATE, end=c["at"] + len(pcm) / RATE, speed=1)
         )
     write(output / "voice-mix.wav", samples)
     normalize(output / "voice-mix.wav", output / "narration.wav")
@@ -96,10 +92,12 @@ def audio(output):
     assert music_path.exists(), (
         "TIMESINK source must be fetched from the official artist stream first"
     )
-    music = decode(music_path, 30)
-    music = np.pad(music, ((0, max(0, RATE * 30 - len(music))), (0, 0)))[: RATE * 30]
+    excerpt = decode(music_path, 30)
+    excerpt = np.pad(excerpt, ((0, max(0, RATE * 30 - len(excerpt))), (0, 0)))[
+        : RATE * 30
+    ]
     # Separate excerpt stem. Full source is never staged or redistributed.
-    write(output / "audio/music-excerpt.wav", music)
+    write(output / "audio/music-excerpt.wav", excerpt)
     subprocess.run(
         [
             "ffmpeg",
@@ -117,14 +115,23 @@ def audio(output):
         ],
         check=True,
     )
-    t = np.arange(RATE * 30) / RATE
+    # Same30s source excerpt, not an extended song extract. Quiet connection/
+    # view explanation in the middle, then return for the schedule payoff/close.
+    music = np.zeros_like(samples)
+    split = round(22.5 * RATE)
+    return_at = round(37.5 * RATE)
+    music[:split] = excerpt[:split]
+    music[return_at:] = excerpt[split:]
+    t = np.arange(RATE * seconds) / RATE
     gain = np.full(len(t), 0.22, dtype=np.float32)
     for cue in cues:
         enter = np.clip((t - (cue["at"] - 0.12)) / 0.12, 0, 1)
         leave = np.clip((cue["end"] + 0.35 - t) / 0.35, 0, 1)
         gain *= 1 - 0.70 * np.minimum(enter, leave)
-    gain *= np.minimum(np.clip(t / 0.35, 0, 1), np.clip((30 - t) / 1.0, 0, 1))
-    voice = decode(output / "narration.wav")[: RATE * 30]
+    gain *= np.minimum(np.clip(t / 0.35, 0, 1), np.clip((seconds - t) / 1.0, 0, 1))
+    gain[t < 22.5] *= np.clip((22.5 - t[t < 22.5]) / 0.4, 0, 1)
+    gain[t >= 37.5] *= np.clip((t[t >= 37.5] - 37.5) / 0.35, 0, 1)
+    voice = decode(output / "narration.wav")[: RATE * seconds]
     write(output / "music-mix.wav", voice + music * gain[:, None])
     normalize(output / "music-mix.wav", output / "soundtrack.wav")
     (output / "audio/timing.json").write_text(json.dumps(cues, indent=2))
@@ -135,6 +142,10 @@ def audio(output):
                 "artist": "Lorn",
                 "source": "https://lorn.bandcamp.com/track/timesink",
                 "source_excerpt_seconds": [0, 30],
+                "edit_placements": [
+                    {"video": [0, 22.5], "source": [0, 22.5]},
+                    {"video": [37.5, 45], "source": [22.5, 30]},
+                ],
                 "permission": "User reports personal permission from artist Marcos Ortega for a short demo excerpt. Not a general redistribution license.",
                 "replaceable_stem": "music-excerpt.mp3",
                 "speech_duck_db": -10.46,

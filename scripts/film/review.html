@@ -2,22 +2,22 @@
 <html lang="en">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Agent View · 30-second film review</title>
+<title>Agent View · 45-second film review</title>
 <style>
 *{box-sizing:border-box}body{margin:0;background:#f7f8fc;color:#10121b;font:17px/1.5 system-ui,sans-serif}main{max-width:1240px;margin:44px auto;padding:0 28px}header{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:20px}h1{font-size:30px;letter-spacing:-1px;margin:0}small{color:#626879}video{width:100%;display:block;border-radius:16px;background:#fff;box-shadow:0 12px 48px #17274812}section{display:grid;grid-template-columns:1fr 1fr;gap:32px;margin:24px 0}h2{font-size:18px;margin:0 0 8px}p{margin:6px 0;color:#626879}a{color:#1e66f5}button{border:1px solid #d0dcfa;background:#edf3ff;color:#1e66f5;border-radius:8px;padding:10px 14px;cursor:pointer;font:inherit}img{width:100%;border-radius:12px}nav{display:flex;gap:8px;flex-wrap:wrap;margin:16px 0}footer{font-size:14px;color:#626879;margin:24px 0}@media(max-width:700px){section{grid-template-columns:1fr}header{display:block}}
 </style>
 <main>
-<header><h1>All your coding agents. One terminal. One voice.</h1><small>Revised private master · 4K · TIMESINK</small></header>
+<header><h1>All your coding agents. One terminal. One voice.</h1><small>45 seconds · Private 4K master · TIMESINK</small></header>
 <video controls muted playsinline preload="metadata" poster="frame-00.0.png">
-<source src="agentview-30s-review.mp4" type="video/mp4">
+<source src="agentview-review.mp4" type="video/mp4">
 </video>
 <nav aria-label="Film chapters">
-<button data-time="0">Terminal overload</button><button data-time="2.5">Group &amp; open</button><button data-time="7">Voice</button><button data-time="15">ChatGPT</button><button data-time="18">Views &amp; Work</button><button data-time="20.5">Schedule &amp; Heavy Jobs</button><button data-time="25">Bento</button>
+<button data-time="0">Many windows → Agent View</button><button data-time="7">Right &amp; double-Left</button><button data-time="14">Voice</button><button data-time="22.5">Your agents in ChatGPT</button><button data-time="28.5">Control S</button><button data-time="32">Work scope</button><button data-time="35">Schedule &amp; Heavy Jobs</button><button data-time="40">Bento</button>
 </nav>
-<section><div><h2>Native 4K composition</h2><p>3840 × 2160. Fresh Agent View terminal sources are 4848 pixels wide with native 60-pixel glyphs. The real ChatGPT window recording is 1024 × 738, shown as an inset. No old movie is upscaled. No autoplay. Sound starts muted.</p><p><a href="agentview-30s-review.mp4" download>Download the 4K master</a> · <a href="contact-sheet.jpg">Inspect the edit</a> · <a href="captures/scheduled.png">Inspect source UI at full resolution</a></p></div>
+<section><div><h2>45-second review edit</h2><p>3840 × 2160. Fresh Agent View sources are 4848 pixels wide with native 60-pixel glyphs. The real ChatGPT window source is 1024 × 738, shown as an inset with four left-edge pixels trimmed. No old movie is upscaled. No autoplay. Sound starts muted.</p><p><a href="agentview-review.mp4" download>Download the 4K master</a> · <a href="contact-sheet.jpg">Inspect the edit</a> · <a href="captures/scheduled.png">Inspect source UI at full resolution</a></p></div>
 <div><h2>Actual UI, controlled demo state</h2><p>20 synthetic agents span six directories. Ctrl+S changes status/directory grouping. Work filtering hides three personal directories without changing any session state. The usage header shows the real supported Claude, Claude2 and Codex fixture rows. Scheduled and Heavy Jobs are integrated app widgets with synthetic state.</p><p>Right opens a real dedicated OpenCode demo session; double-Left returns to the dashboard. The opening voice dialogue and later scheduled continuation remain editorial/staged. The ChatGPT desktop clip records actual Work Voice using AgentVoice to read and send to one synthetic OpenCode session. Receiver-side evidence confirms the message and acknowledgment. Prompts were typed within active Voice; spoken-input recognition was not tested. The VM microphone permission issue was resolved before recording. <a href="agentview-film-evidence/native-voice-proof.json">Native Voice provenance</a>.</p></div></section>
-<p>This player shows the revised private 4K music cut, not the earlier 900p draft checked into the review package. The16-pane opening is representative synthetic overload, not a competing product. The editorial waveform follows each speaker’s isolated voiceover audio, not the music or a live microphone. The native ChatGPT waveform is recorded UI, untouched. <a href="waveform-strip.jpg">Inspect waveform motion</a>. Public demo media is unchanged.</p>
-<img src="contact-sheet.jpg" alt="Nine frames showing the opening, staged voice exchange, blocked desktop capture slot, work view, integrated schedule and queue, and final screenshot bento">
+<p>This player shows the approved 45-second private cut. Each of the 16 synthetic panes keeps its session ID, title, provider and state token as its rectangle morphs to the matching measured row in an actual app capture. The editorial dialogue uses actual ElevenLabs word timings, fixed text positions, purple for YOU and blue for AGENT VIEW. Each waveform follows its own isolated voiceover, not music or a live mic. The native ChatGPT UI is untouched. The authenticated connector explanation is editorial, not footage of a sign-in or authorization. <a href="waveform-strip.jpg">Inspect waveform motion</a>. Public demo media is unchanged.</p>
+<img src="contact-sheet.jpg" alt="Nine frames showing the mapped pane-to-row morph, explicit navigation, timed dialogue, actual ChatGPT integration, project and Work views, scheduling and bento">
 <footer>Music: Lorn, “TIMESINK”, short excerpt used with the user’s reported personal permission from Marcos Ortega. Separate music stem stays in the private working folder for replacement. Apple WWDC24/25 summary slides informed the layout; no Apple artwork is used. All 18 supported coding harnesses are represented; AgentVoice support shown here is for OpenCode sessions only. Public website and README demo assets are unchanged.</footer>
 </main>
 <script type="application/json" id="film-captions">[]</script>
@@ -26,7 +26,7 @@ const video=document.querySelector('video');
 const captions=JSON.parse(document.getElementById('film-captions').textContent);
 const track=video.addTextTrack('captions','English','en');
 captions.forEach(cue=>track.addCue(new VTTCue(cue.at,cue.end,cue.text)));
-track.mode='showing';
+track.mode='disabled';
 document.querySelectorAll('[data-time]').forEach(button=>button.onclick=()=>{video.currentTime=Number(button.dataset.time);});
 </script>
 </html>
