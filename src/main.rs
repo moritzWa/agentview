@@ -629,8 +629,8 @@ fn main() -> Result<()> {
                         "{}",
                         serde_json::to_string_pretty(&agentview::bridge::publish_artifact(
                             &dir,
-                            &session_id,
-                            &file,
+                            session_id,
+                            file,
                             title.as_deref(),
                             *confirmed
                         )?)?
