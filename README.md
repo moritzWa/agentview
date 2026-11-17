@@ -118,6 +118,7 @@ own interface.
   browser agentview starts for the call, for OpenCode sessions. See
   [Voice Mode](docs/voice.md).
 - **`Ctrl+X` twice** stops and hides or deletes a session, no dialog.
+- **`Ctrl+Z` undoes a hide** and brings the session back (in Ghostty, map `Cmd+Z` to it).
 - **ChatGPT mobile voice:** opt-in text-only OpenCode history search and queued replies
   through a private ChatGPT MCP server. Runs without the dashboard.
   [Setup and privacy](docs/mobile-bridge.md).
