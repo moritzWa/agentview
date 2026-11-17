@@ -157,3 +157,31 @@ continuation cursor; mobile does not expose create-session, stop-agent or native
 approval/question-answer tools. The older renewal/retention/source-replacement
 maintenance items remain tracked separately in issue #18. These tests are not a
 new ChatGPT client, iPhone Live, or native-agent execution verification.
+# Actionable mobile overview, November 16, 2026
+
+The new screenshots exposed two omissions that transport tests did not cover:
+the independent runtime reader skipped controller enrichment and saved desktop
+turn judgements, and list results had no final-message context. A completed
+provider turn was therefore easy to mistake for a task needing nothing.
+
+The candidate now applies desktop control enrichment and exact saved turn labels
+without starting new classifier-model calls. Its read-only real-Mac audit found
+1 needs-you, 5 working, 7 scheduled and 388 completed sessions, with no partial
+snapshot. 957 Rust library tests passed (7 ignored), Clippy passed, and 40 backend
+tests passed. The backend regressions include 401 sessions, decision excerpts,
+new sessions still syncing, child filtering and reverted/staged-text exclusion.
+
+Deployed overview contracts passed with synthetic status fixtures and preserved
+the personal primary source. A fresh authenticated ChatGPT text conversation was
+then asked only: "Which of my Agent View sessions are active or need my attention?"
+It made one `list_sessions(limit=50)` call using its existing tool schema. The
+server returned a complete recent selection of 10 rows, global counts across 402
+sessions and latest-turn context for all 10. ChatGPT identified a pending question
+without reading individual histories, asking to scan the remaining sessions, or
+calling the real data synthetic demo sessions. No messages were sent to OpenCode.
+
+This first client check used the previously installed daemon, so its native
+needs-you count was still zero and idle attention assessments were unknown. The
+included reply excerpts allowed the client to identify a decision anyway. Native
+installation and post-install classification verification are separate rollout
+checks; this is not a new iPhone Live test.

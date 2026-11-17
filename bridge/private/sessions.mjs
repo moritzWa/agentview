@@ -40,7 +40,8 @@ export async function listSessions({db,gate,principal},{status='all',view='recen
   // queries cover every matching session, not just the default recent window.
   if(view==='recent'&&status==='all'&&!query){
    const recent=candidates.slice(0,10);
-   for(const row of candidates.slice(10)){if(recent.length>=14)break;if(busy(row)&&Date.now()-humanTime(row)<=86400_000)recent.push(row);}
+   const extra=candidates.slice(10).sort((a,b)=>(a.status==='needs_you'?0:1)-(b.status==='needs_you'?0:1)||byHuman(a,b));
+   for(const row of extra){if(recent.length>=14)break;if(busy(row)&&Date.now()-humanTime(row)<=86400_000)recent.push(row);}
    candidates=recent;
   }
   candidates.sort((a,b)=>rank[a.status]-rank[b.status]||byHuman(a,b));
