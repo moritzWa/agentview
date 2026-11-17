@@ -1,6 +1,7 @@
 use super::Config;
-use crate::adapters::{DiscoveryRequest, OpenCodeSource, SessionSource};
-use crate::domain::{AgentSession, SessionState};
+use crate::adapters::{DiscoveryRequest, OpenCodeController, OpenCodeSource, SessionSource};
+use crate::control::ProviderController;
+use crate::domain::{AgentSession, SessionSnapshot, SessionState};
 use crate::opencode_supervisor::OpenCodeSupervisor;
 use anyhow::Result;
 use rusqlite::OptionalExtension;
@@ -16,6 +17,9 @@ pub(super) struct RuntimeStatus {
     updated_at: u64,
     can_message: bool,
     last_user_message_id: Option<String>,
+    last_user_ms: u64,
+    top_level: bool,
+    attention_assessed: bool,
 }
 #[derive(Serialize)]
 pub(super) struct Snapshot {
@@ -58,6 +62,10 @@ pub(super) fn project(session: &AgentSession) -> RuntimeStatus {
             .map_or(0, |d| d.as_millis() as u64),
         can_message,
         last_user_message_id: None,
+        last_user_ms: crate::last_message::facts_for(&session.id)
+            .map_or(0, |facts| facts.last_user_ms),
+        top_level: true,
+        attention_assessed: session.state == SessionState::NeedsInput,
     }
 }
 
@@ -78,7 +86,7 @@ pub(super) fn snapshot(config: &Config) -> Result<Snapshot> {
     // Exactly the dashboard's source/classifier, including native permission,
     // question, failed-turn, child-agent and background-work states. Do not ask
     // ChatGPT to infer these from the conversation copy.
-    let source = OpenCodeSource::managed(config.opencode_bin.clone(), supervisor);
+    let source = OpenCodeSource::managed(config.opencode_bin.clone(), supervisor.clone());
     let discovery = source.discover_with_warnings(&DiscoveryRequest {
         include_completed: true,
         include_interactive: true,
@@ -86,6 +94,23 @@ pub(super) fn snapshot(config: &Config) -> Result<Snapshot> {
         history_limit: 5000,
         ..DiscoveryRequest::default()
     })?;
+    let mut discovery = SessionSnapshot {
+        sessions: discovery.sessions,
+        warnings: discovery.warnings,
+    };
+    // Discovery alone omits the dashboard's holds/native-shell overlay and its
+    // persisted judgement that a finished assistant turn is asking the user.
+    OpenCodeController::managed(config.opencode_bin.clone(), supervisor).enrich(&mut discovery);
+    let assessed = if config.supervisor_state.is_none() {
+        crate::turn_classifier::apply_saved(&mut discovery)
+    } else {
+        Default::default()
+    };
+    let parents = if config.supervisor_state.is_none() {
+        Some(crate::session_tree::ParentLinks::load_default()?)
+    } else {
+        None
+    };
     let paused = if config.supervisor_state.is_none() {
         Some(crate::paused::PausedSessions::load_default()?.paused())
     } else {
@@ -105,7 +130,14 @@ pub(super) fn snapshot(config: &Config) -> Result<Snapshot> {
                 .is_some_and(|ids| ids.contains_key(&session.id))
         })
         .filter(|session| !hidden.as_ref().is_some_and(|ids| ids.contains(&session.id)))
-        .map(project)
+        .map(|session| {
+            let mut status = project(session);
+            status.attention_assessed |= assessed.contains(&session.id);
+            status.top_level = !parents
+                .as_ref()
+                .is_some_and(|p| p.links().contains_key(&session.provider_session_id));
+            status
+        })
         .collect::<Vec<_>>();
     statuses.sort_by_key(|s| {
         (

@@ -137,3 +137,50 @@ test('cached principals cannot mutate the queue or lease text after revocation',
   assert.equal((await db.query("SELECT count(*)::int AS n FROM av_outbox WHERE session_id='revoked-write'")).rows[0].n,0);
  }finally{await db.query('UPDATE av_credentials SET revoked=false');}
 });
+
+test('one active overview finds actionable sessions beyond hundreds of done rows and includes their decision context',async()=>{
+ const now=Date.now();
+ await db.query(`INSERT INTO av_sessions(owner_id,device_id,database_epoch,session_id,generation,cursor,state,synced_at)
+  SELECT 'test-owner','test-device','test-epoch','overview-done-'||n,'overview',1,
+   jsonb_build_object('title','Completed fixture '||n,'archived',false,'deleted',false,'visible_before',null),now() FROM generate_series(1,398) n`);
+ for(const id of ['overview-working-a','overview-working-b','overview-decision'])await seed(id,[message(1,'Implement the mobile overview, keeping the existing design.'),message(2,'Already checked the options. '.repeat(140)+'Should I use option A or option B?')]);
+ runtime={available:true,partial:false,checked_at:now,statuses:[
+  ...Array.from({length:398},(_,i)=>({session_id:'overview-done-'+(i+1),status:'done',reason:null,updated_at:now-i,attention_assessed:true,last_user_ms:now-i,top_level:true})),
+  ...['overview-working-a','overview-working-b'].map(session_id=>({session_id,status:'working',reason:null,updated_at:now,last_user_ms:now-1000,top_level:true,last_user_message_id:'msg_1'})),
+  {session_id:'overview-decision',status:'needs_you',reason:'reply',updated_at:now,last_user_ms:now-3600_000,top_level:true,attention_assessed:true,last_user_message_id:'msg_1'},
+ ]};
+ const page=await rpc('list_sessions',{status:'active'});
+ assert.equal(page.counts.total,401);assert.equal(page.counts.working,2);assert.equal(page.counts.needs_you,1);assert.equal(page.counts.done,398);
+ assert.equal(page.sessions.length,3);assert.equal(page.next_after,null);assert.equal(page.status_fresh,true);assert.equal(page.context_fresh,true);
+ const decision=page.sessions[0];assert.equal(decision.session_id,'overview-decision');assert.equal(decision.attention,'needs_you');
+ assert(decision.last_user_message.text.includes('existing design'));assert(decision.last_assistant_message.text.endsWith('option A or option B?'));assert(decision.last_assistant_message.truncated);
+ assert(page.note.includes('Counts cover the entire'));assert(page.note.includes('not that the task is finished'));
+ const recent=await rpc('list_sessions',{});assert(recent.sessions.some(s=>s.session_id==='overview-decision'));assert(recent.sessions.length<=14);assert.equal(recent.counts.total,401);
+});
+
+test('recent unclassified final questions are provided for review, not equated with no attention',async()=>{
+ await seed('overview-unclassified',[message(1,'Review this choice.'),message(2,'Which approach do you prefer?')]);
+ runtime={available:true,partial:false,checked_at:Date.now(),statuses:[{session_id:'overview-unclassified',status:'done',reason:null,updated_at:Date.now(),last_user_ms:Date.now(),last_user_message_id:'msg_1',attention_assessed:false}]};
+ const result=await rpc('list_sessions',{status:'active'});
+ assert.equal(result.counts.unassessed_idle,1);assert.equal(result.sessions.length,1);assert.equal(result.sessions[0].attention,'review_last_reply');
+ assert.equal(result.sessions[0].last_assistant_message.text,'Which approach do you prefer?');
+});
+
+test('overview context excludes reverted/staged text and child sessions, and flags a mirror behind native input',async()=>{
+ await seed('overview-visible',[message(1,'Visible request'),message(2,'Visible answer'),message(3,'REVERTED_PRIVATE_CANARY')]);
+ await db.query("UPDATE av_sessions SET state=jsonb_set(state,'{visible_before}','3') WHERE session_id='overview-visible'");
+ await db.query("INSERT INTO av_messages VALUES('test-owner','test-device','test-epoch','overview-visible','uncommitted','staged_msg',4,'assistant','STAGED_PRIVATE_CANARY',4,4)");
+ runtime={available:true,partial:false,checked_at:Date.now(),statuses:[
+  {session_id:'overview-visible',status:'working',reason:null,updated_at:Date.now(),last_user_message_id:'new_native_input',top_level:true},
+  {session_id:'overview-working-a',status:'working',reason:null,updated_at:Date.now(),top_level:false},
+ ]};
+ const result=await rpc('list_sessions',{view:'all'});
+ assert.equal(result.counts.total,1);assert.equal(result.sessions.length,1);assert.equal(result.context_fresh,false);
+ assert.equal(result.sessions[0].last_user_message.text,'Visible request');assert.equal(result.sessions[0].last_assistant_message.text,'Visible answer');
+ assert(!JSON.stringify(result).includes('PRIVATE_CANARY'));
+ runtime.statuses.push({session_id:'overview-not-mirrored-yet',status:'working',reason:null,updated_at:Date.now(),top_level:true,last_user_message_id:'new_input'});
+ const pending=await rpc('list_sessions',{status:'active'}),fresh=pending.sessions.find(s=>s.session_id==='overview-not-mirrored-yet');
+ assert.equal(pending.counts.working,2);assert(fresh);assert.equal(fresh.mirrored,false);assert.equal(fresh.context_fresh,false);assert.equal(fresh.last_assistant_message,null);
+ runtime.truncated=true;
+ const truncated=await rpc('list_sessions',{});assert.equal(truncated.counts_complete,false);assert.equal(truncated.active_counts_complete,true);
+});

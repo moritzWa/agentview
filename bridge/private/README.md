@@ -50,6 +50,22 @@ Native permissions are not bypassed. Queued does not mean executed.
   have a continuation cursor.
 - Pass `list_sessions.next_after` verbatim. A changed list rejects its old cursor
   rather than silently skipping sessions. Start again without `after`.
+- `list_sessions` now gives a Cmd+K-style recent overview by default. For active
+  or needing-attention questions, `status="active"` selects working/waiting rows
+  and a small recent set whose final replies still need assessment. Whole-set
+  counts remove the need to page through completed rows looking for a blocker.
+  `view="all"` retains exhaustive inventory access.
+- Each listed row includes bounded source-visible excerpts of the latest user
+  request and assistant reply, with full-message IDs when more detail is needed.
+  The assistant excerpt preserves the ending where questions usually appear.
+  No extra summary-model call or copy of tool output is made. `done` means the
+  latest turn ended; it is not proof that the task is finished or needs no reply.
+- The connector applies the desktop control/status overlay and reuses the exact
+  saved desktop turn classifications without additional model requests. If no
+  classification exists for that turn, its reply is marked for review rather
+  than presented as proof that nothing needs attention. Context freshness and
+  runtime freshness are reported separately. New sessions without mirrored
+  history still appear in active counts; their context is explicitly unavailable.
 - All authenticated MCP requests already renew mobile activity at the router.
   Status checks additionally wait for history and native-state refresh, then
   report freshness. A missing or stale native status cannot confirm completion.
