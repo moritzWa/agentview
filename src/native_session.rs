@@ -1362,7 +1362,9 @@ fn forward_ready_initial_input(
 
 #[cfg(unix)]
 fn restore_dashboard_terminal_modes(stdout: &mut impl Write) -> Result<()> {
-    stdout.write_all(b"\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[<u\x1b[?25h")?;
+    // A shown provider's own pushes are forwarded live, on top of the one resume push, so a
+    // single pop can leave a mode behind. Pop everything: the dashboard pushes its own after.
+    stdout.write_all(b"\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[<99u\x1b[?25h")?;
     stdout.flush()?;
     Ok(())
 }

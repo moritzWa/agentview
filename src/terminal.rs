@@ -3734,6 +3734,17 @@ impl Drop for TerminalSession {
             crossterm::cursor::Show
         );
         let _ = self.terminal.show_cursor();
+        // Leave the main screen's keyboard mode empty too: a provider shown earlier may have left
+        // its own push there. The key that quit agentview is often released a moment later, and
+        // the terminal still reports it in the kitty encoding until it has handled the pop. The
+        // shell would print that report (";1:3u"), so wait it out and drop what is queued.
+        #[cfg(unix)]
+        if self.keyboard_enhancement {
+            let _ = io::Write::write_all(self.terminal.backend_mut(), b"\x1b[<99u");
+            let _ = io::Write::flush(self.terminal.backend_mut());
+            thread::sleep(Duration::from_millis(50));
+            unsafe { libc::tcflush(libc::STDIN_FILENO, libc::TCIFLUSH) };
+        }
     }
 }
 
