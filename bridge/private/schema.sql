@@ -50,3 +50,13 @@ CREATE TABLE IF NOT EXISTS av_outbox (
 );
 CREATE INDEX IF NOT EXISTS av_outbox_pending ON av_outbox(owner_id,device_id,database_epoch,state,sequence);
 ALTER TABLE av_outbox ADD COLUMN IF NOT EXISTS context_guard jsonb;
+-- Explicitly approved artifact bytes only, separate from text-history sync.
+CREATE TABLE IF NOT EXISTS av_artifacts (
+  owner_id text NOT NULL, device_id text NOT NULL, database_epoch text NOT NULL,
+  artifact_id text NOT NULL, session_id text NOT NULL, title text NOT NULL,
+  name text NOT NULL, mime_type text NOT NULL, blob text NOT NULL,
+  sha256 text NOT NULL, byte_length integer NOT NULL CHECK (byte_length BETWEEN 1 AND 512000),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY(owner_id,device_id,database_epoch,artifact_id)
+);
+CREATE INDEX IF NOT EXISTS av_artifacts_session ON av_artifacts(owner_id,device_id,database_epoch,session_id);
