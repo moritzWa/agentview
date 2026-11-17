@@ -3,9 +3,11 @@
 
 import unittest
 from html.parser import HTMLParser
+from itertools import pairwise
 
 import narrate
 import numpy as np
+import propose45
 import render
 import verify
 import visual
@@ -14,6 +16,36 @@ from PIL import ImageStat
 
 
 class FilmTests(unittest.TestCase):
+    def test_proposal_does_not_change_approved_runtime(self):
+        self.assertEqual(visual.SECONDS, 30)
+        self.assertEqual(propose45.SCENES[-1][1], 45)
+        for left, right in pairwise(propose45.SCENES):
+            self.assertEqual(left[1], right[0])
+
+    def test_morph_reaches_exact_measured_row_bounds(self):
+        grid = [70, 200, 360, 147]
+        row = [84.45, 366.1, 1431.08, 25.3]
+        self.assertEqual(propose45.morph_box(grid, row, 0), grid)
+        self.assertEqual(propose45.morph_box(grid, row, 1), row)
+        halfway = propose45.morph_box(grid, row, 0.5)
+        self.assertEqual(halfway[1], row[1])
+        self.assertEqual(halfway[3], row[3])
+
+    def test_character_alignment_keeps_word_start_times(self):
+        text = "Right arrow."
+        data = {
+            "alignment": {
+                "characters": list(text),
+                "character_start_times_seconds": [i * 0.1 for i in range(len(text))],
+                "character_end_times_seconds": [
+                    (i + 1) * 0.1 for i in range(len(text))
+                ],
+            }
+        }
+        words = propose45.timed_words(data, text)
+        self.assertEqual([w["text"] for w in words], ["Right", "arrow."])
+        self.assertAlmostEqual(words[1]["start"], 0.6)
+
     def test_waveform_is_flat_for_silence_and_larger_for_loud_voice(self):
         rate = 48000
         t = np.arange(rate) / rate

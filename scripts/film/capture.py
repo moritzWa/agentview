@@ -255,6 +255,31 @@ def main():
             )
             assert "plan-weekend" in "\n".join(screen.display)
             picture(screen, args.output / "overview.png")
+            anchors = []
+            for session in data["sessions"]:
+                found = [
+                    i
+                    for i, line in enumerate(screen.display)
+                    if session["name"] in line
+                ]
+                if found:
+                    row = found[0]
+                    anchors.append(
+                        {
+                            "id": session["id"],
+                            "name": session["name"],
+                            "provider": session["provider"],
+                            "state": session["state"],
+                            "summary": session["summary"],
+                            "row": row,
+                            "cell_bounds": [16, 16 + row * 28, COLS * 12, 28],
+                            "raster_bounds": [48, (16 + row * 28) * 3, COLS * 36, 84],
+                            "actual_text": screen.display[row],
+                        }
+                    )
+            (args.output / "session-anchors.json").write_text(
+                json.dumps(sorted(anchors, key=lambda s: s["row"]), indent=2)
+            )
             os.write(master, b"\x1b[B")
             drain(0.35)
             picture(screen, args.output / "selected.png")

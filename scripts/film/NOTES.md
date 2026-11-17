@@ -98,6 +98,18 @@ No Apple artwork is used in the film.
 
 ## Review and site integration
 
+`propose45.py` writes only private `proposal45/` assets. It does not change the
+current30s movie, player or runtime. The proposed45s duration needs approval.
+It includes measured narration,16 stable pane/session IDs, exact captured row
+destinations, grid/midpoint/list keyframes, explicit vector keycaps and fixed-line
+subtitle reveals. Voice generation/alignment stays beside the matching takes.
+
+The forced-alignment endpoint refused the key. Separate proposal takes use the
+supported ElevenLabs `with-timestamps` endpoint instead. Actual returned character
+timings drive their subtitles, never old recordings with guessed new timings.
+Human speech is purple and labeled YOU; Agent View is blue and labeled AGENT VIEW.
+No45s music mix, broader permission or public publishing is assumed.
+
 `review.html` is the standalone, muted-by-default player. Chapter buttons seek
 without starting playback. Verification creates synchronized WebVTT captions,
 checks all 900 decoded frames, duration, narration timing and loudness.
