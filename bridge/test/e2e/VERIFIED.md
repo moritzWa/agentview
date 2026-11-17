@@ -203,3 +203,31 @@ The final backend deployment is Worker version
 `981e7373-0a4f-42ab-95f0-31b68ab0ae4a`. Its deployed synthetic contracts also
 passed. This remains text-client and data-path verification, not a fresh phone
 voice/audio test. No personal conversation excerpts are copied into this record.
+# Directory and two-message context, November 16-17, 2026
+
+PR #67 (directories and two-turn mobile context) merged as `7f6ba18` with every
+CI check passing. Local checks passed: 958 Rust library tests (7 ignored), Clippy,
+and 46 backend tests. The previously observed Copilot login timing failure passed
+on retry. A Mac ARM native-background notification test stalled and passed on a
+fresh runner; its evidence is recorded under Agent View issue #32. No assertions
+were weakened. The automatic daemon restart failed once, the direct retry
+succeeded, and the running executable inode matched the installed binary.
+
+Worker version `8e24cf3c-4beb-420d-a784-f3d7dccecb4e` passed deployed synthetic
+contracts for working-directory/project metadata, two visible messages per role,
+source ordering, tool/reasoning exclusion and head/tail omission. Fixture grants
+and rows were removed; the personal primary source stayed unchanged.
+
+The real authenticated ChatGPT text client was asked to group active sessions by
+their actual directory and explain what needed input. Its first restart-time read
+was correctly flagged stale and still lacked new directory metadata. After the
+connector published a fresh snapshot, one refreshed `list_sessions(limit=50)`
+call returned 11 sessions across six actual directories. All 11 had two user and
+two assistant text messages, in source order, with no other message roles. Both
+runtime and context freshness were true. Context plus compatibility aliases used
+16,472 Unicode characters, below the shared 36K budget; long excerpts included
+both ends and an explicit middle-omitted marker. ChatGPT grouped by actual returned
+paths and identified current decisions without reading extra histories or sending
+instructions. No personal directory paths or conversation text are recorded here.
+
+This verifies the text client and data path, not a new iPhone Live/audio test.
