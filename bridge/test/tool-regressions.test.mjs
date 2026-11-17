@@ -156,6 +156,7 @@ test('one active overview finds actionable sessions beyond hundreds of done rows
  assert(decision.last_user_message.text.includes('existing design'));assert(decision.last_assistant_message.text.endsWith('option A or option B?'));assert(decision.last_assistant_message.truncated);
  assert(page.note.includes('Counts cover the entire'));assert(page.note.includes('not that the task is finished'));
  const recent=await rpc('list_sessions',{});assert(recent.sessions.some(s=>s.session_id==='overview-decision'));assert(recent.sessions.length<=14);assert.equal(recent.counts.total,401);
+ assert.equal(recent.total_matching,recent.sessions.length);assert.equal(recent.remaining_in_selection,0);assert.equal(recent.next_after,null);assert.equal(recent.outside_selection.needs_you,0);
 });
 
 test('recent unclassified final questions are provided for review, not equated with no attention',async()=>{
