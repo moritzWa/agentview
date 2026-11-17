@@ -40,6 +40,9 @@ const ARROW_RETURN_WINDOW: Duration = Duration::from_millis(1600);
 /// before it counts as the dashboard's removal key.
 const LEADER_HOLD: Duration = Duration::from_millis(350);
 const CTRL_X: u8 = 0x18;
+/// What Cmd+Z sends. It undoes a hide on the dashboard, so the provider's own
+/// view must not receive it and suspend itself.
+const CTRL_Z: u8 = 0x1a;
 const CTRL_K: u8 = 0x0b;
 const CTRL_BACKSLASH: u8 = 0x1c;
 const CTRL_RIGHT_BRACKET: u8 = 0x1d;
@@ -2310,6 +2313,10 @@ impl DetachParser {
                 self.pending_since = Some(Instant::now());
                 break;
             }
+            if remaining[0] == CTRL_Z {
+                index += 1;
+                continue;
+            }
             if self.holds_leader && remaining == [CTRL_X] {
                 self.held_leader_since = Some(Instant::now());
                 break;
@@ -3290,6 +3297,15 @@ mod tests {
         assert_eq!(
             parser.push(b"\x0b"),
             vec![InputAction::Forward(b"\x0b".to_vec())]
+        );
+    }
+
+    #[test]
+    fn ctrl_z_never_reaches_the_provider() {
+        let mut parser = DetachParser::for_session("claude:worker");
+        assert_eq!(
+            parser.push(b"a\x1ab"),
+            vec![InputAction::Forward(b"ab".to_vec())]
         );
     }
 

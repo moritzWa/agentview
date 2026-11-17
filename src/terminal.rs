@@ -463,6 +463,7 @@ pub fn run_dashboard(
     let mut pending_launch: Option<PendingLaunch> = None;
     let mut pending_launch_retry_at: Option<Instant> = None;
     let mut pending_reveal: Option<PendingReveal> = None;
+    let mut hide_history: Vec<Vec<String>> = Vec::new();
     let mut latest_launch_sequence = 0u64;
     let mut launching_provider: Option<Provider> = None;
     let mut latest_migration_sequence = 0u64;
@@ -1308,6 +1309,32 @@ pub fn run_dashboard(
                                 });
                                 ActionEffect::default()
                             }
+                            AppAction::UndoHide => {
+                                match undo_last_hide(&hidden_sessions, &mut hide_history) {
+                                    Ok(Some(ids)) => {
+                                        app.set_notice(format!(
+                                            "restored {} session{}",
+                                            ids.len(),
+                                            if ids.len() == 1 { "" } else { "s" }
+                                        ));
+                                        if let Some(session_id) = ids.last().cloned() {
+                                            pending_reveal = Some(PendingReveal {
+                                                session_id,
+                                                deadline: Instant::now()
+                                                    + REVEAL_DISCOVERY_TIMEOUT,
+                                            });
+                                        }
+                                    }
+                                    Ok(None) => app.set_notice("nothing to undo"),
+                                    Err(error) => app.set_notice(format!(
+                                        "failed to undo hide: {error:#}"
+                                    )),
+                                }
+                                ActionEffect {
+                                    refresh: true,
+                                    ..ActionEffect::default()
+                                }
+                            }
                             AppAction::Restore { session, hidden } => {
                                 let unhidden = if hidden {
                                     hidden_sessions.unhide(&session.id).map(|_| ())
@@ -1531,15 +1558,26 @@ pub fn run_dashboard(
                             pending_launch_retry_at = None;
                         }
                         if !effect.hide_session_ids.is_empty() {
+                            let newly_hidden = effect
+                                .hide_session_ids
+                                .iter()
+                                .filter(|id| !hidden_sessions.contains(id))
+                                .cloned()
+                                .collect::<Vec<_>>();
                             match hide_sessions_from_app(
                                 &mut app,
                                 &hidden_sessions,
                                 &effect.hide_session_ids,
                             ) {
-                                Ok(count) => app.set_notice(format!(
-                                    "hid {count} session{} locally; provider history was retained · ctrl+g to restore",
-                                    if count == 1 { "" } else { "s" }
-                                )),
+                                Ok(count) => {
+                                    if !newly_hidden.is_empty() {
+                                        hide_history.push(newly_hidden);
+                                    }
+                                    app.set_notice(format!(
+                                        "hid {count} session{} locally; provider history was retained · cmd+z to undo · ctrl+g to restore",
+                                        if count == 1 { "" } else { "s" }
+                                    ))
+                                }
                                 Err(error) => {
                                     app.set_notice(format!("failed to hide session: {error:#}"))
                                 }
@@ -2162,6 +2200,24 @@ fn remove_moved_source(
     }
 }
 
+/// Reveal the sessions of the most recent hide again. Returns their IDs, or
+/// None when this dashboard has nothing left to undo.
+fn undo_last_hide(
+    hidden_sessions: &HiddenSessions,
+    history: &mut Vec<Vec<String>>,
+) -> Result<Option<Vec<String>>> {
+    let Some(ids) = history.pop() else {
+        return Ok(None);
+    };
+    for (index, id) in ids.iter().enumerate() {
+        if let Err(error) = hidden_sessions.unhide(id) {
+            history.push(ids[index..].to_vec());
+            return Err(error);
+        }
+    }
+    Ok(Some(ids))
+}
+
 fn hide_sessions_from_app(
     app: &mut App,
     hidden_sessions: &HiddenSessions,
@@ -2443,6 +2499,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> AppAction {
                 AppAction::BrowseHidden
             }
             KeyCode::Char('g') if app.overlay == Overlay::HiddenPicker => app.close_hidden_picker(),
+            KeyCode::Char('z') if app.overlay == Overlay::None => AppAction::UndoHide,
             KeyCode::Char('o')
                 if matches!(
                     app.overlay,
@@ -2527,6 +2584,12 @@ fn handle_key(app: &mut App, key: KeyEvent) -> AppAction {
         && matches!(app.overlay, Overlay::None | Overlay::Peek)
     {
         return app.toggle_pause();
+    }
+    if key.modifiers.contains(KeyModifiers::SUPER)
+        && key.code == KeyCode::Char('z')
+        && app.overlay == Overlay::None
+    {
+        return AppAction::UndoHide;
     }
     if key.modifiers.contains(KeyModifiers::SUPER) && key.code == KeyCode::Char('p') {
         match app.overlay {
@@ -3193,6 +3256,7 @@ fn handle_action_legacy<T: DashboardTerminal, C: DashboardControl>(
         | AppAction::ScheduleVisibility { .. }
         | AppAction::SetSortKeys { .. }
         | AppAction::BrowseHidden
+        | AppAction::UndoHide
         | AppAction::ToggleVoice
         | AppAction::SaveVoiceKey { .. }
         | AppAction::VoiceProvider(_)
@@ -5918,6 +5982,49 @@ mod tests {
         assert!(HiddenSessions::load(directory.path().join("hidden.json"))
             .unwrap()
             .contains("worker"));
+    }
+
+    #[test]
+    fn undo_hide_reveals_the_last_hide_and_then_has_nothing_left() {
+        let directory = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+        }
+        let hidden = HiddenSessions::load(directory.path().join("hidden.json")).unwrap();
+        let mut app = app();
+        hide_sessions_from_app(&mut app, &hidden, &["worker".into()]).unwrap();
+        let mut history = vec![vec!["worker".to_string()]];
+
+        assert_eq!(
+            undo_last_hide(&hidden, &mut history).unwrap(),
+            Some(vec!["worker".to_string()])
+        );
+        assert!(!hidden.contains("worker"));
+        assert_eq!(undo_last_hide(&hidden, &mut history).unwrap(), None);
+    }
+
+    #[test]
+    fn cmd_z_and_ctrl_z_undo_a_hide_only_on_the_list() {
+        let mut dashboard = app();
+        assert_eq!(
+            handle_key(&mut dashboard, control_key('z')),
+            AppAction::UndoHide
+        );
+        assert_eq!(
+            handle_key(
+                &mut dashboard,
+                modified_key(KeyCode::Char('z'), KeyModifiers::SUPER)
+            ),
+            AppAction::UndoHide
+        );
+        dashboard.start_filter();
+        assert_eq!(
+            handle_key(&mut dashboard, control_key('z')),
+            AppAction::None
+        );
     }
 
     #[test]

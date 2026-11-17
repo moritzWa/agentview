@@ -229,6 +229,8 @@ pub enum AppAction {
     PasteImage,
     /// Load the locally hidden registry into the restore picker.
     BrowseHidden,
+    /// Bring back the sessions the last hide removed from the list.
+    UndoHide,
     /// Remove one ID from the local hidden registry and reveal its row.
     Unhide {
         session_id: String,
