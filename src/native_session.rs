@@ -1163,9 +1163,19 @@ fn bridge_session(
                                     cursor,
                                     direction == ArrowDirection::Left
                                         && cursor.1 <= EMPTY_PROMPT_MAX_COLUMN,
+                                    &screen,
                                 );
                             }
-                            InputAction::Detach => {
+                            InputAction::ShiftArrow(bytes) => {
+                                // Shift+arrow selects text once the OpenCode prompt has a draft;
+                                // with nothing to select it still returns immediately.
+                                if session_key.starts_with("opencode:")
+                                    && prompt_draft(&screen).is_some()
+                                {
+                                    return_gesture.clear(&mut stdout, &screen)?;
+                                    pending_input.write_all(bytes)?;
+                                    continue;
+                                }
                                 detach = true;
                                 break;
                             }
@@ -2129,7 +2139,7 @@ impl ArrowDirection {
 enum InputAction {
     Forward(Vec<u8>),
     Arrow(ArrowDirection, &'static [u8]),
-    Detach,
+    ShiftArrow(&'static [u8]),
     Redraw,
     Voice,
 }
@@ -2247,10 +2257,10 @@ impl DetachParser {
         let mut index = 0;
         while index < bytes.len() {
             let remaining = &bytes[index..];
-            let recognized = if remaining.starts_with(SHIFT_LEFT)
-                || remaining.starts_with(SHIFT_RIGHT)
-            {
-                Some((InputAction::Detach, SHIFT_LEFT.len()))
+            let recognized = if remaining.starts_with(SHIFT_LEFT) {
+                Some((InputAction::ShiftArrow(SHIFT_LEFT), SHIFT_LEFT.len()))
+            } else if remaining.starts_with(SHIFT_RIGHT) {
+                Some((InputAction::ShiftArrow(SHIFT_RIGHT), SHIFT_RIGHT.len()))
             } else if remaining.starts_with(LEFT) {
                 Some((InputAction::Arrow(ArrowDirection::Left, LEFT), LEFT.len()))
             } else if remaining.starts_with(APPLICATION_LEFT) {
@@ -2359,7 +2369,15 @@ struct ArrowProbe {
     direction: ArrowDirection,
     cursor: (u16, u16),
     allow_cursor_change: bool,
+    /// The cursor's row, colours included, before the arrow. An arrow that
+    /// collapses a selection leaves the cursor where it was but repaints this.
+    row: Option<Vec<u8>>,
     started: Instant,
+}
+
+fn cursor_row(screen: &vt100::Parser, row: u16) -> Option<Vec<u8>> {
+    let (_, cols) = screen.screen().size();
+    screen.screen().rows_formatted(0, cols).nth(usize::from(row))
 }
 
 #[derive(Debug)]
@@ -2414,11 +2432,13 @@ impl ReturnGesture {
         direction: ArrowDirection,
         cursor: (u16, u16),
         allow_cursor_change: bool,
+        screen: &vt100::Parser,
     ) {
         self.probe = Some(ArrowProbe {
             direction,
             cursor,
             allow_cursor_change,
+            row: cursor_row(screen, cursor.0),
             started: Instant::now(),
         });
         self.armed = None;
@@ -2455,7 +2475,10 @@ impl ReturnGesture {
             return Ok(false);
         }
         if let Some(probe) = self.probe.as_ref() {
-            if !probe.allow_cursor_change && screen.screen().cursor_position() != probe.cursor {
+            if !probe.allow_cursor_change
+                && (screen.screen().cursor_position() != probe.cursor
+                    || cursor_row(screen, probe.cursor.0) != probe.row)
+            {
                 self.clear(output, screen)?;
                 return Ok(false);
             }
@@ -3230,7 +3253,7 @@ mod tests {
         assert_eq!(
             second,
             vec![
-                InputAction::Detach,
+                InputAction::ShiftArrow(SHIFT_LEFT),
                 InputAction::Forward(b"ignored".to_vec())
             ]
         );
@@ -3248,7 +3271,7 @@ mod tests {
                 InputAction::Arrow(ArrowDirection::Left, APPLICATION_LEFT),
                 InputAction::Arrow(ArrowDirection::Right, RIGHT),
                 InputAction::Arrow(ArrowDirection::Right, APPLICATION_RIGHT),
-                InputAction::Detach,
+                InputAction::ShiftArrow(SHIFT_RIGHT),
             ]
         );
     }
@@ -3808,7 +3831,7 @@ mod tests {
         assert!(cursor.1 <= EMPTY_PROMPT_MAX_COLUMN);
 
         let mut gesture = ReturnGesture::default();
-        gesture.begin_probe(ArrowDirection::Left, cursor, true);
+        gesture.begin_probe(ArrowDirection::Left, cursor, true, &screen);
         screen.process(b"\x1b[2J\x1b[6;20Hprovider subview\x1b[?25l");
         std::thread::sleep(ARROW_SETTLE_DELAY + Duration::from_millis(10));
         let mut output = Vec::new();
@@ -3824,6 +3847,7 @@ mod tests {
             ArrowDirection::Left,
             screen.screen().cursor_position(),
             false,
+            screen,
         );
         screen.process(moved);
         std::thread::sleep(ARROW_SETTLE_DELAY + Duration::from_millis(10));
@@ -3846,6 +3870,26 @@ mod tests {
             &mut screen,
             b"\x1b[21;28H"
         ));
+    }
+
+    #[test]
+    fn opencode_left_that_only_collapses_a_selection_stays_in_the_session() {
+        let mut screen = vt100::Parser::new(40, 120, 0);
+        // Backward selection: the cursor sits at the left edge of the highlight, so
+        // Left collapses it without moving the cursor.
+        screen.process(b"\x1b[21;3Hacct \x1b[48;5;147mthead?\x1b[0m\x1b[21;8H\x1b[?25h");
+        assert!(!settled_left(
+            "opencode:host:abc",
+            &mut screen,
+            b"\x1b[21;3Hacct thead?\x1b[21;8H"
+        ));
+    }
+
+    #[test]
+    fn opencode_left_that_changes_nothing_still_returns() {
+        let mut screen = vt100::Parser::new(40, 120, 0);
+        screen.process(b"\x1b[21;3Hacct thead?\x1b[21;8H\x1b[?25h");
+        assert!(settled_left("opencode:host:abc", &mut screen, b""));
     }
 
     #[test]
