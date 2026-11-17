@@ -384,13 +384,18 @@ class Film:
                 + txt(1085, 797, "Work only", 30, BLUE, True, "end")
             )
         )
-        return out + txt(
-            800,
-            860,
-            "Global shortcut configured for this setup",
-            15,
-            MUTED,
-            anchor="middle",
+        return (
+            out
+            if changing
+            else out
+            + txt(
+                800,
+                860,
+                "Global shortcut configured for this setup",
+                15,
+                MUTED,
+                anchor="middle",
+            )
         )
 
     def continuation(self, t):

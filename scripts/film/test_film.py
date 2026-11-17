@@ -12,6 +12,12 @@ from PIL import ImageStat
 
 
 class FilmTests(unittest.TestCase):
+    def test_ctrl_s_is_not_labeled_a_configured_global_shortcut(self):
+        film = visual.Film.__new__(visual.Film)
+        film.terminal = lambda *args, **kwargs: ""
+        self.assertNotIn("Global shortcut configured", film.work(16.7))
+        self.assertIn("Global shortcut configured", film.work(18.0))
+
     def test_all_eighteen_supported_harnesses_have_artwork(self):
         self.assertEqual(len(visual.HARNESSES), 18)
         self.assertEqual(len({name for name, _ in visual.HARNESSES}), 18)
