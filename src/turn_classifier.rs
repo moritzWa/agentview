@@ -155,27 +155,7 @@ impl TurnClassifier {
             let turn = turn_hash(session, is_held);
             match cache.verdicts.get(&session.id) {
                 Some(labelled) if labelled.turn == turn => {
-                    if labelled.verdict == Verdict::NeedsInput
-                        && session.state == SessionState::Completed
-                    {
-                        session.raw_state = Some(ASKED_IN_MESSAGE.into());
-                    }
-                    session.state = match (labelled.verdict, held(session)) {
-                        // A status the model calls input must not hide a live
-                        // shell. A real question still does.
-                        (Verdict::NeedsInput, true) if !message_asks(session) => {
-                            if session.is_scheduled() {
-                                SessionState::Scheduled
-                            } else {
-                                SessionState::Working
-                            }
-                        }
-                        (Verdict::NeedsInput, _) => SessionState::NeedsInput,
-                        // Its background work still runs, so it stays Background.
-                        (Verdict::Done, true) if session.is_scheduled() => SessionState::Scheduled,
-                        (Verdict::Done, true) => SessionState::Working,
-                        (Verdict::Done, false) => SessionState::Completed,
-                    };
+                    apply_verdict(session, labelled.verdict);
                 }
                 _ if cache.in_flight.contains(&session.id)
                     || cache.failed.get(&session.id) == Some(&turn) => {}
@@ -280,6 +260,56 @@ fn eligible(session: &AgentSession, now: SystemTime) -> bool {
             || crate::last_message::get(&session.id).is_some())
         && !session.summary.trim().is_empty()
         && session.age(now).is_some_and(|age| age <= RECENT)
+}
+
+/// Reuse the dashboard's exact cached turn judgements without starting another
+/// model request (or spending money) from the independent mobile daemon.
+pub fn apply_saved(snapshot: &mut SessionSnapshot) -> BTreeSet<String> {
+    if std::env::var("AGENTVIEW_TURN_CLASSIFIER").as_deref() == Ok("off") {
+        return BTreeSet::new();
+    }
+    let Some(path) = default_store_path() else {
+        return BTreeSet::new();
+    };
+    apply_saved_at(snapshot, &path)
+}
+
+fn apply_saved_at(snapshot: &mut SessionSnapshot, path: &Path) -> BTreeSet<String> {
+    let verdicts = read_store(path);
+    let now = SystemTime::now();
+    let mut assessed = BTreeSet::new();
+    for session in &mut snapshot.sessions {
+        if !eligible(session, now) {
+            continue;
+        }
+        if let Some(labelled) = verdicts
+            .get(&session.id)
+            .filter(|label| label.turn == turn_hash(session, held(session)))
+        {
+            apply_verdict(session, labelled.verdict);
+            assessed.insert(session.id.clone());
+        }
+    }
+    assessed
+}
+
+fn apply_verdict(session: &mut AgentSession, verdict: Verdict) {
+    if verdict == Verdict::NeedsInput && session.state == SessionState::Completed {
+        session.raw_state = Some(ASKED_IN_MESSAGE.into());
+    }
+    session.state = match (verdict, held(session)) {
+        (Verdict::NeedsInput, true) if !message_asks(session) => {
+            if session.is_scheduled() {
+                SessionState::Scheduled
+            } else {
+                SessionState::Working
+            }
+        }
+        (Verdict::NeedsInput, _) => SessionState::NeedsInput,
+        (Verdict::Done, true) if session.is_scheduled() => SessionState::Scheduled,
+        (Verdict::Done, true) => SessionState::Working,
+        (Verdict::Done, false) => SessionState::Completed,
+    };
 }
 
 /// Some summaries stay the thread's first prompt or title across turns, so the
@@ -488,6 +518,40 @@ mod tests {
             sessions,
             warnings: Vec::new(),
         }
+    }
+
+    #[test]
+    fn mobile_reuses_only_saved_verdicts_for_the_exact_current_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("verdicts.json");
+        let session = idle(
+            "mobile-saved-turn",
+            SessionState::Completed,
+            "idle",
+            "Which option should I implement?",
+        );
+        record_in_store(
+            &path,
+            &session.id,
+            Labelled {
+                turn: turn_hash(&session, false),
+                verdict: Verdict::NeedsInput,
+                labelled_at_ms: now_ms(),
+            },
+        )
+        .unwrap();
+        let mut current = snapshot(vec![session.clone()]);
+        assert!(apply_saved_at(&mut current, &path).contains(&session.id));
+        assert_eq!(current.sessions[0].state, SessionState::NeedsInput);
+        assert_eq!(
+            current.sessions[0].raw_state.as_deref(),
+            Some(ASKED_IN_MESSAGE)
+        );
+        let mut changed = session;
+        changed.summary = "Implemented and tested.".into();
+        let mut stale = snapshot(vec![changed]);
+        assert!(apply_saved_at(&mut stale, &path).is_empty());
+        assert_eq!(stale.sessions[0].state, SessionState::Completed);
     }
 
     #[test]

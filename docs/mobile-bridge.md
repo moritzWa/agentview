@@ -69,6 +69,14 @@ and successful source check. Offline reads are snapshots.
 including questions and approvals. It excludes hidden and paused rows. Status
 snapshots contain IDs and typed states, not tool output or conversation text.
 Offline results are last-known, not proof that a session is still working.
+The default list is a small human-recent overview, not a page of old completed
+sessions. `status="active"` returns working/waiting sessions and recent replies
+whose need for input has not been assessed. Rows include the latest user request
+and the end of the latest assistant reply. Whole-set counts and those excerpts
+let the phone answer and ask a pending decision without opening each history.
+The connector reuses the dashboard's status overlays and saved turn judgements.
+Missing judgements are explicit; a finished turn alone does not mean no reply is
+needed. This adds no summary-model calls and no tool-output sync.
 `read_session` defaults to the latest messages. Its `before` and `after` values
 are message offsets. The sync `cursor` is not a message offset.
 
