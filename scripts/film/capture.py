@@ -184,6 +184,7 @@ def main():
         second["windows"][0]["percent"] = 62
         second["windows"][1]["percent"] = 34
         usage.insert(1, second)
+        data["demo"]["voice"] = [{"at_ms": 0, "who": "agent", "text": "Ready."}]
         fixture = home / "film.json"
         fixture.write_text(json.dumps(data))
         queue_dir = home / "queue"
@@ -296,6 +297,16 @@ def main():
                     i for i, line in enumerate(screen.display) if name in line
                 )
             (args.output / "layout.json").write_text(json.dumps(rows, indent=2))
+            os.write(
+                master, b"\x1b[107;9u"
+            )  # Actual Super/Command K, no shortcut change.
+            drain(0.8)
+            picture(screen, args.output / "voice-start.png")
+            assert "Ready." in "\n".join(screen.display), (
+                "CmdK did not start fixture voice indicator"
+            )
+            os.write(master, b"\x1b[107;9u")
+            drain(0.3)
             os.write(master, b"\x13")  # Actual Ctrl+S, not scope filtering.
             drain(0.7)
             picture(screen, args.output / "directories.png")

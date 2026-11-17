@@ -34,7 +34,7 @@ def main():
     args = ap.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     film = Film(args.output)
-    times = [0, 4.3, 10.4, 17.6, 25.0, 30.4, 33.8, 36.5, 42.5]
+    times = [0, 7.8, 13.6, 18.5, 27.9, 30.8, 33.9, 36.8, 42.5]
     sheet = Image.new("RGB", (1920, 1080), "white")
     for i, t in enumerate(times):
         im = film.frame(t)
@@ -45,6 +45,7 @@ def main():
         )
         sheet.paste(thumb, ((i % 3) * 640, (i // 3) * 360))
     sheet.save(args.output / "contact-sheet.jpg", quality=96)
+    film.frame(2.45).save(args.output / "frame-morph-midpoint.png")
     if args.stills:
         return
     audio(args.output)

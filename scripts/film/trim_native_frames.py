@@ -12,15 +12,17 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--output", type=Path, required=True)
     args = ap.parse_args()
-    folder = args.output / "chatgpt-desktop/frames45"
+    folder = args.output / "chatgpt-desktop/frames-hires"
+    clip = json.loads(
+        (args.output / "chatgpt-desktop/native-hires-clip.json").read_text()
+    )
     frames = sorted(folder.glob("*.png"))
     assert frames, "Native recording frames missing"
     for path in frames:
         with Image.open(path) as im:
-            if im.width == 1024:
-                im.crop((4, 0, im.width, im.height)).save(path)
-            else:
-                assert im.width == 1020, "Unexpected native source dimensions"
+            assert list(im.size) == clip["frame_dimensions"], (
+                "Unexpected native source dimensions"
+            )
     samples = []
     for path in [frames[0], frames[len(frames) // 2], frames[-1]]:
         with Image.open(path) as im:

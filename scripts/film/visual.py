@@ -154,6 +154,7 @@ class Film:
                 "directories",
                 "work-directories",
                 "selected",
+                "voice-start",
             ]
         }
         self.rows = json.loads((self.output / "captures/layout.json").read_text())
@@ -524,14 +525,20 @@ class Film:
                 36,
             )
         out += txt(882, 253, "18 coding harnesses", 23, INK, True, "middle")
-        frames = sorted((self.output / "chatgpt-desktop/frames45").glob("*.png"))
+        frames = sorted(
+            getattr(
+                self, "native_frames_dir", self.output / "chatgpt-desktop/frames45"
+            ).glob("*.png")
+        )
         out += rect(1165, 105, 400, 275, 27)
         if frames:
             out += rounded_image(frames[-1], 1177, 117, 376, 213, 15)
         else:
             out += txt(1365, 235, "Capture pending", 24, MUTED, anchor="middle")
-        out += txt(1365, 351, "Your agents in ChatGPT", 22, INK, True, "middle")
-        out += txt(1365, 374, "Existing OpenCode sessions", 14, MUTED, anchor="middle")
+        out += txt(1365, 351, "ChatGPT MCP", 22, INK, True, "middle")
+        out += txt(
+            1365, 374, "Talk to your agents from anywhere", 14, MUTED, anchor="middle"
+        )
         out += self.crop_tile(
             "work-directories",
             (0, 155, 950, 700),
@@ -575,7 +582,7 @@ class Film:
             750,
             565,
             95,
-            "Claude · Claude2 · Codex",
+            "All your subscriptions",
             cover=False,
         )
         out += (

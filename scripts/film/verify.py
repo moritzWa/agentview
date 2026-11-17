@@ -55,7 +55,21 @@ def main():
     assert len(edge_check["samples"]) == 3
     assert all(s["green_edge_pixels"] == 0 for s in edge_check["samples"])
     wave_check = json.loads((args.output / "audio/waveform-check.json").read_text())
-    assert next(f for f in wave_check["frames"] if f["at"] == 16.1)["peak"] == 0
+    assert next(f for f in wave_check["frames"] if f["at"] == 16.95)["peak"] == 0
+    native = json.loads(
+        (args.output / "chatgpt-desktop/native-hires-clip.json").read_text()
+    )
+    assert native["moving"] and native["source_dimensions"][0] >= 2560
+    assert (
+        native["motion_near_movie28s"] > 0.05
+        and native["moving_transition_fraction"] > 0.07
+    )
+    music = json.loads((args.output / "audio/music.json").read_text())
+    assert (
+        music["continuous"]
+        and music["edit_placements"][0]["video"][1]
+        >= music["edit_placements"][1]["video"][0]
+    )
     approved = json.loads((args.output / "edit45.json").read_text())
     assert approved["duration_approved"] and approved["seconds"] == 45
     mapping = json.loads((args.output / "proposal45/morph-map.json").read_text())[
@@ -122,20 +136,8 @@ def main():
     loudness, _ = json.JSONDecoder().raw_decode(result.stderr[start:])
     assert -18 < float(loudness["input_i"]) < -14
     assert float(loudness["input_tp"]) <= 0
-    vtt = (
-        "WEBVTT\n\n"
-        + "\n\n".join(
-            f"{stamp(c['at'])} --> {stamp(c['end'])}\n{c['text']}" for c in clips
-        )
-        + "\n"
-    )
-    (args.output / "captions.vtt").write_text(vtt)
     template = Path(__file__).with_name("review.html").read_text()
-    # Inline cues also work when opened with file://, without a caption CORS error.
-    template = template.replace(
-        'id="film-captions">[]',
-        'id="film-captions">' + json.dumps(clips).replace("</", "<\\/"),
-    )
+    assert "addTextTrack" not in template and "<track" not in template
     (args.output / "review.html").write_text(template)
     report = {
         "duration": float(probe["format"]["duration"]),
@@ -155,12 +157,15 @@ def main():
         "music": "Lorn · TIMESINK, 30-second excerpt, user-reported artist permission",
         "native_chatgpt_voice": "active Work Voice; actual AgentVoice exact-target read/send, receiver verified",
         "native_input": "typed within active Voice; microphone speech recognition not tested",
-        "native_desktop_source_resolution": [1024, 738],
+        "native_desktop_source_resolution": native["source_dimensions"],
+        "native_video_motion": native,
         "native_edge_crop": "4 left-source pixels, first/middle/last green-edge checks passed",
         "editorial_waveform": "actual isolated speaker clip RMS+31-band FFT, cue-synced; silence flat, not music or live mic",
         "editorial_logo": "canonical docs/assets/logo.svg embedded unchanged",
         "pane_row_morph": "16 stable normalized IDs, exact actual captured cell-bound destinations",
-        "spoken_text": "Actual ElevenLabs character/word alignment, fixed-layout progressive reveal",
+        "spoken_text": "Dialogue cards only: actual ElevenLabs alignment. No narrator captions or subtitle tracks.",
+        "narrator_captions": False,
+        "music_continuous": True,
         "speaker_colors": {"YOU": "#6f38c5", "AGENT VIEW": "#1e66f5"},
         "creative_review_complete": False,
     }

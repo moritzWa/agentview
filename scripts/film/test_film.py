@@ -10,6 +10,7 @@ import numpy as np
 import propose45
 import render
 import revision45
+import soundtrack
 import verify
 import visual
 import waveform
@@ -101,12 +102,32 @@ class FilmTests(unittest.TestCase):
         self.assertNotEqual(
             revision45.SPEAKER_COLORS["YOU"], revision45.SPEAKER_COLORS["AGENT VIEW"]
         )
-        self.assertAlmostEqual(
-            revision45.KEY_EVENTS["Left2"] - revision45.KEY_EVENTS["Left1"], 0.15
-        )
+        self.assertNotIn("Left2", revision45.KEY_EVENTS)
+        self.assertIn("CmdK", revision45.KEY_EVENTS)
         self.assertIn("<path", revision45.keycap(0, 0, "Right", True))
         self.assertIn("scale(-1 1)", revision45.keycap(0, 0, "Left"))
         self.assertIn("Ctrl</text>", revision45.keycap(0, 0, "Ctrl"))
+
+    def test_shared_shortcut_overlay_and_continuous_score(self):
+        for keys in [
+            ["Right"],
+            ["Left"],
+            ["Cmd", "K"],
+            ["Ctrl", "S"],
+            ["Cmd", "Shift", "B"],
+        ]:
+            self.assertIn(
+                'data-shortcut-overlay="shared"',
+                revision45.shortcut_overlay(keys, "Test"),
+            )
+        bed = soundtrack.loop_excerpt(
+            np.ones((3000, 2), dtype=np.float32), seconds=45, rate=100
+        )
+        self.assertEqual(bed.shape, (4500, 2))
+        self.assertGreater(float(bed.min()), 0.99)
+        html = __import__("pathlib").Path(__file__).with_name("review.html").read_text()
+        self.assertNotIn("addTextTrack", html)
+        self.assertNotIn("<track", html)
 
     def test_all_eighteen_supported_harnesses_have_artwork(self):
         self.assertEqual(len(visual.HARNESSES), 18)

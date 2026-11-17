@@ -2,8 +2,8 @@
 
 import argparse
 import json
-import shutil
 import subprocess
+import sys
 from itertools import pairwise
 from pathlib import Path
 
@@ -15,7 +15,7 @@ def main():
     ap.add_argument("--output", type=Path, required=True)
     args = ap.parse_args()
     root = args.output
-    plan = json.loads((root / "proposal45/script-timeline.json").read_text())
+    plan = json.loads((root / "followup45/script-timeline.json").read_text())
     assert plan["seconds"] == 45
     assert all(c["fits_scene"] for c in plan["cues"])
     for left, right in pairwise(plan["cues"]):
@@ -28,41 +28,29 @@ def main():
         public_release_approved=False,
     )
     (root / "edit45.json").write_text(json.dumps(approved, indent=2))
-    frames = root / "chatgpt-desktop/frames45"
-    frames.mkdir(exist_ok=True)
-    if len(list(frames.glob("*.png"))) < 180:
-        existing = sorted((root / "chatgpt-desktop/frames").glob("*.png"))
-        assert len(existing) >= 54
-        for i, path in enumerate(existing[:54], 1):
-            shutil.copy2(path, frames / f"{i:04d}.png")
+    if not (root / "chatgpt-desktop/native-hires-clip.json").exists():
         subprocess.run(
             [
-                "ffmpeg",
-                "-v",
-                "error",
-                "-nostdin",
-                "-y",
-                "-ss",
-                "55",
-                "-i",
-                str(root / "chatgpt-desktop/agentview-film-native-send-v4.mov"),
-                "-t",
-                "4.2",
-                "-vf",
-                "crop=1020:738:38:26,fps=30",
-                "-start_number",
-                "55",
-                str(frames / "%04d.png"),
+                sys.executable,
+                str(Path(__file__).with_name("native_hires.py")),
+                "--output",
+                str(root),
             ],
             check=True,
         )
-    assert len(list(frames.glob("*.png"))) >= 180
+    frames = root / "chatgpt-desktop/frames-hires"
+    assert len(list(frames.glob("*.png"))) == 186
+    navigation = json.loads((root / "navigation/recording.json").read_text())
+    assert navigation["input"] == ["Right", "Left"], (
+        "Require verified single-Left OpenCode return"
+    )
+    assert "Ready." in (root / "captures/voice-start.txt").read_text()
     (root / "agentview-film-evidence/edit-key-events.json").write_text(
         json.dumps(
             {
                 "events": KEY_EVENTS,
-                "source": "Actual recorded Right-open/double-Left-return phases; actual CtrlS before/after app captures.",
-                "retiming": "Idle/warmup trimmed and phases conformed to edit; doubleLeft gap retained at150ms.",
+                "source": "Actual recorded Right-open/single-Left-return in OpenCode; actual CmdK fixtureVoice live indicator and CtrlS app captures.",
+                "retiming": "Idle/warmup trimmed; overlays conformed to actual input/state changes. No double-tap claim or shortcut change.",
                 "work_binding": "Configured global binding illustrated; actual scope change captured through view work.",
             },
             indent=2,

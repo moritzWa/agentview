@@ -29,7 +29,6 @@ def main():
         "agentview-review.mp4",
         "edit45.json",
         "review.html",
-        "captions.vtt",
         "contact-sheet.jpg",
         "frame-00.0.png",
         "verification.json",
@@ -45,6 +44,10 @@ def main():
         "captures/directories.png",
         "captures/work-directories.png",
         "captures/selected.png",
+        "captures/voice-start.png",
+        "native-hires-motion-sheet.jpg",
+        "chatgpt-desktop/native-hires-clip.json",
+        "followup45/script-timeline.json",
         "audio/waveform-check.json",
         "waveform-strip.jpg",
         "captures/provenance.json",
@@ -62,7 +65,7 @@ def main():
     ]
     files += [
         str(p.relative_to(args.output))
-        for p in (args.output / "chatgpt-desktop/frames45").glob("*.png")
+        for p in (args.output / "chatgpt-desktop/frames-hires").glob("*.png")
     ]
     files += [
         f"agentview-film-evidence/{name}"
@@ -72,6 +75,8 @@ def main():
             "native-voice-receiver.json",
             "native-edge-trim.json",
             "edit-key-events.json",
+            "native-v6-receiver.json",
+            "native-v6-send-proof.png",
         ]
         if (args.output / "agentview-film-evidence" / name).exists()
     ]
@@ -80,6 +85,9 @@ def main():
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(args.output / name, target)
     shutil.copyfile(Path(__file__).with_name("shotlist.json"), dest / "shotlist.json")
+    active = json.loads((args.output / "edit45.json").read_text())
+    (dest / "shotlist.json").write_text(json.dumps(active, indent=2))
+    (dest / "captions.vtt").unlink(missing_ok=True)
     print(f"Staged private review package: {dest}. Existing public assets unchanged.")
 
 

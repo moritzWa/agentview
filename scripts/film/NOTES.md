@@ -36,7 +36,7 @@ video or playing audio. No test plays audio or opens a GUI on the host.
   stages its later Working state, with an explicit time-jump caption.
 - The built-in voice exchange and checkout state change are staged. They are
   not a live call, real send or resumed native session.
-- A real Right-arrow/double-Left recording opens a dedicated synthetic native
+- A fresh Right-arrow/single-Left recording opens a dedicated synthetic native
   OpenCode session and returns to Agent View. No fake successful open.
 - The ChatGPT desktop recording is actual Work Voice + AgentVoice read/send.
   Prompts were typed inside active Voice; speech recognition is untested.
@@ -44,8 +44,13 @@ video or playing audio. No test plays audio or opens a GUI on the host.
   restored to its prior absent state after capture. Receiver-side message
   metadata confirms the actual send. The dedicated tools-denied synthetic
   session was deleted afterward. No pairing or account-auth settings changed.
-- Native desktop footage is a 1024 × 738 window inset, unlike the independently
-  high-resolution Agent View sources. Do not claim that source is native 4K.
+- Native ChatGPT was recaptured in a3000×1270 app window, with larger actual
+  Chromium UI rendering. The raw recording includes34px window shadow.
+  Source content is2996×1270 after shadow and4px left-edge removal, not native4K.
+  `native_hires.py` selects moving video, checks motion near movie28s, and never
+  substitutes screenshots or an editorial freeze. The earlier low-res source stays private.
+- Actual Command K starts the fixture Voice live/Ready indicator. It is captured
+  from the app, but is not a real microphone call. All shortcut overlays share one component.
 - The busy fixture has20 synthetic agents across6 work/personal directories.
   All/work comparison preserves identical state. Ctrl+S actually changes
   status/directory grouping, separately from scope. Supported usage account
@@ -60,8 +65,9 @@ video or playing audio. No test plays audio or opens a GUI on the host.
 The opening uses a dense animated4×4 synthetic coding-terminal grid. Stable
 normalized IDs tie every pane title/provider/state to its captured session row.
 Each pane rectangle and text anchor moves into the exact measured cell bounds;
-matching captured row pixels complete the handoff. The7–14s Right/double-Left
-beat is separate from the14–22.5s editorial voice exchange. Native footage omits test
+matching captured row pixels complete the0.9s handoff, from2.0–2.9s. Arrow-key
+navigation is5.6–10.3s; Command K introduces built-in Voice at10.3–15s, before
+the15–23s editorial voice exchange. Native footage omits test
 setup instructions above the actual coupon question. After a genuine return,
 the edit cuts back to the busy20-session fixture instead of lingering on capture
 commands or the sparse dedicated-session setup.
@@ -73,17 +79,18 @@ and numerical check from the real clips. Tests cover silence, relative level,
 speaker switches, offsets and determinism. This is voiceover visualization,
 not original microphone evidence. Recorded ChatGPT UI is never redrawn.
 
-The spoken intro names the problem and Agent View. Navigation says Right and
-double-tap Left explicitly. Large vector keycaps flash at recorded input-phase
-boundaries. Actual ElevenLabs character timings reveal words at fixed positions,
+The spoken intro names the problem and Agent View. Navigation says “Use the
+arrow keys to zoom into or zoom out of the session.” No double-tap claim or
+shortcut changes. Large vector keycaps flash at recorded input-phase boundaries.
+Actual ElevenLabs character timings reveal dialogue words at fixed positions,
 without reflow. YOU is purple, AGENT VIEW blue, both labeled. No narration is
 time-compressed. The final five seconds remain a readable music-only hold.
 
 Moritz selected Lorn's “TIMESINK” and reports personal permission from Marcos
 Ortega for a short demo excerpt. The official artist Bandcamp stream supplied
 the working source. `soundtrack.py` extracts only 0:00–0:30, ducks it under
-speech and normalizes the mix. The same30s excerpt plays at video0–22.5 and
-37.5–45; the connection/view explanation has a quiet middle. No extra part of the
+speech and normalizes the mix. The same30s excerpt loops continuously with
+an equal-power0.8s overlap at29.2s. There is no music gap. No extra part of the
 song is extracted. The separate `audio/music-excerpt.mp3` stem is
 replaceable. Neither the full song nor the separate stem is committed.
 
@@ -107,7 +114,8 @@ No Apple artwork is used in the film.
 ## Review and site integration
 
 Moritz approved45 seconds with “45 is fine”. `propose45.py` retains the measured
-script and proof inputs in private `proposal45/`. The active edit is
+script and proof inputs in private `proposal45/`. `followups45.py` measures the
+approved revisions in `followup45/`. The active edit is
 `revision45.py`; it reuses the canonical layout helpers from the earlier edit.
 The inputs include measured narration,16 stable pane/session IDs, exact captured row
 destinations, grid/midpoint/list keyframes, explicit vector keycaps and fixed-line
@@ -120,10 +128,11 @@ Human speech is purple and labeled YOU; Agent View is blue and labeled AGENT VIE
 Runtime approval is not public publishing approval. The music excerpt stays30s.
 
 `review.html` is the standalone, muted-by-default player. Chapter buttons seek
-without starting playback. Verification creates synchronized WebVTT captions,
+without starting playback. No narrator captions or player subtitle tracks.
+Verification
 checks all1350 decoded frames, duration, narration timing and loudness. The active
 movie is `agentview-review.mp4`; the earlier30s movie is retained separately.
-Captions are opt-in because word-timed text is already burned into the picture.
+Only human/agent dialogue cards retain word-timed text.
 
 The older checked-in first-draft package is not overwritten. Neither are `site/demo.mp4`, `site/demo.gif`,
 `site/demo-poster.png` and `docs/assets/demo.gif`. None is replaced or deployed.

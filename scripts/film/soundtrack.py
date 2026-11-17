@@ -68,6 +68,21 @@ def normalize(source, dest):
     )
 
 
+def loop_excerpt(excerpt, seconds=45, rate=RATE, crossfade=0.8):
+    length = round(seconds * rate)
+    overlap = round(crossfade * rate)
+    start = len(excerpt) - overlap
+    assert 0 < overlap < len(excerpt) and length <= start + len(excerpt)
+    music = np.zeros((length, 2), dtype=np.float32)
+    music[: len(excerpt)] = excerpt
+    angle = np.linspace(0, np.pi / 2, overlap)
+    music[start : len(excerpt)] *= np.cos(angle)[:, None]
+    repeat = excerpt[: length - start].copy()
+    repeat[:overlap] *= np.sin(angle)[:, None]
+    music[start:] += repeat
+    return music
+
+
 def audio(output):
     plan = json.loads((output / "edit45.json").read_text())
     assert plan["duration_approved"] and plan["seconds"] == 45
@@ -115,13 +130,9 @@ def audio(output):
         ],
         check=True,
     )
-    # Same30s source excerpt, not an extended song extract. Quiet connection/
-    # view explanation in the middle, then return for the schedule payoff/close.
-    music = np.zeros_like(samples)
-    split = round(22.5 * RATE)
-    return_at = round(37.5 * RATE)
-    music[:split] = excerpt[:split]
-    music[return_at:] = excerpt[split:]
+    # Continuous score from the same authorized excerpt, smoothly overlapped.
+    music = loop_excerpt(excerpt)
+    write(output / "audio/music-bed.wav", music)
     t = np.arange(RATE * seconds) / RATE
     gain = np.full(len(t), 0.22, dtype=np.float32)
     for cue in cues:
@@ -129,8 +140,6 @@ def audio(output):
         leave = np.clip((cue["end"] + 0.35 - t) / 0.35, 0, 1)
         gain *= 1 - 0.70 * np.minimum(enter, leave)
     gain *= np.minimum(np.clip(t / 0.35, 0, 1), np.clip((seconds - t) / 1.0, 0, 1))
-    gain[t < 22.5] *= np.clip((22.5 - t[t < 22.5]) / 0.4, 0, 1)
-    gain[t >= 37.5] *= np.clip((t[t >= 37.5] - 37.5) / 0.35, 0, 1)
     voice = decode(output / "narration.wav")[: RATE * seconds]
     write(output / "music-mix.wav", voice + music * gain[:, None])
     normalize(output / "music-mix.wav", output / "soundtrack.wav")
@@ -142,9 +151,11 @@ def audio(output):
                 "artist": "Lorn",
                 "source": "https://lorn.bandcamp.com/track/timesink",
                 "source_excerpt_seconds": [0, 30],
+                "continuous": True,
+                "crossfade_seconds": 0.8,
                 "edit_placements": [
-                    {"video": [0, 22.5], "source": [0, 22.5]},
-                    {"video": [37.5, 45], "source": [22.5, 30]},
+                    {"video": [0, 30], "source": [0, 30]},
+                    {"video": [29.2, 45], "source": [0, 15.8]},
                 ],
                 "permission": "User reports personal permission from artist Marcos Ortega for a short demo excerpt. Not a general redistribution license.",
                 "replaceable_stem": "music-excerpt.mp3",

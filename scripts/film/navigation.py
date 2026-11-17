@@ -96,9 +96,7 @@ def main():
         assert "coupon" in display.lower(), display
         picture(screen, root / "opened.png")
         os.write(master, b"\x1b[D")
-        record(0.15, "return")
-        os.write(master, b"\x1b[D")
-        record(2, "return")
+        record(3, "return")
         picture(screen, root / "returned.png")
         assert "backgrounded OpenCode session" in "\n".join(
             screen.display
@@ -109,7 +107,7 @@ def main():
                     "target": target["id"],
                     "actual_app": True,
                     "actual_native_open": True,
-                    "input": ["Right", "Left", "Left"],
+                    "input": ["Right", "Left"],
                     "fps_approx": 10,
                     "frames": frames,
                 },

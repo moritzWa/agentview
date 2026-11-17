@@ -18,8 +18,6 @@ from visual import (
     W,
     font,
     image,
-    keycaps,
-    mark,
     navigation_uri,
     rect,
     rounded_image,
@@ -31,23 +29,23 @@ SECONDS = 45
 PURPLE = "#6f38c5"
 SPEAKER_COLORS = {"YOU": PURPLE, "AGENT VIEW": BLUE, "NARRATOR": INK}
 KEY_EVENTS = {
-    "Right": 9.286,
-    "Left1": 11.9,
-    "Left2": 12.05,
-    "CtrlS": 29.5,
-    "Work": 32.8,
+    "Right": 7.1,
+    "Left": 9.0,
+    "CmdK": 13.0,
+    "CtrlS": 30.2,
+    "Work": 33.55,
 }
 
 
 def keycap(x, y, label, pressed=False, scale=1):
-    width = 96 if label == "Ctrl" else 72
+    width = 80 if label == "Ctrl" else 56
     color = "white" if pressed else INK
     face = BLUE if pressed else "white"
     out = (
         f'<g transform="translate({x} {y}) scale({scale})">'
-        + rect(0, 5, width, 66, 12, "#b8c5df")
-        + rect(0, 0, width, 66, 12, face)
-        + rect(3, 3, width - 6, 60, 9, face)
+        + rect(0, 3, width, 54, 10, "#cdd1db")
+        + rect(0, 0, width, 52, 10, face, "#d9dde6")
+        + rect(3, 3, width - 6, 46, 7, face)
     )
     if label in ["Right", "Left", "Down"]:
         transform = (
@@ -57,9 +55,36 @@ def keycap(x, y, label, pressed=False, scale=1):
             if label == "Down"
             else ""
         )
-        out += f'<g transform="translate({width / 2} 33) {transform}" fill="none" stroke="{color}" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M-18 0H18M6-12L18 0 6 12"/></g>'
+        out += f'<g transform="translate({width / 2} 26) {transform}" fill="none" stroke="{color}" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M-14 0H14M4-10L14 0 4 10"/></g>'
+    elif label == "Cmd":
+        out += f'<g fill="none" stroke="{color}" stroke-width="2.6"><path d="M21 19h14v14H21z M21 19v-5a5 5 0 1 0-5 5h5 M35 19h5a5 5 0 1 0-5-5v5 M35 33v5a5 5 0 1 0 5-5h-5 M21 33h-5a5 5 0 1 0 5 5v-5"/></g>'
+    elif label == "Shift":
+        out += f'<path d="M28 12l-13 14h8v12h10V26h8z" fill="none" stroke="{color}" stroke-width="2.6" stroke-linejoin="round"/>'
     else:
-        out += txt(width / 2, 43, label, 27, color, True, "middle")
+        out += txt(
+            width / 2, 36, label, 20 if label == "Ctrl" else 28, color, True, "middle"
+        )
+    return out + "</g>"
+
+
+def shortcut_overlay(keys, label, pressed=False, x=480, y=728):
+    scale = 1.25
+    width = 640
+    height = 104
+    key_width = (
+        sum(80 if key == "Ctrl" else 56 for key in keys) * scale + (len(keys) - 1) * 12
+    )
+    total = key_width + 28 + font(26, True).getlength(label)
+    start = x + (width - total) / 2
+    out = (
+        '<g data-shortcut-overlay="shared"><g opacity=".72">'
+        + rect(x, y, width, height, 26, "#d8edff")
+        + "</g>"
+    )
+    for key in keys:
+        out += keycap(start, y + 23, key, pressed, scale)
+        start += (80 if key == "Ctrl" else 56) * scale + 12
+    out += txt(start + 16, y + 66, label, 26, BLUE, True)
     return out + "</g>"
 
 
@@ -97,9 +122,7 @@ def line_wrap(text, size=23, max_width=1360):
 class Film45(Film):
     def __init__(self, output):
         super().__init__(output)
-        self.plan = json.loads(
-            (self.output / "proposal45/script-timeline.json").read_text()
-        )
+        self.plan = json.loads((self.output / "edit45.json").read_text())
         self.cues = self.plan["cues"]
         self.alignments = {
             c["file"]: timed_words(
@@ -155,10 +178,16 @@ class Film45(Film):
         self.navigation_meta = json.loads(
             (self.output / "navigation/recording.json").read_text()
         )
-        self.native_frames = sorted(
-            (self.output / "chatgpt-desktop/frames45").glob("*.png")
+        self.native_clip = json.loads(
+            (self.output / "chatgpt-desktop/native-hires-clip.json").read_text()
         )
-        assert len(self.native_frames) >= 180, "Prepared native6s excerpt missing"
+        assert (
+            self.native_clip["source_dimensions"][0] >= 2560
+            and self.native_clip["moving"]
+        )
+        self.native_frames_dir = self.output / "chatgpt-desktop/frames-hires"
+        self.native_frames = sorted(self.native_frames_dir.glob("*.png"))
+        assert len(self.native_frames) >= 186, "Moving native6.2s excerpt missing"
         self.still = None
 
     @staticmethod
@@ -176,11 +205,11 @@ class Film45(Film):
         return image(data, 70, 200, 1460, self.morph_height * 1460 / 1616)
 
     def intro(self, t):
-        p = max(0, min(1, (t - 2.5) / 3.5))
+        p = max(0, min(1, (t - 2.0) / 0.9))
         p = p * p * (3 - 2 * p)
         out = self.header(
             "Too many agents. Too many windows."
-            if t < 2.5
+            if t < 2.0
             else "Agent View. One terminal.",
             "All your coding agents. One terminal. One voice.",
         )
@@ -273,22 +302,18 @@ class Film45(Film):
         return out
 
     def navigation(self, t):
-        right, left1, left2 = (
-            KEY_EVENTS["Right"],
-            KEY_EVENTS["Left1"],
-            KEY_EVENTS["Left2"],
-        )
+        right, left = KEY_EVENTS["Right"], KEY_EVENTS["Left"]
         out = self.header(
-            "Zoom into the session that needs you.",
-            "Right opens. Double-tap Left to return.",
+            "Zoom into or out of your session.",
+            "Use the arrow keys.",
         )
-        if t < right or t >= 12.5:
-            out += self.status_image(selected=8.6 <= t < right)
+        if t < right or t >= 9.6:
+            out += self.status_image(selected=6.6 <= t < right)
         else:
-            phase = "open" if t < left1 else "return"
+            phase = "open" if t < left else "return"
             frames = [f for f in self.navigation_meta["frames"] if f["phase"] == phase]
             progress = (
-                (t - right) / (left1 - right) if phase == "open" else (t - left1) / 0.6
+                (t - right) / (left - right) if phase == "open" else (t - left) / 0.6
             )
             n = min(len(frames) - 1, max(0, int(progress * len(frames))))
             out += image(
@@ -300,17 +325,25 @@ class Film45(Film):
                 1460,
                 620,
             )
-        if t < left1:
-            out += keycap(1120, 744, "Right", right <= t < right + 0.22) + txt(
-                1215, 789, "Open session", 26, BLUE, True
-            )
+        if t < left:
+            out += shortcut_overlay(["Right"], "Zoom in", right <= t < right + 0.22)
         else:
-            out += (
-                keycap(1000, 744, "Left", left1 <= t < left1 + 0.12)
-                + keycap(1086, 744, "Left", left2 <= t < left2 + 0.18)
-                + txt(1183, 789, "Return", 26, BLUE, True)
-            )
+            out += shortcut_overlay(["Left"], "Zoom out", left <= t < left + 0.22)
         return out
+
+    def voice_intro(self, t):
+        active = t >= KEY_EVENTS["CmdK"]
+        out = self.header("Agent View Voice", "Talk to your sessions.")
+        out += image(
+            self.crop("voice-start" if active else "overview"), 70, 200, 1460, 620
+        )
+        return out + shortcut_overlay(
+            ["Cmd", "K"],
+            "Start Voice",
+            KEY_EVENTS["CmdK"] <= t < KEY_EVENTS["CmdK"] + 0.3,
+            x=820,
+            y=690,
+        )
 
     def dialogue(self, t):
         cue = next(
@@ -319,9 +352,9 @@ class Film45(Film):
             if c["file"]
             == (
                 "question.mp3"
-                if t < 16.2
+                if t < 17.05
                 else "answer.mp3"
-                if t < 20.6
+                if t < 21.4
                 else "checkout.mp3"
             )
         )
@@ -329,7 +362,7 @@ class Film45(Film):
         color = SPEAKER_COLORS[who]
         out = self.header(
             "One terminal. One voice.", "Ask once. Unblock the right agent."
-        ) + self.terminal("resumed" if t >= 21.7 else "overview")
+        ) + self.terminal("resumed" if t >= 22.5 else "overview")
         out += rect(300, 614, 1000, 192, 25, "white", "#d3def8") + txt(
             333, 645, who, 15, color, True
         )
@@ -346,31 +379,12 @@ class Film45(Film):
 
     def chatgpt(self, t):
         out = self.header(
-            "Your agents in ChatGPT.",
-            "Connect through an authenticated AgentVoice MCP connection.",
+            "ChatGPT MCP",
+            "Your authenticated connection to Agent View, wherever you are.",
         )
         out += rect(70, 200, 1460, 610, 24)
-        n = min(len(self.native_frames) - 1, max(0, int((t - 22.5) * 30)))
-        out += rounded_image(self.native_frames[n], 535, 212, 980, 586, 12)
-        out += txt(110, 270, "CONNECTION CONCEPT · EDITORIAL", 13, MUTED, True)
-        out += mark(260, 355, 1.4) + txt(
-            260, 455, "Agent View", 34, INK, True, "middle"
-        )
-        out += txt(260, 500, "ChatGPT + AgentVoice", 25, BLUE, True, "middle")
-        out += txt(260, 541, "Authorized MCP connection", 20, INK, anchor="middle")
-        out += txt(260, 581, "Read and reply from anywhere", 19, MUTED, anchor="middle")
-        out += txt(260, 617, "Existing OpenCode sessions", 17, MUTED, anchor="middle")
-        out += txt(
-            260, 691, "Actual native Voice recording →", 16, BLUE, True, "middle"
-        )
-        return out + txt(
-            260,
-            729,
-            "Typed prompts. Not a new sign-in flow.",
-            14,
-            MUTED,
-            anchor="middle",
-        )
+        n = min(len(self.native_frames) - 1, max(0, int((t - 23) * 30)))
+        return out + rounded_image(self.native_frames[n], 82, 212, 1436, 586, 12)
 
     def projects(self, t):
         out = self.header(
@@ -385,11 +399,7 @@ class Film45(Film):
             620,
         )
         pressed = KEY_EVENTS["CtrlS"] <= t < KEY_EVENTS["CtrlS"] + 0.3
-        out += (
-            keycap(1040, 739, "Ctrl", pressed)
-            + keycap(1149, 739, "S", pressed)
-            + txt(1245, 783, "Switch view", 25, BLUE, True)
-        )
+        out += shortcut_overlay(["Ctrl", "S"], "Switch view", pressed)
         return out
 
     def work_scope(self, t):
@@ -404,12 +414,10 @@ class Film45(Film):
             1460,
             620,
         )
-        out += (
-            '<g opacity=".72">'
-            + rect(478, 733, 644, 100, 26, "#d8edff")
-            + "</g>"
-            + keycaps(510, 747, 1.25)
-            + txt(1083, 793, "Work only", 30, BLUE, True, "end")
+        out += shortcut_overlay(
+            ["Cmd", "Shift", "B"],
+            "Work only",
+            KEY_EVENTS["Work"] <= t < KEY_EVENTS["Work"] + 0.3,
         )
         return out + txt(
             800,
@@ -453,24 +461,25 @@ class Film45(Film):
     def frame(self, t):
         if t >= 40 and self.still is not None:
             return self.still.copy()
-        if t < 7:
+        if t < 5.6:
             content = self.intro(t)
-        elif t < 14:
+        elif t < 10.3:
             content = self.navigation(t)
-        elif t < 22.5:
+        elif t < 15:
+            content = self.voice_intro(t)
+        elif t < 23:
             content = self.dialogue(t)
-        elif t < 28.5:
+        elif t < 29.2:
             content = self.chatgpt(t)
-        elif t < 32:
+        elif t < 32.8:
             content = self.projects(t)
-        elif t < 35:
+        elif t < 35.6:
             content = self.work_scope(t)
         elif t < 40:
             content = self.scheduled(t)
         else:
             content = super().bento(t)
         if t < 40:
-            content += self.aligned_narration(t)
             content += txt(
                 70,
                 897,
