@@ -174,6 +174,8 @@ test('runtime snapshot is scoped, rejects chat payloads, and does not query Neon
   const post=body=>app.fetch(req('/v1/connector/runtime',{method:'POST',headers:{authorization:`Bearer ${token}`},body:JSON.stringify(body)}),env);
   assert.equal((await post(snapshot)).status,200);assert.equal(opened,0);
   assert.equal((await gate.runtime('runtime-device|runtime-epoch')).statuses[0].reason,'approval');
+  assert.equal((await post({...snapshot,statuses:[{...snapshot.statuses[0],directory:'/projects/example'}]})).status,200);
+  assert.equal((await gate.runtime('runtime-device|runtime-epoch')).statuses[0].directory,'/projects/example');
   assert.deepEqual((await gate.runtime('device123|epoch123')).statuses,previous);
   assert.equal((await post({...snapshot,statuses:[{...snapshot.statuses[0],tool_output:'PRIVATE'}]})).status,400);
 });

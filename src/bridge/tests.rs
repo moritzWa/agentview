@@ -36,7 +36,7 @@ fn queued_context_allows_new_turns_but_blocks_rewritten_history() {
 }
 
 #[test]
-fn runtime_projection_reuses_typed_states_without_leaking_paths_or_chat_text() {
+fn runtime_projection_includes_requested_directory_but_never_chat_or_tool_payloads() {
     use crate::domain::{AgentSession, Provider, Runtime, SessionKind, SessionState};
     let mut session = AgentSession {
         id: "opencode:host:ses_x".into(),
@@ -60,7 +60,9 @@ fn runtime_projection_reuses_typed_states_without_leaking_paths_or_chat_text() {
     assert_eq!(status["status"], "needs_you");
     assert_eq!(status["reason"], "approval");
     assert_eq!(status["can_message"], false);
-    assert!(!status.to_string().contains("PRIVATE"));
+    assert_eq!(status["directory"], "PRIVATE_PATH");
+    assert!(!status.to_string().contains("PRIVATE_TOOL_OUTPUT"));
+    assert!(!status.to_string().contains("PRIVATE_TITLE"));
     session.state = SessionState::Working;
     session.raw_state = None;
     assert_eq!(
@@ -167,6 +169,31 @@ fn text_projection_never_serializes_tools_reasoning_or_metadata() {
         r#"{"content":[{"type":"future","text":"secret"}]}"#
     )
     .is_err());
+}
+
+#[test]
+fn a_newest_tool_only_assistant_message_does_not_displace_real_text_replies() {
+    let mut db = fixture();
+    db.execute_batch("INSERT INTO session_message VALUES
+      ('real_a','s','assistant',2,2,2,'{\"content\":[{\"type\":\"text\",\"text\":\"First actual reply\"}]}'),
+      ('user_b','s','user',3,3,3,'{\"text\":\"Second request\"}'),
+      ('real_b','s','assistant',4,4,4,'{\"content\":[{\"type\":\"text\",\"text\":\"Second actual reply\"},{\"type\":\"tool\",\"state\":{\"output\":\"PRIVATE_TOOL_RESULT\"}}]}'),
+      ('tool_only','s','assistant',5,5,5,'{\"content\":[{\"type\":\"tool\",\"state\":{\"output\":\"PRIVATE_TOOL_RESULT\"}},{\"type\":\"reasoning\",\"text\":\"PRIVATE_REASONING\"}]}');
+      UPDATE event_sequence SET seq=5;").unwrap();
+    let capture = source::capture(&mut db, "s", None).unwrap().unwrap();
+    let replies = capture
+        .messages
+        .iter()
+        .filter(|m| m.role == "assistant")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        replies.iter().map(|m| m.text.as_str()).collect::<Vec<_>>(),
+        vec!["First actual reply", "Second actual reply"]
+    );
+    assert!(!capture.ids.contains("tool_only"));
+    assert!(!serde_json::to_string(&capture.messages)
+        .unwrap()
+        .contains("PRIVATE"));
 }
 
 #[test]
