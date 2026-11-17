@@ -185,3 +185,21 @@ needs-you count was still zero and idle attention assessments were unknown. The
 included reply excerpts allowed the client to identify a decision anyway. Native
 installation and post-install classification verification are separate rollout
 checks; this is not a new iPhone Live test.
+
+Post-install verification then passed on merged commit `23835cf` (PR #65,
+actionable mobile overview). Every CI check passed. The independent connector
+was restarted and its running executable inode matched the installed binary.
+The natural follow-up "Which sessions need my input, and what are they asking me
+to decide?" again made exactly one `list_sessions(limit=50)` call, with no history
+reads or mutating tools. It received 12 relevant rows, complete counts across 391
+visible top-level sessions, fresh runtime and fresh context, and saved attention
+assessments on six returned rows. The formal needs-you count was zero at this
+later snapshot; two recent unassessed replies still supplied decision context.
+ChatGPT identified the actual decisions and prioritized them without claiming
+that a zero formal counter meant no attention was needed. It did not call the
+real sessions synthetic or ask to scan the remaining inventory.
+
+The final backend deployment is Worker version
+`981e7373-0a4f-42ab-95f0-31b68ab0ae4a`. Its deployed synthetic contracts also
+passed. This remains text-client and data-path verification, not a fresh phone
+voice/audio test. No personal conversation excerpts are copied into this record.
