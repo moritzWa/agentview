@@ -431,7 +431,11 @@ pub fn run(dir: &Path) -> Result<()> {
                 while deliver_once(&queue_dir)? {}
             }
             if poll["active_until"].as_u64().unwrap_or(0) > now {
-                publish_runtime(&queue_dir, &config, &credential)?;
+                // The sync loop publishes too. Losing that race is not a delivery
+                // failure and must not stop this thread from polling for 10 s.
+                if let Err(error) = publish_runtime(&queue_dir, &config, &credential) {
+                    log_unavailable("runtime", &error);
+                }
             }
             Ok(())
         })();

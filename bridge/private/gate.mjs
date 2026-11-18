@@ -24,10 +24,10 @@ export class WakeGate {
       const now=Date.now();await s.put(`active_until:${p.source}`,now+5*60_000);
       for(const wake of this.waiters)wake();
       const seen=await s.get(`last_seen:${p.source}`)??0;
-      const checks=p.kind==='both'?[['checked',5000],['runtime_checked',20_000]]:[[p.kind==='runtime'?'runtime_checked':'checked',p.kind==='runtime'?20_000:5000]];
+      const historyAge=p.history_ms??5000,runtimeAge=p.runtime_ms??20_000,checks=p.kind==='both'?[['checked',historyAge],['runtime_checked',runtimeAge]]:[[p.kind==='runtime'?'runtime_checked':'checked',p.kind==='runtime'?runtimeAge:historyAge]];
       const fresh=async()=>{for(const [key,age] of checks)if((await s.get(`${key}:${p.source}`)??0)<now-age)return false;return true;};
       if(p.wait && seen>now-60_000 && !await fresh()) {
-        const deadline=Date.now()+8000;
+        const deadline=Date.now()+Math.min(8000,p.max_wait??8000);
         while(Date.now()<deadline && !await fresh()) {
           await new Promise(resolve=>{let timer;const wake=()=>{clearTimeout(timer);this.waiters.delete(wake);resolve();};this.waiters.add(wake);timer=setTimeout(wake,Math.max(1,deadline-Date.now()));});
         }
@@ -92,7 +92,7 @@ export function gateClient(namespace,key) {
   return {enroll:p=>call('/enroll',p),revoke:token_hash=>call('/revoke',{token_hash}),signal:source=>call('/signal',{source}),
     clear:(source,generation)=>call('/clear',{source,generation}),poll:token_hash=>call('/poll',{token_hash}),
     inspect:token_hash=>call('/inspect',{token_hash}),checked:token_hash=>call('/checked',{token_hash}),
-    activity:(source,wait=false,kind='history')=>call('/activity',{source,wait,kind}),
+    activity:(source,wait=false,kind='history',opts={})=>call('/activity',{source,wait,kind,...opts}),
     runtime:source=>call('/runtime-read',{source}),setRuntime:(token_hash,snapshot)=>call('/runtime-write',{token_hash,snapshot}),
     signalReceipt:(source,operation_id)=>call('/receipt-signal',{source,operation_id}),waitReceipt:(source,operation_id)=>call('/receipt-wait',{source,operation_id}),rate:key=>call('/rate',{key})};
 }
