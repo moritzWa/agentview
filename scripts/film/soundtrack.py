@@ -142,10 +142,12 @@ def audio(output):
     assert music_path.exists(), (
         "TIMESINK source must be fetched from the official artist stream first"
     )
-    excerpt = decode(music_path, 30)
-    excerpt = np.pad(excerpt, ((0, max(0, RATE * 30 - len(excerpt))), (0, 0)))[
-        : RATE * 30
-    ]
+    # One contiguous span of the supplied track. No loop, no seam.
+    excerpt = decode(music_path, 45)
+    fade_in = np.linspace(0, 1, round(0.4 * RATE))
+    fade_out = np.linspace(1, 0, round(1.0 * RATE))
+    excerpt[: len(fade_in)] *= fade_in[:, None]
+    excerpt[-len(fade_out) :] *= fade_out[:, None]
     # Separate excerpt stem. Full source is never staged or redistributed.
     write(output / "audio/music-excerpt.wav", excerpt)
     subprocess.run(
@@ -165,8 +167,7 @@ def audio(output):
         ],
         check=True,
     )
-    # Continuous score from the same authorized excerpt, smoothly overlapped.
-    music = loop_excerpt(excerpt)
+    music = excerpt[: RATE * seconds]
     write(output / "audio/music-bed.wav", music)
     t = np.arange(RATE * seconds) / RATE
     gain = np.full(len(t), 0.22, dtype=np.float32)
@@ -179,10 +180,6 @@ def audio(output):
     effects = synthesize_effects()
     sfx = np.zeros_like(samples)
     for at, name, level in [
-        (0.4, "ping", 0.08),
-        (0.9, "ping", 0.08),
-        (1.4, "ping", 0.07),
-        (1.9, "ping", 0.07),
         (1.45, "whoosh", 0.07),
         (5.8, "thock", 0.09),
         (7.2, "thock", 0.09),

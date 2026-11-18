@@ -154,7 +154,7 @@ def main():
         "public_assets_replaced": False,
         "source_ui_resolution": provenance["raster_size"],
         "source_glyph_pixels": provenance["font_pixels"],
-        "music": "Lorn · TIMESINK, 30-second excerpt, user-reported artist permission",
+        "music": "Lorn · TIMESINK, one contiguous 45-second span, no loop, user-reported artist permission",
         "native_chatgpt_voice": "active Work Voice; actual AgentVoice exact-target read/send, receiver verified",
         "native_input": "typed within active Voice; microphone speech recognition not tested",
         "native_desktop_source_resolution": native["source_dimensions"],

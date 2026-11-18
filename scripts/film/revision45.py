@@ -338,12 +338,12 @@ class Film45(Film):
             "Zoom into or out of your session.",
             "Use the arrow keys.",
         )
-        # Left returns to the same 20-row fixture. The dedicated-session
-        # return frames showed one Done row and this film's own build command.
-        # Whole dashboard, eased toward the selected row. No strip crop.
-        out += self.gentle_dashboard(
-            0 if t < right or t >= left else min(1, (t - right) / 0.45)
-        )
+        # Real Right-open frames. The return frames were the one-row tooling
+        # dashboard, so Left comes back to the same 20-row fixture.
+        if right <= t < left:
+            out += self.open_session(t)
+        else:
+            out += self.fill_shot("overview")
         if t < left:
             out += shortcut_overlay(
                 ["Right"], "Zoom in", right <= t < right + 0.22, y=760
@@ -368,6 +368,33 @@ class Film45(Film):
             )
         data, height, _complete = self.session_uris[key]
         return image(data, 70, 168, 1460, height).replace("xMidYMid meet", "none")
+
+    def fill_shot(self, shot):
+        return (
+            '<g transform="translate(0 120)">'
+            + image(self.crop(shot), 20, 20, 1560, 820)
+            + "</g>"
+        )
+
+    def open_session(self, t):
+        frames = [f for f in self.navigation_meta["frames"] if f["phase"] == "open"]
+        n = min(
+            len(frames) - 1,
+            max(0, int((t - KEY_EVENTS["Right"]) / 0.7 * len(frames))),
+        )
+        name = frames[n]["file"]
+        path = self.output / "navigation" / name
+        key = ("open", name)
+        if key not in self.session_uris:
+            im = Image.open(path)
+            # Drop the setup box, the session title, and the Movies path.
+            cropped = im.crop((0, 560, im.width, 1980))
+            self.session_uris[key] = self._image_uri(cropped)
+        return (
+            '<g transform="translate(0 80)">'
+            + image(self.session_uris[key], 20, 20, 1560, 820)
+            + "</g>"
+        )
 
     def gentle_dashboard(self, amount):
         # Whole list, eased toward the selected row. No strip crop.
@@ -400,8 +427,8 @@ class Film45(Film):
         key = ("native", str(path))
         if key not in self.session_uris:
             im = Image.open(path)
-            # Drop the title bar only. Keep the window, including the orb.
-            cropped = im.crop((0, 52, im.width, im.height))
+            # Title bar and the "Reply Ready now" pill. App content below.
+            cropped = im.crop((0, 240, im.width, im.height))
             self.session_uris[key] = self._image_uri(cropped)
         data = self.session_uris[key]
         clip = f"nat{abs(hash(str(path)))}"
@@ -450,12 +477,18 @@ class Film45(Film):
         color = SPEAKER_COLORS[who]
         out = self.header(
             "One terminal. One voice.", "Ask once. Unblock the right agent."
-        ) + image(
-            self.crop("voice-live" if "voice-live" in self.shots else "voice-start"),
-            70,
-            110,
-            1460,
-            600,
+        ) + (
+            '<g transform="translate(0 90)">'
+            + image(
+                self.crop(
+                    "voice-live" if "voice-live" in self.shots else "voice-start"
+                ),
+                20,
+                10,
+                1560,
+                780,
+            )
+            + "</g>"
         )
         out += rect(300, 614, 1000, 192, 25, "white", "#d3def8") + txt(
             333, 645, who, 15, color, True
@@ -470,10 +503,12 @@ class Film45(Film):
             "ChatGPT MCP",
             "Your authenticated connection to Agent View, wherever you are.",
         )
-        out += rect(70, 200, 1460, 610, 24)
         n = min(len(self.native_frames) - 1, max(0, int((t - 16.2) * 30)))
-        # Crop past the window title and the system-prompt bubble.
-        return out + self.native_transcript(self.native_frames[n], 90, 150, 1420, 620)
+        return out + (
+            '<g transform="translate(0 70)">'
+            + self.native_transcript(self.native_frames[n], 16, 16, 1568, 860)
+            + "</g>"
+        )
 
     def projects(self, t):
         out = self.header(
@@ -547,7 +582,7 @@ class Film45(Film):
     def bouncer(self, t):
         # Staged fixture progression: tests running, then the resumed capture.
         shot = "scheduled" if t < 36.2 else "continued"
-        out = self.zoom_region(shot, (0, 145, 1616, 280), "#179299")
+        out = self.zoom_region(shot, (0, 456, 1616, 552), "#179299")
         label = "checkout tests running" if t < 35 else "Rust build running"
         return out + shortcut_overlay([], label, False, y=800)
 
