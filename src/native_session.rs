@@ -1166,6 +1166,10 @@ fn bridge_session(
                                     &screen,
                                 );
                             }
+                            InputAction::Detach => {
+                                detach = true;
+                                break;
+                            }
                             InputAction::ShiftArrow(bytes) => {
                                 // Shift+arrow selects text once the OpenCode prompt has a draft;
                                 // with nothing to select it still returns immediately.
@@ -2142,6 +2146,7 @@ enum InputAction {
     Forward(Vec<u8>),
     Arrow(ArrowDirection, &'static [u8]),
     ShiftArrow(&'static [u8]),
+    Detach,
     Redraw,
     Voice,
 }
@@ -2152,7 +2157,11 @@ const LEFT: &[u8] = b"\x1b[D";
 const RIGHT: &[u8] = b"\x1b[C";
 const APPLICATION_LEFT: &[u8] = b"\x1bOD";
 const APPLICATION_RIGHT: &[u8] = b"\x1bOC";
-const RECOGNIZED_ARROWS: [&[u8]; 6] = [
+/// F13 as a terminal sends it. Karabiner maps Cmd+H to F13 inside Ghostty, so there is
+/// a way back to agentview that never collides with selecting or moving in the prompt.
+const BACK_KEY: &[u8] = b"\x1b[25~";
+const RECOGNIZED_ARROWS: [&[u8]; 7] = [
+    BACK_KEY,
     SHIFT_LEFT,
     SHIFT_RIGHT,
     LEFT,
@@ -2263,6 +2272,8 @@ impl DetachParser {
                 Some((InputAction::ShiftArrow(SHIFT_LEFT), SHIFT_LEFT.len()))
             } else if remaining.starts_with(SHIFT_RIGHT) {
                 Some((InputAction::ShiftArrow(SHIFT_RIGHT), SHIFT_RIGHT.len()))
+            } else if remaining.starts_with(BACK_KEY) {
+                Some((InputAction::Detach, BACK_KEY.len()))
             } else if remaining.starts_with(LEFT) {
                 Some((InputAction::Arrow(ArrowDirection::Left, LEFT), LEFT.len()))
             } else if remaining.starts_with(APPLICATION_LEFT) {
@@ -3259,6 +3270,24 @@ mod tests {
                 InputAction::Forward(b"ignored".to_vec())
             ]
         );
+    }
+
+    #[test]
+    fn the_back_key_returns_from_any_session_and_survives_a_split_read() {
+        for session in ["opencode:ses_1", "claude:worker"] {
+            let mut parser = DetachParser::for_session(session);
+            assert_eq!(
+                parser.push(b"ab\x1b[25~cd"),
+                vec![
+                    InputAction::Forward(b"ab".to_vec()),
+                    InputAction::Detach,
+                    InputAction::Forward(b"cd".to_vec()),
+                ]
+            );
+            let mut parser = DetachParser::for_session(session);
+            assert_eq!(parser.push(b"\x1b[2"), vec![]);
+            assert_eq!(parser.push(b"5~"), vec![InputAction::Detach]);
+        }
     }
 
     #[test]
