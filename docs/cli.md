@@ -548,7 +548,7 @@ label.
 | Group heading | `enter` | Collapse or expand the group. |
 | Session row | `enter` or `→` | Suspend the dashboard and open the provider's full native interface. The physical screen is cleared before the provider draws. |
 | Provider-native interface | `←` / `→` twice at a cursor boundary | The first arrow is forwarded. If the cursor does not move, a 1.6-second bottom-line hint appears; repeat the same arrow to retain the frontend and return to agentview. In Claude Code, `←` at an empty prompt (where Claude shows "← for agents") returns at once and never opens Claude's agents view; OpenCode also returns on one `←`. |
-| Provider-native interface | `shift+←` / `shift+→` | Return immediately from anywhere, with the draft and cursor left as they were. A plain arrow that only collapses a selection never returns. Plain arrows otherwise remain available for line editing. `enter` or `→` on the same dashboard row reattaches and restores its terminal screen. |
+| Provider-native interface | `shift+←` / `shift+→` | Return immediately from anywhere, except in an OpenCode session whose prompt has a draft: there they select text. A plain arrow that only collapses a selection never returns. Plain arrows otherwise remain available for line editing. `enter` or `→` on the same dashboard row reattaches and restores its terminal screen. |
 | Inline Peek | `←` | Return to the session list without opening the native provider interface. |
 | Session row | `space` | Open the inline Peek panel and inspect transcript/request details when capability is advertised. |
 | Inspect peek | type, `enter` | Send an owned provider reply/steer or the current structured answer. |

@@ -1166,7 +1166,16 @@ fn bridge_session(
                                     &screen,
                                 );
                             }
-                            InputAction::Detach => {
+                            InputAction::ShiftArrow(bytes) => {
+                                // Shift+arrow selects text once the OpenCode prompt has a draft;
+                                // with nothing to select it still returns immediately.
+                                if session_key.starts_with("opencode:")
+                                    && prompt_draft(&screen).is_some()
+                                {
+                                    return_gesture.clear(&mut stdout, &screen)?;
+                                    pending_input.write_all(bytes)?;
+                                    continue;
+                                }
                                 detach = true;
                                 break;
                             }
@@ -2132,7 +2141,7 @@ impl ArrowDirection {
 enum InputAction {
     Forward(Vec<u8>),
     Arrow(ArrowDirection, &'static [u8]),
-    Detach,
+    ShiftArrow(&'static [u8]),
     Redraw,
     Voice,
 }
@@ -2250,10 +2259,10 @@ impl DetachParser {
         let mut index = 0;
         while index < bytes.len() {
             let remaining = &bytes[index..];
-            let recognized = if remaining.starts_with(SHIFT_LEFT)
-                || remaining.starts_with(SHIFT_RIGHT)
-            {
-                Some((InputAction::Detach, SHIFT_LEFT.len()))
+            let recognized = if remaining.starts_with(SHIFT_LEFT) {
+                Some((InputAction::ShiftArrow(SHIFT_LEFT), SHIFT_LEFT.len()))
+            } else if remaining.starts_with(SHIFT_RIGHT) {
+                Some((InputAction::ShiftArrow(SHIFT_RIGHT), SHIFT_RIGHT.len()))
             } else if remaining.starts_with(LEFT) {
                 Some((InputAction::Arrow(ArrowDirection::Left, LEFT), LEFT.len()))
             } else if remaining.starts_with(APPLICATION_LEFT) {
@@ -3246,7 +3255,7 @@ mod tests {
         assert_eq!(
             second,
             vec![
-                InputAction::Detach,
+                InputAction::ShiftArrow(SHIFT_LEFT),
                 InputAction::Forward(b"ignored".to_vec())
             ]
         );
@@ -3264,7 +3273,7 @@ mod tests {
                 InputAction::Arrow(ArrowDirection::Left, APPLICATION_LEFT),
                 InputAction::Arrow(ArrowDirection::Right, RIGHT),
                 InputAction::Arrow(ArrowDirection::Right, APPLICATION_RIGHT),
-                InputAction::Detach,
+                InputAction::ShiftArrow(SHIFT_RIGHT),
             ]
         );
     }
