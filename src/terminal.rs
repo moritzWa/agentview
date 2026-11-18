@@ -411,6 +411,10 @@ pub fn run_dashboard(
     if let Some(view_mode) = last_view.view_mode() {
         app.set_view_mode(view_mode);
     }
+    // Until the saved row is found (or the user moves), the cursor is the
+    // default first row, which must not overwrite the saved one.
+    let mut restore_selection = last_view.session_id();
+    let mut saved_selection = restore_selection.clone();
     app.work_roots = crate::work_view::WorkRoots::load_default()?;
     let work_store = crate::work_view::WorkViewStore::load_default()?;
     let work_enabled = work_store.read()?;
@@ -564,6 +568,11 @@ pub fn run_dashboard(
                         crate::perf_log::ms(dashboard_started.elapsed())
                     );
                     app.replace_snapshot(snapshot);
+                    if let Some(id) = restore_selection.as_deref() {
+                        if app.select_and_reveal_session(id) || complete {
+                            restore_selection = None;
+                        }
+                    }
                     if let Some(session_id) = resolve_pending_reveal(
                         &mut app,
                         &mut pending_reveal,
@@ -1060,6 +1069,15 @@ pub fn run_dashboard(
                 needs_draw = true;
             }
         }
+        if restore_selection.is_none() {
+            if let Some(session) = app.selected_session() {
+                if saved_selection.as_deref() != Some(session.id.as_str()) {
+                    saved_selection = Some(session.id.clone());
+                    // Best effort: a failed save only loses the resume point.
+                    let _ = last_view.save_session(&session.id);
+                }
+            }
+        }
         if needs_draw {
             watchdog::set_phase(watchdog::Phase::Draw);
             terminal.terminal.draw(|frame| ui::render(frame, &app))?;
@@ -1118,6 +1136,7 @@ pub fn run_dashboard(
                         needs_draw = true;
                     }
                     Event::Key(key) => {
+                        restore_selection = None;
                         let view_before = app.view_mode;
                         let mut action = handle_key_with_reveal(&mut app, key, &mut pending_reveal);
                         if app.view_mode != view_before {
@@ -1625,6 +1644,7 @@ pub fn run_dashboard(
                         }
                     }
                     Event::Mouse(mouse) => {
+                        restore_selection = None;
                         // The only clicks asked for: the speed buttons in the call's footer line.
                         let last_row = terminal
                             .terminal
