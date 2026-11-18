@@ -552,7 +552,14 @@ class Film:
             rect(615, 290, 535, 330, 28, "white")
             + mark(882, 387, 1.7)
             + txt(882, 493, "Agent View", 62, INK, True, "middle")
-            + txt(882, 553, "Open source · Built in Rust", 22, BLUE, anchor="middle")
+            + txt(
+                882,
+                548,
+                "Open source · Built in Rust · agent-view.app",
+                20,
+                BLUE,
+                anchor="middle",
+            )
         )
         out += self.crop_tile(
             "continued",

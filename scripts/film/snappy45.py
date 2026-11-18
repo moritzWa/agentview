@@ -24,7 +24,6 @@ OFFSETS = {
     "question.mp3": 11.2,
     "answer.mp3": 12.5,
     "checkout.mp3": 15.3,
-    "work.mp3": 24.4,
 }
 TAKES = [
     (
@@ -58,6 +57,12 @@ TAKES = [
         24.2,
     ),
     (
+        "work-shiftb.mp3",
+        "Press Command Shift B to show only work directories.",
+        24.4,
+        27,
+    ),
+    (
         "self-schedule.mp3",
         "Agents can schedule their own follow-ups. They wait here, then resume when it’s time.",
         27.1,
@@ -71,7 +76,7 @@ TAKES = [
     ),
     (
         "close-opensource.mp3",
-        "Agent View. Open source at agent-view.app.",
+        "Agent View. Open source at agent hyphen view dot app.",
         40.2,
         44.6,
     ),

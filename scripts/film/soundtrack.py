@@ -83,6 +83,41 @@ def loop_excerpt(excerpt, seconds=45, rate=RATE, crossfade=0.8):
     return music
 
 
+def tone(freq, seconds, rate=RATE, decay=12):
+    n = int(rate * seconds)
+    t = np.arange(n) / rate
+    wave = np.sin(2 * np.pi * freq * t) * np.exp(-decay * t)
+    return np.stack([wave, wave], axis=1).astype(np.float32)
+
+
+def synthesize_effects(rate=RATE):
+    """Quiet editorial effects. The sound-generation API rejected the TTS key."""
+    noise = np.random.default_rng(7).standard_normal(int(rate * 0.45))
+    window = np.hanning(len(noise))
+    whoosh = np.stack([noise * window * 0.35, noise * window * 0.35], axis=1)
+    low = tone(90, 0.12, rate, 28) * 0.4
+    thock = tone(180, 0.08, rate, 40)
+    thock = np.pad(thock, ((0, len(low) - len(thock)), (0, 0))) + low
+    ping = tone(880, 0.18, rate, 10) * 0.5
+    chime = tone(660, 0.28, rate, 6) * 0.4
+    top = tone(880, 0.22, rate, 8) * 0.5
+    chime[: len(top)] += top
+    tick = tone(1400, 0.05, rate, 50) * 0.35
+    pop = tone(520, 0.07, rate, 30) * 0.4
+    clock = tone(1200, 0.04, rate, 60) * 0.3
+    swell = tone(220, 1.1, rate, 2) * 0.15 + tone(330, 1.1, rate, 2) * 0.1
+    return {
+        "ping": ping.astype(np.float32),
+        "whoosh": whoosh.astype(np.float32),
+        "thock": thock.astype(np.float32),
+        "chime": chime.astype(np.float32),
+        "tick": tick.astype(np.float32),
+        "pop": pop.astype(np.float32),
+        "clock": clock.astype(np.float32),
+        "swell": swell.astype(np.float32),
+    }
+
+
 def audio(output):
     plan = json.loads((output / "edit45.json").read_text())
     assert plan["duration_approved"] and plan["seconds"] == 45
@@ -141,7 +176,30 @@ def audio(output):
         gain *= 1 - 0.70 * np.minimum(enter, leave)
     gain *= np.minimum(np.clip(t / 0.35, 0, 1), np.clip((seconds - t) / 1.0, 0, 1))
     voice = decode(output / "narration.wav")[: RATE * seconds]
-    write(output / "music-mix.wav", voice + music * gain[:, None])
+    effects = synthesize_effects()
+    sfx = np.zeros_like(samples)
+    for at, name, level in [
+        (0.4, "ping", 0.08),
+        (0.9, "ping", 0.08),
+        (1.4, "ping", 0.07),
+        (1.9, "ping", 0.07),
+        (1.45, "whoosh", 0.07),
+        (5.8, "thock", 0.09),
+        (7.2, "thock", 0.09),
+        (9.2, "thock", 0.09),
+        (9.55, "chime", 0.07),
+        (15.6, "tick", 0.08),
+        (18.4, "pop", 0.07),
+        (22.2, "thock", 0.09),
+        (25.2, "thock", 0.09),
+        (31.6, "clock", 0.08),
+        (40.1, "swell", 0.06),
+    ]:
+        clip = effects[name] * level
+        start = round(at * RATE)
+        sfx[start : start + len(clip)] += clip[: max(0, len(sfx) - start)]
+    write(output / "audio/music-sfx.wav", music * gain[:, None] + sfx)
+    write(output / "music-mix.wav", voice + music * gain[:, None] + sfx)
     normalize(output / "music-mix.wav", output / "soundtrack.wav")
     (output / "audio/timing.json").write_text(json.dumps(cues, indent=2))
     (output / "audio/music.json").write_text(

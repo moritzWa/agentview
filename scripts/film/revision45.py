@@ -340,10 +340,10 @@ class Film45(Film):
         )
         # Left returns to the same 20-row fixture. The dedicated-session
         # return frames showed one Done row and this film's own build command.
-        if t < right or t >= left:
-            out += self.status_image(selected=4.6 <= t < right)
-        else:
-            out += self.row_zoom("overview", "checkout-redesign", 1.45)
+        # Whole dashboard, eased toward the selected row. No strip crop.
+        out += self.gentle_dashboard(
+            0 if t < right or t >= left else min(1, (t - right) / 0.45)
+        )
         if t < left:
             out += shortcut_overlay(
                 ["Right"], "Zoom in", right <= t < right + 0.22, y=760
@@ -369,10 +369,14 @@ class Film45(Film):
         data, height, _complete = self.session_uris[key]
         return image(data, 70, 168, 1460, height).replace("xMidYMid meet", "none")
 
-    def row_zoom(self, shot, name, scale=1.4):
-        rows = json.loads((self.output / "captures/layout.json").read_text())
-        y = 16 + rows[name] * 28
-        return self.clean_zoom(shot, (40, y - 20, 1570, y + 70))
+    def gentle_dashboard(self, amount):
+        # Whole list, eased toward the selected row. No strip crop.
+        scale = 1 + 0.12 * amount
+        return (
+            f'<g transform="translate(800 430) scale({scale}) translate(-800 -430)">'
+            + image(self.crop("overview"), 70, 160, 1460, 680)
+            + "</g>"
+        )
 
     def clean_zoom(self, shot, region):
         base = self.shots[shot]
@@ -382,37 +386,51 @@ class Film45(Film):
             self.session_uris[key] = self._image_uri(blurred)
         out = image(self.session_uris[key], 70, 110, 1460, 600)
         out += '<g opacity=".45">' + rect(70, 110, 1460, 600, 16, "#f4f5f7") + "</g>"
-        return out + image(self.crop(shot, region), 180, 220, 1240, 360).replace(
-            "xMidYMid meet", "xMidYMid meet"
+        left, top, right, lower = region
+        crop_w = max(1, right - left)
+        crop_h = max(1, lower - top)
+        card_w = 1320.0
+        card_h = max(72.0, min(160.0, card_w * crop_h / crop_w))
+        card_w = card_h * crop_w / crop_h
+        return out + image(
+            self.crop(shot, region), (1600 - card_w) / 2, 310, card_w, card_h
         )
 
     def native_transcript(self, path, x, y, w, h):
         key = ("native", str(path))
         if key not in self.session_uris:
             im = Image.open(path)
-            # Title bar is the top ~6%. The system-prompt bubble sits on the right.
-            cropped = im.crop((220, 78, 1680, 1180))
+            # Drop the title bar only. Keep the window, including the orb.
+            cropped = im.crop((0, 52, im.width, im.height))
             self.session_uris[key] = self._image_uri(cropped)
         data = self.session_uris[key]
         clip = f"nat{abs(hash(str(path)))}"
         return (
             f'<defs><clipPath id="{clip}">{rect(x, y, w, h, 16)}</clipPath></defs>'
-            f'<g clip-path="url(#{clip})">'
-            + image(data, x, y, w, h).replace("xMidYMid meet", "xMidYMid slice")
-            + "</g>"
+            f'<g clip-path="url(#{clip})">' + image(data, x, y, w, h) + "</g>"
         )
 
     def voice_intro(self, t):
         active = t >= KEY_EVENTS["CmdK"]
         out = self.header("Agent View Voice", "Talk to your sessions.")
-        out += image(
-            self.crop("voice-start" if active else "overview"), 70, 110, 1460, 600
+        # The stage group pulls content up. Push this beat down so the
+        # recording fills the frame instead of sitting in a white band.
+        out += (
+            '<g transform="translate(0 150)">'
+            + image(
+                self.crop("voice-start" if active else "overview"),
+                40,
+                40,
+                1520,
+                760,
+            )
+            + "</g>"
         )
         return out + shortcut_overlay(
             ["Cmd", "K"],
             "Start Voice",
             KEY_EVENTS["CmdK"] <= t < KEY_EVENTS["CmdK"] + 0.3,
-            y=790,
+            y=900,
         )
 
     def dialogue(self, t):
@@ -462,13 +480,14 @@ class Film45(Film):
             "Status or project. Your view.",
             "Control S changes grouping, not which sessions are shown.",
         )
-        out += image(
-            self.crop("overview" if t < KEY_EVENTS["CtrlS"] else "directories"),
-            70,
-            110,
-            1460,
-            600,
-        )
+        mix = max(0, min(1, (t - KEY_EVENTS["CtrlS"]) / 0.55))
+        out += image(self.crop("overview"), 70, 110, 1460, 600)
+        if mix:
+            out += (
+                f'<g opacity="{mix}">'
+                + image(self.crop("directories"), 70, 110, 1460, 600)
+                + "</g>"
+            )
         pressed = KEY_EVENTS["CtrlS"] <= t < KEY_EVENTS["CtrlS"] + 0.3
         out += shortcut_overlay(["Ctrl", "S"], "Switch view", pressed, y=800)
         return out
@@ -478,13 +497,14 @@ class Film45(Film):
             "Keep work in view.",
             "Same moment. Six directories become three. Everything else keeps running.",
         )
-        out += image(
-            self.crop("directories" if t < KEY_EVENTS["Work"] else "work-directories"),
-            70,
-            110,
-            1460,
-            600,
-        )
+        mix = max(0, min(1, (t - KEY_EVENTS["Work"]) / 0.6))
+        out += image(self.crop("directories"), 70, 110, 1460, 600)
+        if mix:
+            out += (
+                f'<g opacity="{mix}">'
+                + image(self.crop("work-directories"), 70, 110, 1460, 600)
+                + "</g>"
+            )
         return out + shortcut_overlay(
             ["Cmd", "Shift", "B"],
             "Work only",
@@ -493,8 +513,24 @@ class Film45(Film):
         )
 
     def zoom_region(self, shot, region, color):
-        return self.clean_zoom(shot, region) + rect(
-            164, 204, 1272, 392, 18, "none", color
+        left, top, right, lower = region
+        crop_w = max(1, right - left)
+        crop_h = max(1, lower - top)
+        card_w = 1320
+        card_h = max(72, min(160, card_w * crop_h / crop_w))
+        card_w = card_h * crop_w / crop_h
+        card_x = (1600 - card_w) / 2
+        card_y = 310
+        pad = 12
+        out = self.clean_zoom(shot, region)
+        return out + rect(
+            card_x - pad,
+            card_y - pad,
+            card_w + pad * 2,
+            card_h + pad * 2,
+            14,
+            "none",
+            color,
         )
 
     def scheduled(self, t):
@@ -509,7 +545,11 @@ class Film45(Film):
         return out + clock
 
     def bouncer(self, t):
-        return self.zoom_region("scheduled", (0, 440, 1000, 560), "#179299")
+        # Staged fixture progression: tests running, then the resumed capture.
+        shot = "scheduled" if t < 36.2 else "continued"
+        out = self.zoom_region(shot, (0, 145, 1616, 280), "#179299")
+        label = "checkout tests running" if t < 35 else "Rust build running"
+        return out + shortcut_overlay([], label, False, y=800)
 
     def aligned_narration(self, t):
         for cue in reversed(self.cues):
@@ -549,9 +589,7 @@ class Film45(Film):
         elif t < 40:
             content = self.bouncer(t)
         else:
-            content = super().bento(t) + txt(
-                800, 860, "agent-view.app", 42, BLUE, True, "middle"
-            )
+            content = super().bento(t)
         if t < 40:
             content = (
                 '<g transform="translate(-44 -150) scale(1.055)">' + content + "</g>"
