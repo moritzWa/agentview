@@ -149,7 +149,7 @@ test('one active overview finds actionable sessions beyond hundreds of done rows
   ...['overview-working-a','overview-working-b'].map(session_id=>({session_id,status:'working',reason:null,updated_at:now,last_user_ms:now-1000,top_level:true,last_user_message_id:'msg_1'})),
   {session_id:'overview-decision',status:'needs_you',reason:'reply',updated_at:now,last_user_ms:now-3600_000,top_level:true,attention_assessed:true,last_user_message_id:'msg_1'},
  ]};
- const page=await rpc('list_sessions',{status:'active'});
+ const page=await rpc('list_sessions',{status:'active',detail:true});
  assert.equal(page.counts.total,401);assert.equal(page.counts.working,2);assert.equal(page.counts.needs_you,1);assert.equal(page.counts.done,398);
  assert.equal(page.sessions.length,3);assert.equal(page.next_after,null);assert.equal(page.status_fresh,true);assert.equal(page.context_fresh,true);
  const decision=page.sessions[0];assert.equal(decision.session_id,'overview-decision');assert.equal(decision.attention,'needs_you');
@@ -164,7 +164,7 @@ test('one active overview finds actionable sessions beyond hundreds of done rows
 test('recent unclassified final questions are provided for review, not equated with no attention',async()=>{
  await seed('overview-unclassified',[message(1,'Review this choice.'),message(2,'Which approach do you prefer?')]);
  runtime={available:true,partial:false,checked_at:Date.now(),statuses:[{session_id:'overview-unclassified',status:'done',reason:null,updated_at:Date.now(),last_user_ms:Date.now(),last_user_message_id:'msg_1',attention_assessed:false}]};
- const result=await rpc('list_sessions',{status:'active'});
+ const result=await rpc('list_sessions',{status:'active',detail:true});
  assert.equal(result.counts.unassessed_idle,1);assert.equal(result.sessions.length,1);assert.equal(result.sessions[0].attention,'review_last_reply');
  assert.equal(result.sessions[0].last_assistant_message.text,'Which approach do you prefer?');
 });
@@ -182,7 +182,7 @@ test('overview context excludes reverted/staged text and child sessions, and fla
  assert.equal(result.sessions[0].last_user_message.text,'Visible request');assert.equal(result.sessions[0].last_assistant_message.text,'Visible answer');
  assert(!JSON.stringify(result).includes('PRIVATE_CANARY'));
  runtime.statuses.push({session_id:'overview-not-mirrored-yet',status:'working',reason:null,updated_at:Date.now(),top_level:true,last_user_message_id:'new_input'});
- const pending=await rpc('list_sessions',{status:'active'}),fresh=pending.sessions.find(s=>s.session_id==='overview-not-mirrored-yet');
+ const pending=await rpc('list_sessions',{status:'active',detail:true}),fresh=pending.sessions.find(s=>s.session_id==='overview-not-mirrored-yet');
  assert.equal(pending.counts.working,2);assert(fresh);assert.equal(fresh.mirrored,false);assert.equal(fresh.context_fresh,false);assert.equal(fresh.last_assistant_message,null);
  runtime.truncated=true;
  const truncated=await rpc('list_sessions',{});assert.equal(truncated.counts_complete,false);assert.equal(truncated.active_counts_complete,true);
@@ -195,7 +195,7 @@ test('overview includes working-directory metadata and the last two actual text 
   message(5,'Second retained request'),message(6,'TLDR B '+ 'y'.repeat(5000)+' Question B?'),
   message(7,'   ')].map(m=>({...m,role:[1,3,5].includes(m.order)?'user':'assistant'})));
  runtime={available:true,partial:false,checked_at:Date.now(),statuses:[{session_id:id,status:'needs_you',reason:'reply',updated_at:Date.now(),last_user_message_id:'msg_5',directory:'/Users/test/Code/project-alpha',attention_assessed:true,top_level:true}]};
- const result=await rpc('list_sessions',{status:'active'}),session=result.sessions[0];
+ const result=await rpc('list_sessions',{status:'active',detail:true}),session=result.sessions[0];
  assert.equal(session.directory,'/Users/test/Code/project-alpha');assert.equal(session.project_name,'project-alpha');
  assert.deepEqual(session.recent_messages.map(m=>[m.message_order,m.role]),[[3,'user'],[4,'assistant'],[5,'user'],[6,'assistant']]);
  assert.equal(session.last_user_message.message_id,'msg_5');assert.equal(session.last_assistant_message.message_id,'msg_6');
