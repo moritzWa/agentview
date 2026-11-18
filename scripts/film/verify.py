@@ -88,7 +88,7 @@ def main():
         s = 1460 / 1616
         assert item["destination"] == [70 + x * s, 200 + y * s, w * s, h * s]
     for i, c in enumerate(clips):
-        assert c["end"] <= 40 and c["speed"] == 1.5
+        assert c["end"] <= 44.7 and c["speed"] == 1.5
         if i:
             assert clips[i - 1]["end"] < c["at"]
     # Decode every frame/audio packet, not just the container header.

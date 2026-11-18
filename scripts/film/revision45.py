@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import resvg_py
-from PIL import Image
+from PIL import Image, ImageFilter
 from propose45 import morph_box
 from soundtrack import decode
 from visual import (
@@ -21,7 +21,6 @@ from visual import (
     font,
     image,
     rect,
-    rounded_image,
     txt,
 )
 from waveform import VoiceTracks, envelope
@@ -30,11 +29,11 @@ SECONDS = 45
 PURPLE = "#6f38c5"
 SPEAKER_COLORS = {"YOU": PURPLE, "AGENT VIEW": BLUE, "NARRATOR": INK}
 KEY_EVENTS = {
-    "Right": 4.85,
-    "Left": 6.2,
-    "CmdK": 8.9,
-    "CtrlS": 22.6,
-    "Work": 25.1,
+    "Right": 5.8,
+    "Left": 7.2,
+    "CmdK": 9.2,
+    "CtrlS": 22.2,
+    "Work": 25.2,
 }
 
 
@@ -218,6 +217,9 @@ class Film45(Film):
         assert len(self.native_frames) >= 186, "Moving native6.2s excerpt missing"
         self.still = None
         self.session_uris = {}
+        live = self.output / "captures/voice-live.png"
+        if live.exists():
+            self.shots["voice-live"] = Image.open(live).convert("RGB")
 
     @staticmethod
     def _image_uri(im):
@@ -336,18 +338,12 @@ class Film45(Film):
             "Zoom into or out of your session.",
             "Use the arrow keys.",
         )
-        if t < right or t >= 6.65:
-            out += self.status_image(selected=4.5 <= t < right)
+        # Left returns to the same 20-row fixture. The dedicated-session
+        # return frames showed one Done row and this film's own build command.
+        if t < right or t >= left:
+            out += self.status_image(selected=4.6 <= t < right)
         else:
-            phase = "open" if t < left else "return"
-            frames = [f for f in self.navigation_meta["frames"] if f["phase"] == phase]
-            progress = (
-                (t - right) / (left - right) if phase == "open" else (t - left) / 0.6
-            )
-            n = min(len(frames) - 1, max(0, int(progress * len(frames))))
-            out += self.session_image(
-                self.output / "navigation" / frames[n]["file"], phase == "open"
-            )
+            out += self.row_zoom("overview", "checkout-redesign", 1.45)
         if t < left:
             out += shortcut_overlay(
                 ["Right"], "Zoom in", right <= t < right + 0.22, y=760
@@ -373,11 +369,44 @@ class Film45(Film):
         data, height, _complete = self.session_uris[key]
         return image(data, 70, 168, 1460, height).replace("xMidYMid meet", "none")
 
+    def row_zoom(self, shot, name, scale=1.4):
+        rows = json.loads((self.output / "captures/layout.json").read_text())
+        y = 16 + rows[name] * 28
+        return self.clean_zoom(shot, (40, y - 20, 1570, y + 70))
+
+    def clean_zoom(self, shot, region):
+        base = self.shots[shot]
+        key = ("blur", shot)
+        if key not in self.session_uris:
+            blurred = base.filter(ImageFilter.GaussianBlur(28))
+            self.session_uris[key] = self._image_uri(blurred)
+        out = image(self.session_uris[key], 70, 110, 1460, 600)
+        out += '<g opacity=".45">' + rect(70, 110, 1460, 600, 16, "#f4f5f7") + "</g>"
+        return out + image(self.crop(shot, region), 180, 220, 1240, 360).replace(
+            "xMidYMid meet", "xMidYMid meet"
+        )
+
+    def native_transcript(self, path, x, y, w, h):
+        key = ("native", str(path))
+        if key not in self.session_uris:
+            im = Image.open(path)
+            # Title bar is the top ~6%. The system-prompt bubble sits on the right.
+            cropped = im.crop((220, 78, 1680, 1180))
+            self.session_uris[key] = self._image_uri(cropped)
+        data = self.session_uris[key]
+        clip = f"nat{abs(hash(str(path)))}"
+        return (
+            f'<defs><clipPath id="{clip}">{rect(x, y, w, h, 16)}</clipPath></defs>'
+            f'<g clip-path="url(#{clip})">'
+            + image(data, x, y, w, h).replace("xMidYMid meet", "xMidYMid slice")
+            + "</g>"
+        )
+
     def voice_intro(self, t):
         active = t >= KEY_EVENTS["CmdK"]
         out = self.header("Agent View Voice", "Talk to your sessions.")
         out += image(
-            self.crop("voice-start" if active else "overview"), 70, 200, 1460, 790
+            self.crop("voice-start" if active else "overview"), 70, 110, 1460, 600
         )
         return out + shortcut_overlay(
             ["Cmd", "K"],
@@ -393,9 +422,9 @@ class Film45(Film):
             if c["file"]
             == (
                 "question.mp3"
-                if t < 11.4
+                if t < 12.5
                 else "answer.mp3"
-                if t < 14.25
+                if t < 15.3
                 else "checkout.mp3"
             )
         )
@@ -403,7 +432,13 @@ class Film45(Film):
         color = SPEAKER_COLORS[who]
         out = self.header(
             "One terminal. One voice.", "Ask once. Unblock the right agent."
-        ) + self.terminal("resumed" if t >= 15 else "overview")
+        ) + image(
+            self.crop("voice-live" if "voice-live" in self.shots else "voice-start"),
+            70,
+            110,
+            1460,
+            600,
+        )
         out += rect(300, 614, 1000, 192, 25, "white", "#d3def8") + txt(
             333, 645, who, 15, color, True
         )
@@ -418,8 +453,9 @@ class Film45(Film):
             "Your authenticated connection to Agent View, wherever you are.",
         )
         out += rect(70, 200, 1460, 610, 24)
-        n = min(len(self.native_frames) - 1, max(0, int((t - 15.5) * 30)))
-        return out + rounded_image(self.native_frames[n], 82, 212, 1436, 586, 12)
+        n = min(len(self.native_frames) - 1, max(0, int((t - 16.2) * 30)))
+        # Crop past the window title and the system-prompt bubble.
+        return out + self.native_transcript(self.native_frames[n], 90, 150, 1420, 620)
 
     def projects(self, t):
         out = self.header(
@@ -429,12 +465,12 @@ class Film45(Film):
         out += image(
             self.crop("overview" if t < KEY_EVENTS["CtrlS"] else "directories"),
             70,
-            200,
+            110,
             1460,
-            790,
+            600,
         )
         pressed = KEY_EVENTS["CtrlS"] <= t < KEY_EVENTS["CtrlS"] + 0.3
-        out += shortcut_overlay(["Ctrl", "S"], "Switch view", pressed)
+        out += shortcut_overlay(["Ctrl", "S"], "Switch view", pressed, y=800)
         return out
 
     def work_scope(self, t):
@@ -445,9 +481,9 @@ class Film45(Film):
         out += image(
             self.crop("directories" if t < KEY_EVENTS["Work"] else "work-directories"),
             70,
-            200,
+            110,
             1460,
-            790,
+            600,
         )
         return out + shortcut_overlay(
             ["Cmd", "Shift", "B"],
@@ -457,20 +493,20 @@ class Film45(Film):
         )
 
     def zoom_region(self, shot, region, color):
-        """Same treatment as the 0:36 queue card: dim, enlarge, outline."""
-        out = image(self.crop(shot), 70, 200, 1460, 610)
-        out += '<g opacity=".88">' + rect(70, 200, 1460, 610, 12, "white") + "</g>"
-        out += image(self.crop(shot, region), 95, 340, 1410, 200)
-        return out + rect(80, 324, 1440, 232, 16, "none", color)
+        return self.clean_zoom(shot, region) + rect(
+            164, 204, 1272, 392, 18, "none", color
+        )
 
     def scheduled(self, t):
         # Hold Scheduled through the explanation. Resume only after that hold.
-        if t < 32.4:
+        if t < 31.2:
             return self.zoom_region("scheduled", (0, 145, 1616, 250), BLUE)
-        out = image(self.crop("continued"), 70, 200, 1460, 610)
-        return out + txt(
-            1450, 800, "Tomorrow 09:00 · staged time jump", 17, MUTED, anchor="end"
+        jumped = min(1, (t - 31.2) / 0.8)
+        clock = shortcut_overlay([], "09:00 · time skip", t >= 31.6, y=800)
+        out = self.clean_zoom(
+            "continued" if jumped > 0.55 else "scheduled", (0, 145, 1616, 250)
         )
+        return out + clock
 
     def bouncer(self, t):
         return self.zoom_region("scheduled", (0, 440, 1000, 560), "#179299")
@@ -494,15 +530,15 @@ class Film45(Film):
     def frame(self, t):
         if t >= 40 and self.still is not None:
             return self.still.copy()
-        if t < 4:
+        if t < 5.2:
             content = self.intro(t)
-        elif t < 7:
+        elif t < 8.2:
             content = self.navigation(t)
-        elif t < 10:
+        elif t < 11.1:
             content = self.voice_intro(t)
-        elif t < 15.5:
+        elif t < 16.2:
             content = self.dialogue(t)
-        elif t < 21.7:
+        elif t < 21.2:
             content = self.chatgpt(t)
         elif t < 24.3:
             content = self.projects(t)
@@ -513,7 +549,9 @@ class Film45(Film):
         elif t < 40:
             content = self.bouncer(t)
         else:
-            content = super().bento(t)
+            content = super().bento(t) + txt(
+                800, 860, "agent-view.app", 42, BLUE, True, "middle"
+            )
         if t < 40:
             content = (
                 '<g transform="translate(-44 -150) scale(1.055)">' + content + "</g>"

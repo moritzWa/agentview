@@ -9,40 +9,71 @@ from propose45 import NARRATOR, credential, generate_take, timed_words
 from soundtrack import RATE, decode, write
 
 SCENES = [
-    (0, 4, "Overload to dashboard"),
-    (4, 7, "Arrow zoom"),
-    (7, 10, "Start Voice"),
-    (10, 15.5, "Dialogue"),
-    (15.5, 21.7, "ChatGPT MCP"),
-    (21.7, 24.3, "Project grouping"),
+    (0, 5.2, "Overload to dashboard"),
+    (5.2, 8.2, "Arrow zoom"),
+    (8.2, 11.1, "Start Voice"),
+    (11.1, 16.2, "Dialogue"),
+    (16.2, 21.2, "ChatGPT MCP"),
+    (21.2, 24.3, "Project grouping"),
     (24.3, 27, "Work scope"),
-    (27, 34, "Scheduled followup"),
-    (34, 40, "Heavy build/test queue"),
+    (27, 33, "Scheduled followup"),
+    (33, 40, "Heavy build/test queue"),
     (40, 45, "Bento"),
 ]
 OFFSETS = {
-    "intro.mp3": 0.15,
-    "navigation-followup.mp3": 4.1,
-    "voice-intro.mp3": 7.05,
-    "question.mp3": 10.1,
-    "answer.mp3": 11.4,
-    "checkout.mp3": 14.25,
-    "chatgpt-followup.mp3": 15.6,
-    "projects.mp3": 21.8,
-    "work.mp3": 24.35,
+    "question.mp3": 11.2,
+    "answer.mp3": 12.5,
+    "checkout.mp3": 15.3,
+    "work.mp3": 24.4,
 }
 TAKES = [
     (
+        "intro-sixteen.mp3",
+        "Sixteen agents. Sixteen windows. Which one needs you? Agent View sorts them for you.",
+        0.15,
+        5.2,
+    ),
+    (
+        "nav-jumps.mp3",
+        "Right arrow jumps in. Left jumps back.",
+        5.3,
+        8.2,
+    ),
+    (
+        "voice-cmdk.mp3",
+        "Or just ask. Command K starts a voice call.",
+        8.3,
+        11.1,
+    ),
+    (
+        "chatgpt-away.mp3",
+        "Away from your desk? Ask through ChatGPT.",
+        16.3,
+        20.5,
+    ),
+    (
+        "projects-groups.mp3",
+        "Control S groups them by project.",
+        21.2,
+        24.2,
+    ),
+    (
         "self-schedule.mp3",
         "Agents can schedule their own follow-ups. They wait here, then resume when it’s time.",
-        27.2,
-        34,
+        27.1,
+        32.5,
     ),
     (
         "bouncer-freeze.mp3",
         "Agent-bouncer queues heavy builds and tests, so they don’t freeze your computer.",
-        34.15,
-        40,
+        33.2,
+        39.2,
+    ),
+    (
+        "close-opensource.mp3",
+        "Agent View. Open source at agent-view.app.",
+        40.2,
+        44.6,
     ),
 ]
 

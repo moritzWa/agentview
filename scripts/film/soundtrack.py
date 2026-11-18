@@ -92,7 +92,7 @@ def audio(output):
     cues = []
     for i, c in enumerate(clips):
         pcm = decode(output / c["final_file"])
-        budget = (clips[i + 1]["at"] - 0.08 if i + 1 < len(clips) else 40) - c["at"]
+        budget = (clips[i + 1]["at"] - 0.08 if i + 1 < len(clips) else 44.7) - c["at"]
         assert len(pcm) / RATE <= budget, (
             "Final1.5x pitch-preserved speech must fit measured timeline"
         )
