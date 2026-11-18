@@ -2245,6 +2245,56 @@ fn cmd_k(input: &[u8], ctrl_too: bool) -> CmdK {
     }
 }
 
+/// F13 in the kitty keyboard encoding (`CSI 57376 u`, optionally `; modifiers : event`),
+/// which Ghostty uses once a provider has switched that protocol on. A release is dropped.
+enum BackKey {
+    Press(usize),
+    Release(usize),
+    Partial,
+    No,
+}
+
+fn back_key(input: &[u8]) -> BackKey {
+    const HEAD: &[u8] = b"\x1b[57376";
+    const LONGEST: usize = 24;
+    if input.len() < HEAD.len() {
+        return if HEAD.starts_with(input) {
+            BackKey::Partial
+        } else {
+            BackKey::No
+        };
+    }
+    if !input.starts_with(HEAD) {
+        return BackKey::No;
+    }
+    let rest = &input[HEAD.len()..];
+    // More digits would be another key code.
+    if rest.first().is_some_and(u8::is_ascii_digit) {
+        return BackKey::No;
+    }
+    let is_param = |byte: &u8| matches!(byte, b':' | b';' | b'0'..=b'9');
+    let Some(end) = rest.iter().position(|byte| *byte == b'u') else {
+        return if rest.iter().all(is_param) && rest.len() < LONGEST {
+            BackKey::Partial
+        } else {
+            BackKey::No
+        };
+    };
+    if !rest[..end].iter().all(is_param) {
+        return BackKey::No;
+    }
+    let length = HEAD.len() + end + 1;
+    let event = std::str::from_utf8(&rest[..end])
+        .ok()
+        .and_then(|params| params.split(';').nth(1))
+        .and_then(|modifiers| modifiers.split(':').nth(1));
+    if event == Some("3") {
+        BackKey::Release(length)
+    } else {
+        BackKey::Press(length)
+    }
+}
+
 impl DetachParser {
     fn for_session(session_key: &str) -> Self {
         Self {
@@ -2274,6 +2324,11 @@ impl DetachParser {
                 Some((InputAction::ShiftArrow(SHIFT_RIGHT), SHIFT_RIGHT.len()))
             } else if remaining.starts_with(BACK_KEY) {
                 Some((InputAction::Detach, BACK_KEY.len()))
+            } else if let BackKey::Press(length) = back_key(remaining) {
+                Some((InputAction::Detach, length))
+            } else if let BackKey::Release(length) = back_key(remaining) {
+                index += length;
+                continue;
             } else if remaining.starts_with(LEFT) {
                 Some((InputAction::Arrow(ArrowDirection::Left, LEFT), LEFT.len()))
             } else if remaining.starts_with(APPLICATION_LEFT) {
@@ -2330,6 +2385,7 @@ impl DetachParser {
                 && (RECOGNIZED_ARROWS
                     .iter()
                     .any(|sequence| sequence.starts_with(remaining))
+                    || matches!(back_key(remaining), BackKey::Partial)
                     || (self.voice && matches!(cmd_k(remaining, self.redraws), CmdK::Partial)))
             {
                 self.pending.extend_from_slice(&bytes[index..]);
@@ -3287,6 +3343,21 @@ mod tests {
             let mut parser = DetachParser::for_session(session);
             assert_eq!(parser.push(b"\x1b[2"), vec![]);
             assert_eq!(parser.push(b"5~"), vec![InputAction::Detach]);
+            // Ghostty sends F13 like this once a provider has enabled the kitty protocol.
+            let mut parser = DetachParser::for_session(session);
+            assert_eq!(parser.push(b"x\x1b[57376uy"), vec![
+                InputAction::Forward(b"x".to_vec()),
+                InputAction::Detach,
+                InputAction::Forward(b"y".to_vec()),
+            ]);
+            assert_eq!(parser.push(b"\x1b[57376;1u"), vec![InputAction::Detach]);
+            assert_eq!(parser.push(b"\x1b[57376;1:3u"), vec![]);
+            assert_eq!(parser.push(b"\x1b[573"), vec![]);
+            assert_eq!(parser.push(b"76u"), vec![InputAction::Detach]);
+            assert_eq!(
+                parser.push(b"\x1b[573761u"),
+                vec![InputAction::Forward(b"\x1b[573761u".to_vec())]
+            );
         }
     }
 
