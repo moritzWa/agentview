@@ -603,6 +603,41 @@ unsupported target. Approval `y` is never offered for a file change lacking a
 correlated diff, expanded permissions, or unknown request form. See the
 [control model](control-model.md) for the exact boundary.
 
+### A dedicated key to return to the dashboard
+
+`Shift+←` / `→` selects text in an OpenCode prompt that has a draft, and `←` only
+returns at an empty prompt, so none of them is a reliable way back. Map any key
+to **F13** and it returns from any provider's native interface at any time. The
+draft, selection and cursor stay where they were. agentview reads F13 in both the
+legacy form (`CSI 25 ~`) and the kitty keyboard form (`CSI 57376 u`) that some
+terminals switch to while a provider is in front.
+
+With [Karabiner-Elements](https://karabiner-elements.pqrs.org/) on macOS, this
+rule turns Cmd+H into F13 inside Ghostty only, where it would otherwise hide the
+app. Add it as a rule in `karabiner.json`, or in a file under
+`~/.config/karabiner/assets/complex_modifications/` as in the
+[work-only browsing setup](work-view.md#global-shortcut-on-macos):
+
+```json
+{
+  "description": "Ghostty: Cmd+H returns to agentview (F13)",
+  "manipulators": [
+    {
+      "type": "basic",
+      "conditions": [
+        {"type": "frontmost_application_if", "bundle_identifiers": ["^com\\.mitchellh\\.ghostty$"]}
+      ],
+      "from": {"key_code": "h", "modifiers": {"mandatory": ["command"]}},
+      "to": [{"key_code": "f13"}]
+    }
+  ]
+}
+```
+
+Karabiner names physical keys, so on a non-QWERTY layout use the key that types
+the letter you want. Pick a combination you don't use in your terminal. Any other
+tool that can send F13 works the same way.
+
 ### Session migration
 
 The `/migrate` workflow supports all 18 coding harnesses in the agentview picker as

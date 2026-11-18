@@ -170,7 +170,7 @@ previous chat or overview. Other apps and browser windows stay unchanged.
 | Move through sessions | `↑` / `↓` |
 | Jump between folders | `Cmd+↑` / `↓` in kitty, or in Ghostty with `keybind = cmd+up=unbind` and `keybind = cmd+down=unbind` |
 | Open the selected session | `Enter` or `→` |
-| Return to agentview | `F13` (map a key to it, for example Cmd+H in Karabiner), `Shift+←`, or `←` twice at an empty prompt (once in Claude Code and OpenCode). In an OpenCode prompt with a draft Shift+←/→ selects text, so use F13 there |
+| Return to agentview | `Shift+←`, or `←` twice at an empty prompt (once in Claude Code and OpenCode). In an OpenCode prompt with a draft, Shift+←/→ selects text; [map a key to `F13`](docs/cli.md#a-dedicated-key-to-return-to-the-dashboard) to return from anywhere |
 | Bring back a past session | `Ctrl+G` or `/hidden` |
 | Rename / filter | `Ctrl+R` / `Ctrl+F` |
 | New line in a task | `Shift+Enter`, `Ctrl+J`, or `\` then `Enter` |
