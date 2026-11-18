@@ -231,3 +231,23 @@ paths and identified current decisions without reading extra histories or sendin
 instructions. No personal directory paths or conversation text are recorded here.
 
 This verifies the text client and data path, not a new iPhone Live/audio test.
+
+# ChatGPT text client, overview and deep dive, November 18, 2026
+
+Synthetic only. `chatgpt-synthetic-server.mjs` served the real MCP handlers over a
+temporary tunnel with no authentication and fake sessions. It was added as a
+throwaway custom connector in the signed-in ChatGPT web app inside the macOS Cua
+VM, then deleted along with its chat. The production connector, Worker and
+history were not involved.
+
+Observed: asked "which sessions need my attention?", ChatGPT called
+`list_sessions(status="active")` once and gave a headline, three items with
+urgency, and one "unconfirmed" done-but-blocked session. "What about diagram
+bench?" called `session_brief` and explained the blocker, three options with
+tradeoffs and a recommendation. "Go with B" produced the exact text, an
+on-screen approval, then `send_session_message` with `base_cursor` and `context`
+from the brief, and `message_status`. Nothing was queued before approval. "And
+the pricing one?" was answered from the earlier list result without a new call
+(its text was short and complete) and without re-listing.
+
+Not verified: Live voice (text chat only), long real-world replies, repeated runs.
