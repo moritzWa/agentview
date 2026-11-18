@@ -33,7 +33,7 @@ paths and this server's integration-test callback. Google login and browser-boun
 consent precede every new grant. Scopes are `history:read` and `messages:send`.
 Refresh tokens rotate. Replay revokes the token family.
 
-Tools: `list_sessions`, `search_history`, `read_session`, `read_message`,
+Tools: `list_sessions`, `session_brief`, `search_history`, `read_session`, `read_message`,
 `send_session_message`, `message_status`, `cancel_message`, `list_artifacts`,
 and `preview_artifact`.
 
@@ -82,6 +82,37 @@ deduplicate cloud writes. Stable OpenCode message IDs reconcile local admission
 after a lost response. Rewritten context requires a fresh read and confirmation;
 appended turns and streaming suffixes do not invalidate a queued instruction.
 Native permissions are not bypassed. Queued does not mean executed.
+
+### Voice behavior: overview, deep dive, send
+
+Behavior is steered by three layers, in order of reliability. Server-side logic
+and result shape decide what the model sees; tool descriptions and server
+instructions only advise how to use it. OpenAI documents that ChatGPT uses MCP
+server `instructions` and recommends keeping the first 512 characters
+self-contained, so the mode rules sit at the start. Whether Live voice follows
+them has not been observed here; do not rely on text alone.
+
+- **Overview.** `list_sessions` returns a `digest` first: a headline, at most 3
+  `top` items (session, concrete decision, urgency, whether it is confirmed),
+  names-only `more`, and `data_age`. Native `needs_you` rows are confirmed. A
+  recently finished session whose last assistant message looks like a question
+  or blocker (a `?` or a phrase such as "please label") appears as a less certain
+  `possible_decision`, or `unconfirmed_ask` if the desktop never classified it.
+  The native `counts.needs_you` is unchanged; the digest total can be larger.
+- **Why "done" can still need the owner.** The classifier labels only the last
+  ~2,000 characters once per turn with a small model, only for sessions under
+  24 hours old, and a held (background-job) session reads as working unless its
+  message contains `?`. Misses, failed requests and missing keys all leave a turn
+  as done. The digest check is a backstop, not a replacement for the classifier.
+- **Deep dive.** `session_brief(session_id | query)` returns the original task,
+  the latest eight text messages with the final reply up to 8,000 characters,
+  decision candidates, `data_age`, and `send_params`. A spoken name such as
+  "diagram bench" matches "diagram-bench". Several matches return candidates
+  without conversation text. It is read-only.
+- **Send.** Only `send_session_message` writes, after the owner has decided, with
+  `session_brief.send_params`. ChatGPT's on-screen approval still applies.
+- **Staleness.** Digest and brief say how old native status and history are, and
+  warn when the Mac has not been seen recently.
 
 - `read_session` defaults to recent messages. Forward and backward pages preserve
   source order under the response budget. No newer messages means an empty page,
