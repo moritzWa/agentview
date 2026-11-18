@@ -88,6 +88,58 @@ pub enum CursorMovement {
     LineEnd,
 }
 
+/// Where `movement` takes a cursor at byte `cursor` of `input`.
+fn moved_cursor(input: &str, cursor: usize, movement: CursorMovement) -> usize {
+    let line_start = input[..cursor].rfind('\n').map_or(0, |index| index + 1);
+    let line_end = input[cursor..]
+        .find('\n')
+        .map_or(input.len(), |index| cursor + index);
+    match movement {
+        CursorMovement::Left => input[..cursor]
+            .char_indices()
+            .next_back()
+            .map_or(0, |(index, _)| index),
+        CursorMovement::Right => input[cursor..]
+            .chars()
+            .next()
+            .map_or(cursor, |character| cursor + character.len_utf8()),
+        CursorMovement::WordLeft => previous_word_boundary(input, cursor),
+        CursorMovement::WordRight => {
+            let rest = &input[cursor..];
+            let skipped = rest.len() - rest.trim_start().len();
+            let word = rest[skipped..]
+                .find(char::is_whitespace)
+                .unwrap_or(rest.len() - skipped);
+            cursor + skipped + word
+        }
+        CursorMovement::LineStart => line_start,
+        CursorMovement::LineEnd => line_end,
+        CursorMovement::Up | CursorMovement::Down => {
+            let column = input[line_start..cursor].chars().count();
+            let (start, end) = if movement == CursorMovement::Up {
+                if line_start == 0 {
+                    return 0;
+                }
+                let end = line_start - 1;
+                (input[..end].rfind('\n').map_or(0, |index| index + 1), end)
+            } else {
+                if line_end == input.len() {
+                    return line_end;
+                }
+                let start = line_end + 1;
+                let end = input[start..]
+                    .find('\n')
+                    .map_or(input.len(), |index| start + index);
+                (start, end)
+            };
+            input[start..end]
+                .char_indices()
+                .nth(column)
+                .map_or(end, |(index, _)| start + index)
+        }
+    }
+}
+
 /// Start of the shell-style word before `end`, skipping whitespace first.
 fn previous_word_boundary(text: &str, end: usize) -> usize {
     let mut boundary = end;
@@ -285,6 +337,10 @@ pub struct App {
     /// Byte offset where a Shift+movement selection started; the selection
     /// runs from here to the cursor.
     input_anchor: Option<usize>,
+    /// Cursor and selection start in the model, session and folder search
+    /// fields, whichever is open; same meaning as the composer's.
+    picker_cursor: Option<usize>,
+    picker_anchor: Option<usize>,
     /// Images and long text pasted into the draft, shown there as tokens.
     pasted: PastedParts,
     pub filter: String,
@@ -429,6 +485,8 @@ impl App {
             input: String::new(),
             input_cursor: None,
             input_anchor: None,
+            picker_cursor: None,
+            picker_anchor: None,
             pasted: PastedParts::default(),
             filter: String::new(),
             launch_targets,
@@ -1831,28 +1889,24 @@ impl App {
     }
 
     pub fn push_input(&mut self, character: char) {
-        let picker_filter = matches!(
-            self.overlay,
-            Overlay::ModelPicker | Overlay::HiddenPicker | Overlay::DirectoryPicker
-        );
+        let picker_filter = self.picker_filter_active();
         if picker_filter && matches!(character, '\n' | '\r') {
             // Search fields are single-line; ctrl+j must not insert a newline
             // that renders as an invisible, unmatchable filter character.
             return;
         }
-        if self.overlay == Overlay::ModelPicker {
-            self.model_filter.push(character);
-            self.reconcile_model_selection();
-            return;
-        }
-        if self.overlay == Overlay::HiddenPicker {
-            self.hidden_filter.push(character);
-            self.reconcile_hidden_selection();
-            return;
-        }
-        if self.overlay == Overlay::DirectoryPicker {
-            self.directory_filter.push(character);
-            self.directory_selection = 0;
+        if picker_filter {
+            // The filters are cleared from many places; an empty field has
+            // no cursor or selection to keep.
+            if self.picker_filter_text().is_empty() {
+                self.picker_cursor = None;
+                self.picker_anchor = None;
+            }
+            self.delete_input_selection();
+            let cursor = self.input_cursor();
+            self.active_text_field().insert(cursor, character);
+            self.place_input_cursor(cursor + character.len_utf8());
+            self.reconcile_picker_selection();
             return;
         }
         let peek_is_writable = self.overlay == Overlay::Peek
@@ -1928,40 +1982,78 @@ impl App {
     /// Where typing lands in `input`. Only composers have a movable cursor;
     /// peek replies and anything else always edit at the end.
     pub fn input_cursor(&self) -> usize {
-        match self.input_cursor {
-            Some(cursor)
-                if matches!(self.overlay, Overlay::Composer(_))
-                    && self.input.is_char_boundary(cursor) =>
-            {
-                cursor
-            }
-            _ => self.input.len(),
+        let (text, cursor) = if self.picker_filter_active() {
+            (self.picker_filter_text(), self.picker_cursor)
+        } else if matches!(self.overlay, Overlay::Composer(_)) {
+            (self.input.as_str(), self.input_cursor)
+        } else {
+            (self.input.as_str(), None)
+        };
+        match cursor {
+            Some(cursor) if text.is_char_boundary(cursor) => cursor,
+            _ => text.len(),
+        }
+    }
+
+    /// Whether the model, session or folder search field has the keyboard.
+    pub fn picker_filter_active(&self) -> bool {
+        matches!(
+            self.overlay,
+            Overlay::ModelPicker | Overlay::HiddenPicker | Overlay::DirectoryPicker
+        )
+    }
+
+    /// The text of the open search field.
+    pub fn picker_filter_text(&self) -> &str {
+        match self.overlay {
+            Overlay::ModelPicker => &self.model_filter,
+            Overlay::HiddenPicker => &self.hidden_filter,
+            Overlay::DirectoryPicker => &self.directory_filter,
+            _ => &self.input,
         }
     }
 
     fn place_input_cursor(&mut self, cursor: usize) {
-        self.input_cursor = (cursor < self.input.len()).then_some(cursor);
+        let inside = (cursor < self.picker_filter_text().len()).then_some(cursor);
+        if self.picker_filter_active() {
+            self.picker_cursor = inside;
+        } else {
+            self.input_cursor = inside;
+        }
     }
 
-    /// Byte range of the Shift-selected part of a composer draft.
+    /// Byte range of the Shift-selected part of the composer draft or search
+    /// field.
     pub fn input_selection(&self) -> Option<Range<usize>> {
-        let anchor = self.input_anchor.filter(|anchor| {
-            self.input_cursor_movable()
-                && *anchor <= self.input.len()
-                && self.input.is_char_boundary(*anchor)
+        let text = self.picker_filter_text();
+        let anchor = if self.picker_filter_active() {
+            self.picker_anchor
+        } else {
+            self.input_anchor
+        }
+        .filter(|anchor| {
+            self.input_cursor_movable() && *anchor <= text.len() && text.is_char_boundary(*anchor)
         })?;
         let cursor = self.input_cursor();
         (anchor != cursor).then(|| anchor.min(cursor)..anchor.max(cursor))
     }
 
+    fn set_input_anchor(&mut self, anchor: Option<usize>) {
+        if self.picker_filter_active() {
+            self.picker_anchor = anchor;
+        } else {
+            self.input_anchor = anchor;
+        }
+    }
+
     /// Remove the selected text, leaving the cursor where it started.
     fn delete_input_selection(&mut self) -> bool {
         let selection = self.input_selection();
-        self.input_anchor = None;
+        self.set_input_anchor(None);
         let Some(range) = selection else {
             return false;
         };
-        self.input.replace_range(range.clone(), "");
+        self.active_text_field().replace_range(range.clone(), "");
         self.place_input_cursor(range.start);
         true
     }
@@ -1988,10 +2080,10 @@ impl App {
         true
     }
 
-    /// Whether arrow and Home/End keys move the cursor in the draft instead
-    /// of acting on the dashboard.
+    /// Whether arrow and Home/End keys move the cursor in the draft or search
+    /// field instead of acting on the dashboard.
     pub fn input_cursor_movable(&self) -> bool {
-        matches!(self.overlay, Overlay::Composer(_))
+        matches!(self.overlay, Overlay::Composer(_)) || self.picker_filter_active()
     }
 
     /// Move the cursor and drop any selection. Left/Right with a selection
@@ -2000,19 +2092,19 @@ impl App {
         if let Some(range) = self.input_selection() {
             match movement {
                 CursorMovement::Left => {
-                    self.input_anchor = None;
+                    self.set_input_anchor(None);
                     self.place_input_cursor(range.start);
                     return;
                 }
                 CursorMovement::Right => {
-                    self.input_anchor = None;
+                    self.set_input_anchor(None);
                     self.place_input_cursor(range.end);
                     return;
                 }
                 _ => {}
             }
         }
-        self.input_anchor = None;
+        self.set_input_anchor(None);
         self.step_input_cursor(movement);
     }
 
@@ -2022,7 +2114,7 @@ impl App {
             return;
         }
         if self.input_selection().is_none() {
-            self.input_anchor = Some(self.input_cursor());
+            self.set_input_anchor(Some(self.input_cursor()));
         }
         self.step_input_cursor(movement);
     }
@@ -2031,75 +2123,24 @@ impl App {
         if !self.input_cursor_movable() {
             return;
         }
-        let cursor = self.input_cursor();
-        let line_start = self.input[..cursor]
-            .rfind('\n')
-            .map_or(0, |index| index + 1);
-        let line_end = self.input[cursor..]
-            .find('\n')
-            .map_or(self.input.len(), |index| cursor + index);
-        let target = match movement {
-            CursorMovement::Left => self.input[..cursor]
-                .char_indices()
-                .next_back()
-                .map_or(0, |(index, _)| index),
-            CursorMovement::Right => self.input[cursor..]
-                .chars()
-                .next()
-                .map_or(cursor, |character| cursor + character.len_utf8()),
-            CursorMovement::WordLeft => previous_word_boundary(&self.input, cursor),
-            CursorMovement::WordRight => {
-                let rest = &self.input[cursor..];
-                let skipped = rest.len() - rest.trim_start().len();
-                let word = rest[skipped..]
-                    .find(char::is_whitespace)
-                    .unwrap_or(rest.len() - skipped);
-                cursor + skipped + word
-            }
-            CursorMovement::LineStart => line_start,
-            CursorMovement::LineEnd => line_end,
-            CursorMovement::Up | CursorMovement::Down => {
-                let column = self.input[line_start..cursor].chars().count();
-                let (start, end) = if movement == CursorMovement::Up {
-                    if line_start == 0 {
-                        self.place_input_cursor(0);
-                        return;
-                    }
-                    let end = line_start - 1;
-                    (
-                        self.input[..end].rfind('\n').map_or(0, |index| index + 1),
-                        end,
-                    )
-                } else {
-                    if line_end == self.input.len() {
-                        self.place_input_cursor(line_end);
-                        return;
-                    }
-                    let start = line_end + 1;
-                    let end = self.input[start..]
-                        .find('\n')
-                        .map_or(self.input.len(), |index| start + index);
-                    (start, end)
-                };
-                self.input[start..end]
-                    .char_indices()
-                    .nth(column)
-                    .map_or(end, |(index, _)| start + index)
-            }
-        };
+        let target = moved_cursor(self.picker_filter_text(), self.input_cursor(), movement);
         self.place_input_cursor(target);
     }
 
     /// Delete the character after the cursor (the Delete key).
     pub fn delete_next_input(&mut self) {
-        if !self.input_cursor_movable() || self.delete_input_selection() {
+        if !self.input_cursor_movable() {
             return;
         }
-        let cursor = self.input_cursor();
-        if cursor < self.input.len() {
-            self.input.remove(cursor);
-            self.place_input_cursor(cursor);
+        if !self.delete_input_selection() {
+            let cursor = self.input_cursor();
+            let field = self.active_text_field();
+            if cursor < field.len() {
+                field.remove(cursor);
+                self.place_input_cursor(cursor);
+            }
         }
+        self.reconcile_picker_selection();
     }
 
     /// Insert pasted text as text. A paste never submits, so a clipboard with
@@ -2184,15 +2225,16 @@ impl App {
     }
 
     pub fn pop_input(&mut self) {
-        if self.overlay == Overlay::ModelPicker {
-            self.model_filter.pop();
-            self.reconcile_model_selection();
-        } else if self.overlay == Overlay::HiddenPicker {
-            self.hidden_filter.pop();
-            self.reconcile_hidden_selection();
-        } else if self.overlay == Overlay::DirectoryPicker {
-            self.directory_filter.pop();
-            self.directory_selection = 0;
+        if self.picker_filter_active() {
+            if !self.delete_input_selection() {
+                let cursor = self.input_cursor();
+                let field = self.active_text_field();
+                if let Some((index, _)) = field[..cursor].char_indices().next_back() {
+                    field.remove(index);
+                    self.place_input_cursor(index);
+                }
+            }
+            self.reconcile_picker_selection();
         } else if !self.delete_input_selection() {
             let cursor = self.input_cursor();
             if let Some(start) = self.pasted_token_before(cursor) {
@@ -2247,9 +2289,10 @@ impl App {
     /// slicing can never split a UTF-8 code point.
     pub fn delete_previous_word(&mut self) {
         if self.delete_input_selection() {
+            self.reconcile_picker_selection();
             return;
         }
-        let cursor = self.text_field_cursor();
+        let cursor = self.input_cursor();
         let input = self.active_text_field();
         let boundary = previous_word_boundary(input, cursor);
         input.replace_range(boundary..cursor, "");
@@ -2260,31 +2303,18 @@ impl App {
     /// Ctrl+U use this path.
     pub fn delete_to_line_start(&mut self) {
         if self.delete_input_selection() {
+            self.reconcile_picker_selection();
             return;
         }
-        let cursor = self.text_field_cursor();
+        let cursor = self.input_cursor();
         let input = self.active_text_field();
         let boundary = input[..cursor].rfind('\n').map_or(0, |index| index + 1);
         input.replace_range(boundary..cursor, "");
         self.after_text_field_delete(boundary);
     }
 
-    /// Picker filters are always edited at their end.
-    fn text_field_cursor(&self) -> usize {
-        match self.overlay {
-            Overlay::ModelPicker => self.model_filter.len(),
-            Overlay::HiddenPicker => self.hidden_filter.len(),
-            Overlay::DirectoryPicker => self.directory_filter.len(),
-            _ => self.input_cursor(),
-        }
-    }
-
     fn after_text_field_delete(&mut self, cursor: usize) {
-        if !matches!(
-            self.overlay,
-            Overlay::ModelPicker | Overlay::HiddenPicker | Overlay::DirectoryPicker
-        ) && self.input_cursor.is_some()
-        {
+        if self.picker_filter_active() || self.input_cursor.is_some() {
             self.place_input_cursor(cursor);
         }
         self.reconcile_picker_selection();

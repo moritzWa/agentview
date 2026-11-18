@@ -2313,18 +2313,14 @@ fn render_hidden_picker(frame: &mut Frame<'_>, app: &App, area: Rect) {
         popup_width,
         popup_height,
     );
-    let mut lines = vec![Line::from(Span::styled(
-        if app.hidden_filter.is_empty() {
-            "type a name, folder, ID, or words from the chat".into()
-        } else {
-            sanitize_inline(&app.hidden_filter)
-        },
-        if app.hidden_filter.is_empty() {
-            Style::default().fg(palette().dim)
-        } else {
-            Style::default().fg(palette().fg)
-        },
-    ))];
+    let mut lines = vec![Line::from(if app.hidden_filter.is_empty() {
+        vec![Span::styled(
+            "type a name, folder, ID, or words from the chat",
+            Style::default().fg(palette().dim),
+        )]
+    } else {
+        filter_spans(app)
+    })];
     if choices.is_empty() {
         lines.push(Line::from(Span::styled(
             if app.restorable_loading {
@@ -2430,6 +2426,7 @@ fn render_hidden_picker(frame: &mut Frame<'_>, app: &App, area: Rect) {
             .style(Style::default().bg(palette().bg).fg(palette().fg)),
         popup,
     );
+    set_filter_cursor(frame, app, popup, 2);
 }
 
 /// A picker row's matching message text, indented under its name, dim with
@@ -2487,20 +2484,18 @@ fn render_directory_picker(frame: &mut Frame<'_>, app: &App, area: Rect) {
     } else {
         (app.directory_selection / visible_rows) * visible_rows
     };
-    let mut lines = vec![Line::from(vec![
-        Span::styled(" search  ", Style::default().fg(palette().dim)),
-        if app.directory_filter.is_empty() {
-            Span::styled(
-                "type part of a folder name, or a path like ~/Code/app (new folders are created)",
-                Style::default().fg(palette().dim),
-            )
-        } else {
-            Span::styled(
-                sanitize_inline(&app.directory_filter),
-                Style::default().fg(palette().fg),
-            )
-        },
-    ])];
+    let mut lines = vec![Line::from(vec![Span::styled(
+        " search  ",
+        Style::default().fg(palette().dim),
+    )])];
+    lines[0].spans.extend(if app.directory_filter.is_empty() {
+        vec![Span::styled(
+            "type part of a folder name, or a path like ~/Code/app (new folders are created)",
+            Style::default().fg(palette().dim),
+        )]
+    } else {
+        filter_spans(app)
+    });
     if choices.is_empty() {
         lines.push(Line::from(Span::styled(
             "  No folders match",
@@ -2567,6 +2562,7 @@ fn render_directory_picker(frame: &mut Frame<'_>, app: &App, area: Rect) {
             .style(Style::default().bg(palette().bg).fg(palette().fg)),
         popup,
     );
+    set_filter_cursor(frame, app, popup, 1 + display_width(" search  "));
 }
 
 /// Extra rows the headings and separators add to one page of choices, or 0 when the
@@ -2651,21 +2647,18 @@ fn render_model_picker(frame: &mut Frame<'_>, app: &App, area: Rect) {
         popup_width,
         popup_height,
     );
-    let mut lines = vec![Line::from(vec![
-        Span::styled(" filter  ", Style::default().fg(palette().dim)),
-        Span::styled(
-            if app.model_filter.is_empty() {
-                "type to search".into()
-            } else {
-                sanitize_inline(&app.model_filter)
-            },
-            if app.model_filter.is_empty() {
-                Style::default().fg(palette().dim)
-            } else {
-                Style::default().fg(palette().fg)
-            },
-        ),
-    ])];
+    let mut lines = vec![Line::from(vec![Span::styled(
+        " filter  ",
+        Style::default().fg(palette().dim),
+    )])];
+    lines[0].spans.extend(if app.model_filter.is_empty() {
+        vec![Span::styled(
+            "type to search",
+            Style::default().fg(palette().dim),
+        )]
+    } else {
+        filter_spans(app)
+    });
     if choices.is_empty() {
         if app.models_loading {
             lines.push(Line::from(Span::styled(
@@ -2834,13 +2827,34 @@ fn render_model_picker(frame: &mut Frame<'_>, app: &App, area: Rect) {
             .style(Style::default().bg(palette().bg).fg(palette().fg)),
         popup,
     );
-    let filter_prefix = " filter  ";
+    set_filter_cursor(frame, app, popup, 1 + display_width(" filter  "));
+}
+
+/// The open search field's text, with its selection highlighted.
+fn filter_spans(app: &App) -> Vec<Span<'static>> {
+    let text = app.picker_filter_text();
+    let plain = Style::default().fg(palette().fg);
+    let Some(range) = app.input_selection() else {
+        return vec![Span::styled(sanitize_inline(text), plain)];
+    };
+    vec![
+        Span::styled(sanitize_inline(&text[..range.start]), plain),
+        Span::styled(
+            sanitize_inline(&text[range.clone()]),
+            Style::default()
+                .fg(palette().selected_fg)
+                .bg(palette().selected_bg),
+        ),
+        Span::styled(sanitize_inline(&text[range.end..]), plain),
+    ]
+}
+
+/// Put the terminal cursor in the search field on the popup's first row,
+/// `offset` columns from the popup's left edge.
+fn set_filter_cursor(frame: &mut Frame<'_>, app: &App, popup: Rect, offset: usize) {
+    let before = sanitize_inline(&app.picker_filter_text()[..app.input_cursor()]);
     frame.set_cursor(
-        (popup.x
-            + 1
-            + display_width(filter_prefix) as u16
-            + display_width(&app.model_filter) as u16)
-            .min(popup.right().saturating_sub(2)),
+        (popup.x + (offset + display_width(&before)) as u16).min(popup.right().saturating_sub(2)),
         popup.y + 1,
     );
 }
@@ -4672,6 +4686,26 @@ mod tests {
         assert_eq!(terminal.get_cursor().unwrap(), (5, 21));
         assert_eq!(terminal.backend().buffer().get(2, 21).symbol(), "a");
         assert_eq!(terminal.backend().buffer().get(4, 21).symbol(), "c");
+    }
+
+    #[test]
+    fn folder_search_shows_its_cursor_and_selection() {
+        let mut app = App::new(SessionSnapshot::default());
+        app.open_directory_picker();
+        for character in "one two".chars() {
+            app.push_input(character);
+        }
+        app.extend_input_selection(crate::app::CursorMovement::WordLeft);
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+
+        let (cursor_x, cursor_y) = terminal.get_cursor().unwrap();
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer.get(cursor_x, cursor_y).symbol(), "t");
+        assert_eq!(buffer.get(cursor_x, cursor_y).bg, palette().selected_bg);
+        assert_ne!(buffer.get(cursor_x - 1, cursor_y).bg, palette().selected_bg);
     }
 
     #[test]

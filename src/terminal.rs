@@ -2671,8 +2671,10 @@ fn handle_key(app: &mut App, key: KeyEvent) -> AppAction {
             KeyCode::Char('f') if by_word => Some(CursorMovement::WordRight),
             KeyCode::Left => Some(CursorMovement::Left),
             KeyCode::Right => Some(CursorMovement::Right),
-            KeyCode::Up => Some(CursorMovement::Up),
-            KeyCode::Down => Some(CursorMovement::Down),
+            // A search field is one line, and the picker needs Up/Down to
+            // move its selection.
+            KeyCode::Up if !app.picker_filter_active() => Some(CursorMovement::Up),
+            KeyCode::Down if !app.picker_filter_active() => Some(CursorMovement::Down),
             KeyCode::Home => Some(CursorMovement::LineStart),
             KeyCode::End => Some(CursorMovement::LineEnd),
             _ => None,
@@ -4190,6 +4192,58 @@ mod tests {
         handle_key(&mut app, key(KeyCode::Esc));
         assert_eq!(app.overlay, Overlay::Composer(ComposerMode::NewSession));
         assert_eq!(app.input, "x");
+    }
+
+    #[test]
+    fn picker_search_fields_edit_like_the_composer() {
+        let word_select = KeyModifiers::ALT | KeyModifiers::SHIFT;
+        let mut app = app();
+        handle_key(&mut app, control_key('o'));
+        assert_eq!(app.overlay, Overlay::DirectoryPicker);
+        for character in "foo bar".chars() {
+            handle_key(&mut app, key(KeyCode::Char(character)));
+        }
+        handle_key(&mut app, modified_key(KeyCode::Left, KeyModifiers::ALT));
+        handle_key(&mut app, key(KeyCode::Char('X')));
+        assert_eq!(app.directory_filter, "foo Xbar");
+        handle_key(&mut app, key(KeyCode::Left));
+        handle_key(&mut app, key(KeyCode::Delete));
+        assert_eq!(app.directory_filter, "foo bar");
+        handle_key(&mut app, control_key('e'));
+        handle_key(&mut app, modified_key(KeyCode::Left, word_select));
+        assert_eq!(app.input_selection(), Some(4..7));
+        handle_key(&mut app, key(KeyCode::Char('z')));
+        assert_eq!(app.directory_filter, "foo z");
+        handle_key(&mut app, control_key('a'));
+        handle_key(&mut app, key(KeyCode::Char('>')));
+        assert_eq!(app.directory_filter, ">foo z");
+        handle_key(&mut app, key(KeyCode::Right));
+        handle_key(
+            &mut app,
+            modified_key(KeyCode::Backspace, KeyModifiers::ALT),
+        );
+        assert_eq!(app.directory_filter, "oo z");
+        assert!(app.input.is_empty());
+
+        handle_key(&mut app, key(KeyCode::Esc));
+        app.open_hidden_picker(vec![crate::hidden::HiddenSessionRecord {
+            id: "cursor:host:abc".into(),
+            provider: Some(Provider::Cursor),
+            name: Some("Agent Comparison".into()),
+            hidden_at_ms: 1,
+        }]);
+        handle_key(&mut app, key(KeyCode::Char('a')));
+        handle_key(&mut app, key(KeyCode::Char('c')));
+        handle_key(&mut app, key(KeyCode::Left));
+        handle_key(&mut app, key(KeyCode::Char('b')));
+        assert_eq!(app.hidden_filter, "abc");
+        handle_key(&mut app, modified_key(KeyCode::Left, KeyModifiers::SUPER));
+        handle_key(&mut app, key(KeyCode::Down));
+        assert_eq!(
+            app.input_cursor(),
+            0,
+            "Down moves the selection, not the cursor"
+        );
     }
 
     #[test]
