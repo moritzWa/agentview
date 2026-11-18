@@ -594,7 +594,8 @@ class Film:
         )
         out += (
             rect(1165, 635, 400, 210, 27, "#1459df")
-            + keycaps(1245, 678, 1.0)
+            # Three 56-wide keys, 67 apart: 190 wide, centered on the tile.
+            + keycaps(1365 - 95, 678, 1.0)
             + txt(1365, 807, "Work only", 26, "white", True, "middle")
         )
         out += txt(
