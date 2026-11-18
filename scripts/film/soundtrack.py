@@ -180,16 +180,15 @@ def audio(output):
     effects = synthesize_effects()
     sfx = np.zeros_like(samples)
     for at, name, level in [
-        (1.45, "whoosh", 0.07),
-        (5.8, "thock", 0.09),
-        (7.2, "thock", 0.09),
-        (9.2, "thock", 0.09),
-        (9.55, "chime", 0.07),
-        (15.6, "tick", 0.08),
-        (18.4, "pop", 0.07),
-        (22.2, "thock", 0.09),
-        (25.2, "thock", 0.09),
-        (31.6, "clock", 0.08),
+        (4.0, "whoosh", 0.07),
+        (7.0, "thock", 0.09),
+        (7.91, "thock", 0.09),
+        (9.95, "thock", 0.09),
+        (10.25, "chime", 0.07),
+        (16.6, "tick", 0.08),
+        (23.2, "thock", 0.09),
+        (26.31, "thock", 0.09),
+        (32.4, "clock", 0.08),
         (40.1, "swell", 0.06),
     ]:
         clip = effects[name] * level

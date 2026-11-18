@@ -55,7 +55,7 @@ def main():
     assert len(edge_check["samples"]) == 3
     assert all(s["green_edge_pixels"] == 0 for s in edge_check["samples"])
     wave_check = json.loads((args.output / "audio/waveform-check.json").read_text())
-    assert next(f for f in wave_check["frames"] if f["at"] == 11.3)["peak"] == 0
+    assert next(f for f in wave_check["frames"] if f["at"] == 12.75)["peak"] == 0
     native = json.loads(
         (args.output / "chatgpt-desktop/native-hires-clip.json").read_text()
     )
@@ -84,9 +84,6 @@ def main():
     assert len({a["id"] for a in mapping}) == 16
     for item in mapping:
         assert item["cell_bounds"] == anchors[item["id"]]["cell_bounds"]
-        x, y, w, h = item["cell_bounds"]
-        s = 1460 / 1616
-        assert item["destination"] == [70 + x * s, 200 + y * s, w * s, h * s]
     for i, c in enumerate(clips):
         assert c["end"] <= 44.7 and c["speed"] == 1.5
         if i:

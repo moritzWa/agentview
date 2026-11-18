@@ -7,15 +7,16 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
 LABELS = [
-    (0, 5.2, "Sorted by who needs you"),
-    (5.2, 8.2, "Right / Left to jump in"),
-    (8.2, 11.1, "Cmd+K: voice"),
-    (11.1, 16.2, "Ask once"),
-    (16.2, 21.2, "Control from ChatGPT"),
-    (21.2, 24.3, "Group by project"),
-    (24.3, 27, "Work only"),
-    (27, 33, "Agents schedule follow-ups"),
-    (33, 40, "Heavy jobs queued"),
+    (0, 4.0, "Too many agent windows"),
+    (4.0, 6.9, "One list, sorted by who needs you"),
+    (6.9, 8.8, "Right / Left to open a session"),
+    (8.8, 11.4, "Cmd+K: voice"),
+    (11.4, 17.8, "Ask once, unblock the agent"),
+    (17.8, 23.1, "ChatGPT MCP"),
+    (23.1, 26.0, "Group by project"),
+    (26.0, 29.0, "Work only"),
+    (29.0, 34.6, "Agents schedule follow-ups"),
+    (34.6, 40, "Heavy jobs queued"),
     (40, 45, "agent-view.app"),
 ]
 

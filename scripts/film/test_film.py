@@ -86,8 +86,21 @@ class FilmTests(unittest.TestCase):
     def test_ctrl_s_is_not_labeled_a_configured_global_shortcut(self):
         film = revision45.Film45.__new__(revision45.Film45)
         film.crop = lambda *args, **kwargs: ""
-        self.assertNotIn("Configured global shortcut", film.projects(30))
-        self.assertNotIn("Configured global shortcut", film.work_scope(33))
+        tall = __import__("PIL").Image.new("RGB", (4848, 3120))
+        film.shots = {"overview": tall, "directories": tall, "work-directories": tall}
+        film.t = 25
+        self.assertNotIn("Configured global shortcut", film.projects(25))
+        self.assertNotIn("Configured global shortcut", film.work_scope(28))
+
+    def test_every_shortcut_pill_sits_in_the_same_place(self):
+        for keys, label in [
+            (["Right"], "Open session"),
+            (["Cmd", "K"], "Start voice"),
+            (["Ctrl", "S"], "Group by project"),
+            (["Cmd", "Shift", "B"], "Work only"),
+        ]:
+            pill = revision45.shortcut_overlay(keys, label)
+            self.assertIn(f'y="{revision45.PILL_Y}"', pill)
 
     def test_reveal_keeps_fixed_two_line_slots_and_hides_future_words(self):
         lines = list(visual.VOICE_CHOICE)

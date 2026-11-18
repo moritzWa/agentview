@@ -28,12 +28,14 @@ from waveform import VoiceTracks, envelope
 SECONDS = 45
 PURPLE = "#6f38c5"
 SPEAKER_COLORS = {"YOU": PURPLE, "AGENT VIEW": BLUE, "NARRATOR": INK}
+# Pressed on the spoken word: "Right", "Left", "Command" K, "Control" S,
+# "Command" Shift B. Measured from the final 1.5x takes.
 KEY_EVENTS = {
-    "Right": 5.8,
-    "Left": 7.2,
-    "CmdK": 9.2,
-    "CtrlS": 22.2,
-    "Work": 25.2,
+    "Right": 7.0,
+    "Left": 7.91,
+    "CmdK": 9.95,
+    "CtrlS": 23.2,
+    "Work": 26.31,
 }
 
 
@@ -67,25 +69,61 @@ def keycap(x, y, label, pressed=False, scale=1):
     return out + "</g>"
 
 
-PILL_Y = 748
-APP = (28, 8, 1544, 720)
+# One camera for every Agent View shot: the whole terminal (1616 logical px
+# wide, 28 px rows from y=16), same scale and top-left in every beat.
+S = 0.75
+LX, LY = (1600 - 1616 * S) / 2, 14
+LW = 1616 * S
+# One position for every shortcut pill, in the clear band under the terminal.
+PILL_Y = 806
+# Camera scale for the 23-row Scheduled and Heavy jobs captures.
+COMPACT_S = 0.965
+PILL_H = 80
 
 
-def shortcut_overlay(keys, label, pressed=False, x=None, y=PILL_Y):
-    """One glass pill. Keys and label share its vertical center."""
-    scale = 1.25
-    width = 720
-    height = 92
-    # The stage group is translate(-44) scale(1.055); local 800 stays frame-center.
-    if x is None:
-        x = 800 - width / 2
-    key_width = (
-        sum(80 if key == "Ctrl" else 56 for key in keys) * scale + (len(keys) - 1) * 12
+def row_y(row):
+    return 16 + 28 * row
+
+
+def to_canvas(x, y, w, h):
+    return LX + x * S, LY + y * S, w * S, h * S
+
+
+def ease_in_out(p):
+    p = max(0.0, min(1.0, p))
+    return p * p * (3 - 2 * p)
+
+
+def zoomed(content, cx, cy, scale):
+    return (
+        f'<g transform="translate({cx} {cy}) scale({scale}) translate({-cx} {-cy})">'
+        + content
+        + "</g>"
     )
-    total = key_width + 28 + font(26, True).getlength(label)
-    start = x + (width - total) / 2
-    key_body = 52 * scale
-    key_y = y + (height - key_body) / 2
+
+
+def faded(content, opacity):
+    if opacity <= 0:
+        return ""
+    if opacity >= 1:
+        return content
+    return f'<g opacity="{opacity:.3f}">{content}</g>'
+
+
+def shortcut_overlay(keys, label, pressed=False, y=PILL_Y):
+    """One glass pill, one place. Keys and label share its vertical center."""
+    scale = 1.15
+    height = PILL_H
+    key_width = (
+        sum(80 if key == "Ctrl" else 56 for key in keys) * scale
+        + max(0, len(keys) - 1) * 12
+    )
+    gap = 24 if keys else 0
+    total = key_width + gap + font(26, True).getlength(label)
+    width = max(420, total + 96)
+    x = 800 - width / 2
+    start = 800 - total / 2
+    key_y = y + (height - 52 * scale) / 2
     out = (
         '<g data-shortcut-overlay="shared" data-glass="0.32">'
         + f'<g opacity=".32">{rect(x, y, width, height, 26, "#d8edff")}</g>'
@@ -93,7 +131,8 @@ def shortcut_overlay(keys, label, pressed=False, x=None, y=PILL_Y):
     for key in keys:
         out += keycap(start, key_y, key, pressed, scale)
         start += (80 if key == "Ctrl" else 56) * scale + 12
-    out += txt(start + 16, y + height / 2 + 9, label, 26, BLUE, True)
+    label_x = start - 12 + gap if keys else start
+    out += txt(label_x, y + height / 2 + 9, label, 26, BLUE, True)
     return out + "</g>"
 
 
@@ -154,10 +193,6 @@ class Film45(Film):
     def header(self, *args, **kwargs):
         return ""
 
-    def terminal(self, shot, x=70, y=194, w=1460, h=790, region=None):
-        # Actual software pixels only, no editorial window title or traffic lights.
-        return image(self.crop(shot, region), x, y, w, h)
-
     def __init__(self, output):
         super().__init__(output)
         self.plan = json.loads((self.output / "edit45.json").read_text())
@@ -185,17 +220,10 @@ class Film45(Film):
             (self.output / "proposal45/morph-map.json").read_text()
         )["mapping"]
         assert len({a["id"] for a in self.mapping}) == 16
-        self.morph_source = Image.open(
-            self.output / "proposal45/captures/overview.png"
-        ).convert("RGB")
-        self.morph_height = max(a["cell_bounds"][1] + 28 for a in self.mapping)
-        self.morph_source = self.morph_source.crop(
-            (0, 0, self.morph_source.width, round(self.morph_height * 3))
-        )
-        self.morph_source_uri = self._image_uri(self.morph_source)
+        overview = self.shots["overview"]
         self.morph_rows = {
             a["id"]: self._image_uri(
-                self.morph_source.crop(
+                overview.crop(
                     (
                         a["raster_bounds"][0],
                         a["raster_bounds"][1],
@@ -206,9 +234,6 @@ class Film45(Film):
             )
             for a in self.mapping
         }
-        self.navigation_meta = json.loads(
-            (self.output / "navigation/recording.json").read_text()
-        )
         self.native_clip = json.loads(
             (self.output / "chatgpt-desktop/native-hires-clip.json").read_text()
         )
@@ -219,11 +244,20 @@ class Film45(Film):
         self.native_frames_dir = self.output / "chatgpt-desktop/frames-hires"
         self.native_frames = sorted(self.native_frames_dir.glob("*.png"))
         assert len(self.native_frames) >= 186, "Moving native6.2s excerpt missing"
+        # Two real-time runs of the recording. The cut skips the frames where
+        # the scrolled setup prompt passes the top of the window.
+        self.native_sequence = list(range(66, 120)) + list(range(144, 186))
+        self.navigation = json.loads(
+            (self.output / "navigation/recording.json").read_text()
+        )
         self.still = None
-        self.session_uris = {}
-        live = self.output / "captures/voice-live.png"
-        if live.exists():
-            self.shots["voice-live"] = Image.open(live).convert("RGB")
+        self.uris = {}
+        live = Image.open(self.output / "captures/voice-live.png").convert("RGB")
+        # Same fixture state; the call capture had the first row selected.
+        # Keep the selection where Right/Left left it (checkout-redesign).
+        band = (0, row_y(6) * 3, live.width, row_y(8) * 3)
+        live.paste(self.shots["selected"].crop(band), band[:2])
+        self.shots["voice-live"] = live
 
     @staticmethod
     def _image_uri(im):
@@ -231,26 +265,83 @@ class Film45(Film):
         im.save(out, format="PNG")
         return "data:image/png;base64," + base64.b64encode(out.getvalue()).decode()
 
-    def status_image(self, selected=False):
-        if not selected:
-            return image(
-                self.morph_source_uri, 70, 200, 1460, self.morph_height * 1460 / 1616
-            )
-        data = self.crop("selected", (0, 0, 1616, self.morph_height))
-        return image(data, 70, 200, 1460, self.morph_height * 1460 / 1616)
+    def cached(self, key, build):
+        if key not in self.uris:
+            self.uris[key] = self._image_uri(build())
+        return self.uris[key]
+
+    # Camera ---------------------------------------------------------------
+
+    def camera(self, shot):
+        """(x, y, scale) for a shot. One fixed camera for the full terminal.
+
+        The Scheduled and Heavy jobs captures come from a 23-row terminal; the
+        camera eases in on them once, so they fill the frame instead of leaving
+        its lower half empty.
+        """
+        if self.shots[shot].height > 2500:
+            return LX, LY, S
+        z = ease_in_out((self.t - 29.0) / 0.6)
+        scale = S + (COMPACT_S - S) * z
+        x = LX + ((1600 - 1616 * COMPACT_S) / 2 - LX) * z
+        y = LY + ((900 - 676 * COMPACT_S) / 2 - LY) * z
+        return x, y, scale
+
+    def locked(self, shot):
+        """The whole terminal at the camera's scale and position."""
+        x, y, scale = self.camera(shot)
+        source = self.shots[shot]
+        return image(
+            self.crop(shot), x, y, 1616 * scale, source.height / 3 * scale
+        ).replace("xMidYMid meet", "none")
+
+    def blend(self, a, b, mix):
+        if mix <= 0:
+            return self.locked(a)
+        if mix >= 1:
+            return self.locked(b)
+        return self.locked(a) + faded(self.locked(b), mix)
+
+    def row_box(self, row, color, opacity=1.0, pad=5):
+        x, y, w, h = to_canvas(0, row_y(row), 1616, 28)
+        return faded(
+            f'<rect x="{x - pad}" y="{y - pad}" width="{w + 2 * pad}" height="{h + 2 * pad}" rx="8" fill="none" stroke="{color}" stroke-width="2.5"/>',
+            opacity,
+        )
+
+    def section_focus(self, shot, rows, color, amount):
+        """Whole screen first; then everything outside `rows` blurs and dims."""
+        out = self.locked(shot)
+        if amount <= 0:
+            return out
+        source = self.shots[shot]
+        cx, cy, scale = self.camera(shot)
+        width, height = 1616 * scale, source.height / 3 * scale
+        blurred = self.cached(
+            ("blur", shot),
+            lambda: source.filter(ImageFilter.GaussianBlur(24)),
+        )
+        out += faded(
+            image(blurred, cx, cy, width, height).replace("xMidYMid meet", "none")
+            + f'<g opacity=".45">{rect(cx, cy, width, height, 0, "white")}</g>',
+            amount,
+        )
+        top, bottom = row_y(rows[0]) - 6, row_y(rows[1] + 1) + 6
+        region = (0, top, 1616, bottom)
+        x, y, w, h = cx, cy + top * scale, width, (bottom - top) * scale
+        out += image(self.crop(shot, region), x, y, w, h).replace(
+            "xMidYMid meet", "none"
+        )
+        return out + faded(
+            f'<rect x="{x - 4}" y="{y - 2}" width="{w + 8}" height="{h + 4}" rx="10" fill="none" stroke="{color}" stroke-width="2.5"/>',
+            amount,
+        )
+
+    # Beats ----------------------------------------------------------------
 
     def intro(self, t):
-        p = max(0, min(1, (t - 1.4) / 0.9))
-        p = p * p * (3 - 2 * p)
-        out = self.header(
-            "Too many agents. Too many windows."
-            if t < 2.0
-            else "Agent View. One terminal.",
-            "All your coding agents. One terminal. One voice.",
-        )
-        out += (
-            f'<g opacity="{max(0, (p - 0.85) / 0.15)}">' + self.status_image() + "</g>"
-        )
+        p = ease_in_out((t - 4.0) / 0.9)
+        out = faded(self.locked("overview"), (p - 0.85) / 0.15)
         logs = [
             "$ pnpm test checkout --watch",
             "  compiling src/routes/cart.tsx…",
@@ -264,7 +355,8 @@ class Film45(Film):
             "  ✓ migrated12 schema changes",
         ]
         for i, a in enumerate(self.mapping):
-            x, y, w, h = morph_box(a["grid"], a["destination"], p)
+            destination = list(to_canvas(*a["cell_bounds"]))
+            x, y, w, h = morph_box(a["grid"], destination, p)
             identifier = f"morph{i}"
             radius = 4 * (1 - p)
             out += f'<defs><clipPath id="{identifier}">{rect(x, y, w, h, radius)}</clipPath></defs><g clip-path="url(#{identifier})">'
@@ -278,13 +370,12 @@ class Film45(Film):
                 "cursor": "Cursor",
                 "devin": "Devin",
             }.get(a["provider"], a["provider"])
-            scale = 1460 / 1616
-            name_offset = a["actual_text"].index(a["name"]) * 12 * scale
-            provider_offset = a["actual_text"].index(label) * 12 * scale
-            baseline = y + 17 * (1 - p) + 19 * scale * p
-            size = 11.5 * (1 - p) + 20 * scale * p
+            name_offset = a["actual_text"].index(a["name"]) * 12 * S
+            provider_offset = a["actual_text"].index(label) * 12 * S
+            baseline = y + 17 * (1 - p) + 19 * S * p
+            size = 11.5 * (1 - p) + 20 * S * p
             out += txt(
-                x + 8 * (1 - p) + 12 * scale * p,
+                x + 8 * (1 - p) + 12 * S * p,
                 baseline,
                 "✱" if a["state"] == "needs_input" else "✳",
                 size,
@@ -305,7 +396,7 @@ class Film45(Film):
                 x + provider_start * (1 - expand) + provider_offset * expand,
                 baseline,
                 label,
-                10.5 * (1 - expand) + 20 * scale * expand,
+                10.5 * (1 - expand) + 20 * S * expand,
                 MUTED,
                 mono=True,
             )
@@ -336,290 +427,206 @@ class Film45(Film):
             )
         return out
 
-    def navigation(self, t):
+    def one_list(self, t):
+        # The selection moves to the agent that asked a question.
+        return self.blend("overview", "selected", ease_in_out((t - 6.2) / 0.15))
+
+    def session_view(self):
+        """The real opened OpenCode session, laid out on the same terminal.
+
+        Its message and its input box are cut from the recorded frame at their
+        own rows; the setup prompt, the session title and the workspace path
+        are left out.
+        """
+        frame = next(
+            f
+            for f in self.navigation["frames"]
+            if f["phase"] == "open"
+            and "Should the coupon"
+            in (self.output / "navigation" / f["file"]).with_suffix(".txt").read_text()
+        )
+        source = Image.open(self.output / "navigation" / frame["file"]).convert("RGB")
+
+        def message():
+            return source.crop((0, row_y(7) * 3, source.width, row_y(10) * 3))
+
+        def composer():
+            box = source.crop((0, row_y(21) * 3, source.width, row_y(26) * 3)).copy()
+            # Title text on the composer's last line, right of the model name.
+            fill = box.getpixel((900 * 3, 10 * 3))
+            title_row = (row_y(24) - row_y(21)) * 3
+            box.paste(fill, (980 * 3, title_row, box.width - 60, title_row + 28 * 3))
+            return box
+
+        top = self.cached(("session", "message"), message)
+        bottom = self.cached(("session", "composer"), composer)
+        mx, my, mw, mh = to_canvas(0, row_y(1), 1616, row_y(10) - row_y(7))
+        # The dashboard's own prompt sits on rows 32-35; the composer lands there.
+        bx, by, bw, bh = to_canvas(0, row_y(31), 1616, row_y(26) - row_y(21))
+        return image(top, mx, my, mw, mh).replace("xMidYMid meet", "none") + image(
+            bottom, bx, by, bw, bh
+        ).replace("xMidYMid meet", "none")
+
+    def navigation_beat(self, t):
         right, left = KEY_EVENTS["Right"], KEY_EVENTS["Left"]
-        out = self.header(
-            "Zoom into or out of your session.",
-            "Use the arrow keys.",
-        )
-        # Real Right-open frames. The return frames were the one-row tooling
-        # dashboard, so Left comes back to the same 20-row fixture.
-        if right <= t < left:
-            out += self.open_session(t)
-        else:
-            out += self.locked("overview")
-        out += shortcut_overlay(
-            ["Right"] if t < left else ["Left"],
-            "Zoom in" if t < left else "Zoom out",
-            right <= t < right + 0.22 or left <= t < left + 0.22,
-        )
-        return out
-
-    def session_image(self, path, hide_setup):
-        key = (str(path), hide_setup)
-        if key not in self.session_uris:
-            source = Image.open(path)
-            top, bottom = footer_window(source, hide_setup)
-            cropped = source.crop((0, top, source.width, bottom))
-            height = 1460 * cropped.height / cropped.width
-            self.session_uris[key] = (
-                self._image_uri(cropped),
-                height,
-                bottom > top,
+        _, cy, _, ch = to_canvas(0, row_y(2), 1616, 28)
+        focus_y = cy + ch / 2
+        if t < right:
+            out = self.locked("selected")
+        elif t < left:
+            u = ease_in_out((t - right) / 0.3)
+            out = faded(
+                zoomed(self.locked("selected"), 800, focus_y, 1 + 0.35 * u), 1 - u
             )
-        data, height, _complete = self.session_uris[key]
-        return image(data, 70, 168, 1460, height).replace("xMidYMid meet", "none")
-
-    def locked(self, shot):
-        """One scale and top-left for every dashboard capture."""
-        x, y, width, height = APP
-        source = self.shots[shot]
-        shown = source.height * width / source.width
-        clip = f"lock{shot}"
-        return (
-            f'<defs><clipPath id="{clip}">{rect(x, y, width, height, 0)}</clipPath></defs>'
-            f'<g clip-path="url(#{clip})">'
-            + image(self.crop(shot), x, y, width, shown).replace("xMidYMid meet", "none")
-            + "</g>"
-        )
-
-    def open_session(self, t):
-        frames = [f for f in self.navigation_meta["frames"] if f["phase"] == "open"]
-        n = min(len(frames) - 1, int((t - KEY_EVENTS["Right"]) / 1.1 * len(frames)))
-        name = frames[n]["file"]
-        key = ("open", name)
-        if key not in self.session_uris:
-            im = Image.open(self.output / "navigation" / name)
-            # Above the title line and the Movies path. Input stays whole.
-            self.session_uris[key] = self._image_uri(im.crop((0, 480, im.width, 2055)))
-        x, y, width, _height = APP
-        shown = 1575 * width / 4848
-        return image(self.session_uris[key], x, y, width, shown).replace(
-            "xMidYMid meet", "none"
-        )
-
-    def gentle_dashboard(self, amount):
-        # Whole list, eased toward the selected row. No strip crop.
-        scale = 1 + 0.12 * amount
-        return (
-            f'<g transform="translate(800 430) scale({scale}) translate(-800 -430)">'
-            + image(self.crop("overview"), 70, 160, 1460, 680)
-            + "</g>"
-        )
-
-    def clean_zoom(self, shot, region):
-        base = self.shots[shot]
-        key = ("blur", shot)
-        if key not in self.session_uris:
-            blurred = base.filter(ImageFilter.GaussianBlur(28))
-            self.session_uris[key] = self._image_uri(blurred)
-        out = image(self.session_uris[key], 70, 110, 1460, 600)
-        out += '<g opacity=".45">' + rect(70, 110, 1460, 600, 16, "#f4f5f7") + "</g>"
-        left, top, right, lower = region
-        crop_w = max(1, right - left)
-        crop_h = max(1, lower - top)
-        card_w = 1320.0
-        card_h = max(72.0, min(160.0, card_w * crop_h / crop_w))
-        card_w = card_h * crop_w / crop_h
-        return out + image(
-            self.crop(shot, region), (1600 - card_w) / 2, 310, card_w, card_h
-        )
-
-    def native_transcript(self, path, x, y, w, h):
-        key = ("native", str(path))
-        if key not in self.session_uris:
-            im = Image.open(path)
-            # Title bar and the "Reply Ready now" pill. App content below.
-            cropped = im.crop((0, 240, im.width, im.height))
-            self.session_uris[key] = self._image_uri(cropped)
-        data = self.session_uris[key]
-        clip = f"nat{abs(hash(str(path)))}"
-        return (
-            f'<defs><clipPath id="{clip}">{rect(x, y, w, h, 16)}</clipPath></defs>'
-            f'<g clip-path="url(#{clip})">' + image(data, x, y, w, h) + "</g>"
+            out += faded(zoomed(self.session_view(), 800, focus_y, 0.94 + 0.06 * u), u)
+        else:
+            u = ease_in_out((t - left) / 0.3)
+            out = faded(zoomed(self.session_view(), 800, focus_y, 1 + 0.06 * u), 1 - u)
+            out += faded(
+                zoomed(self.locked("selected"), 800, focus_y, 1.2 - 0.2 * u), u
+            )
+        return out + shortcut_overlay(
+            ["Right"] if t < left else ["Left"],
+            "Open session" if t < left else "Back to the list",
+            right <= t < right + 0.22 or left <= t < left + 0.22,
         )
 
     def voice_intro(self, t):
-        active = t >= KEY_EVENTS["CmdK"]
-        out = self.locked("voice-start" if active else "overview")
-        return out + shortcut_overlay(
-            ["Cmd", "K"],
-            "Start Voice",
-            KEY_EVENTS["CmdK"] <= t < KEY_EVENTS["CmdK"] + 0.3,
-        )
+        key = KEY_EVENTS["CmdK"]
+        out = self.blend("selected", "voice-live", ease_in_out((t - key) / 0.2))
+        return out + shortcut_overlay(["Cmd", "K"], "Start voice", key <= t < key + 0.3)
 
     def dialogue(self, t):
+        if t >= 16.5:
+            return self.payoff(t)
         cue = next(
             c
             for c in self.cues
             if c["file"]
             == (
                 "question.mp3"
-                if t < 12.5
+                if t < 12.75
                 else "answer.mp3"
-                if t < 15.3
+                if t < 15.65
                 else "checkout.mp3"
             )
         )
         who = cue["speaker"]
         color = SPEAKER_COLORS[who]
-        out = self.header(
-            "One terminal. One voice.", "Ask once. Unblock the right agent."
-        ) + self.locked("voice-live" if "voice-live" in self.shots else "voice-start")
-        out += rect(300, 614, 1000, 192, 25, "white", "#d3def8") + txt(
-            333, 645, who, 15, color, True
+        out = self.locked("voice-live")
+        x, y, w, h = 300, 575, 1000, 170
+        out += rect(x, y, w, h, 25, "white", "#d3def8") + txt(
+            x + 33, y + 33, who, 15, color, True
         )
-        out += self.waves(1070, 641, t, 170, 36, color, speaker=who)
+        out += self.waves(x + 770, y + 29, t, 170, 36, color, speaker=who)
         lines = list(VOICE_CHOICE) if cue["file"] == "answer.mp3" else [cue["text"]]
-        out += reveal(lines, self.alignments[cue["file"]], t - cue["at"], 333, 687, 30)
+        out += reveal(
+            lines, self.alignments[cue["file"]], t - cue["at"], x + 33, y + 75, 30
+        )
         return out
 
-    def chatgpt(self, t):
-        out = self.header(
-            "ChatGPT MCP",
-            "Your authenticated connection to Agent View, wherever you are.",
+    def payoff(self, t):
+        # Staged fixture update: the checkout agent got its answer and works on.
+        mix = ease_in_out((t - 16.55) / 0.35)
+        out = self.blend("voice-live", "resumed", mix)
+        return out + self.row_box(13, BLUE, ease_in_out((t - 16.95) / 0.25))
+
+    def plugin_page(self, t):
+        card = self.cached(
+            ("plugin",),
+            lambda: Image.open(self.output / "captures/agentvoice-plugin-card.png"),
         )
-        if t < 17.4:
-            return self.plugin_page()
-        n = min(len(self.native_frames) - 1, max(0, int((t - 17.4) * 30)))
-        return self.native_fill(self.native_frames[n])
+        w = 1240
+        h = w * 409 / 1498
+        x, y = (1600 - w) / 2, 330
+        out = txt(800, 250, "ChatGPT MCP", 44, INK, True, "middle")
+        out += txt(
+            800, 292, "Connect Agent View to ChatGPT", 24, MUTED, anchor="middle"
+        )
+        out += rect(x - 24, y - 24, w + 48, h + 48, 28, "#fcfcfc", "#e1e3e8")
+        return out + image(card, x, y, w, h)
+
+    def chatgpt_window(self, t):
+        n = min(len(self.native_sequence) - 1, max(0, int((t - 19.2) * 30)))
+        path = self.native_frames[self.native_sequence[n]]
+        # Whole window from its left edge; title bar off; the empty right of
+        # the conversation column trimmed so the window can fill the frame.
+        data = self.cached(
+            ("native", path.name),
+            lambda: Image.open(path).convert("RGB").crop((0, 88, 2400, 1262)),
+        )
+        w = 1560
+        h = w * 1174 / 2400
+        x, y = (1600 - w) / 2, (900 - h) / 2
+        clip = "natclip"
+        return (
+            f'<defs><clipPath id="{clip}">{rect(x, y, w, h, 18)}</clipPath></defs>'
+            + rect(x - 1, y - 1, w + 2, h + 2, 19, "none", "#d9dce3")
+            + f'<g clip-path="url(#{clip})">'
+            + image(data, x, y, w, h).replace("xMidYMid meet", "none")
+            + "</g>"
+        )
+
+    def chatgpt(self, t):
+        if t < 19.2:
+            return self.plugin_page(t)
+        return self.chatgpt_window(t)
 
     def projects(self, t):
-        out = self.header(
-            "Status or project. Your view.",
-            "Control S changes grouping, not which sessions are shown.",
-        )
-        mix = max(0, min(1, (t - KEY_EVENTS["CtrlS"]) / 0.55))
-        out = self.locked("overview")
-        if mix:
-            out += f'<g opacity="{mix}">' + self.locked("directories") + "</g>"
+        key = KEY_EVENTS["CtrlS"]
+        out = self.blend("overview", "directories", ease_in_out((t - key) / 0.25))
         return out + shortcut_overlay(
-            ["Ctrl", "S"],
-            "Switch view",
-            KEY_EVENTS["CtrlS"] <= t < KEY_EVENTS["CtrlS"] + 0.3,
+            ["Ctrl", "S"], "Group by project", key <= t < key + 0.3
         )
 
     def work_scope(self, t):
-        out = self.header(
-            "Keep work in view.",
-            "Same moment. Six directories become three. Everything else keeps running.",
+        key = KEY_EVENTS["Work"]
+        out = self.blend(
+            "directories", "work-directories", ease_in_out((t - key) / 0.25)
         )
-        mix = max(0, min(1, (t - KEY_EVENTS["Work"]) / 0.6))
-        out = self.locked("directories")
-        if mix:
-            out += f'<g opacity="{mix}">' + self.locked("work-directories") + "</g>"
         return out + shortcut_overlay(
-            ["Cmd", "Shift", "B"],
-            "Work only",
-            KEY_EVENTS["Work"] <= t < KEY_EVENTS["Work"] + 0.3,
+            ["Cmd", "Shift", "B"], "Work only", key <= t < key + 0.3
         )
-
-    def zoom_region(self, shot, region, color):
-        left, top, right, lower = region
-        crop_w = max(1, right - left)
-        crop_h = max(1, lower - top)
-        card_w = 1320
-        card_h = max(72, min(160, card_w * crop_h / crop_w))
-        card_w = card_h * crop_w / crop_h
-        card_x = (1600 - card_w) / 2
-        card_y = 310
-        pad = 12
-        out = self.clean_zoom(shot, region)
-        return out + rect(
-            card_x - pad,
-            card_y - pad,
-            card_w + pad * 2,
-            card_h + pad * 2,
-            14,
-            "none",
-            color,
-        )
-
-    def section_focus(self, shot, region, color, amount):
-        out = self.locked(shot)
-        if amount <= 0:
-            return out
-        key = ("blur", shot)
-        if key not in self.session_uris:
-            blurred = self.shots[shot].filter(ImageFilter.GaussianBlur(18))
-            self.session_uris[key] = self._image_uri(blurred)
-        x, y, width, height = APP
-        out += f'<g opacity="{amount}">' + image(self.session_uris[key], x, y, width, height) + "</g>"
-        left, top, right, lower = region
-        scale = width / 1616
-        box = (x + left * scale, y + top * scale, (right - left) * scale, (lower - top) * scale)
-        out += image(self.crop(shot, region), *box)
-        return out + f'<g opacity="{amount}">' + rect(box[0] - 8, box[1] - 8, box[2] + 16, box[3] + 16, 10, "none", color) + "</g>"
-
-    def native_fill(self, path):
-        key = ("fill", str(path))
-        if key not in self.session_uris:
-            im = Image.open(path)
-            self.session_uris[key] = self._image_uri(im.crop((0, 88, im.width, im.height)))
-        data = self.session_uris[key]
-        # Full window, left edge at 0, height fills the frame. Right may clip.
-        return image(data, 0, 0, 900 * 2996 / (1262 - 88), 900).replace(
-            "xMidYMid meet", "xMinYMin meet"
-        )
-
-    def plugin_page(self):
-        path = self.output / "captures/agentvoice-plugin.png"
-        key = "plugin"
-        if key not in self.session_uris and path.exists():
-            im = Image.open(path)
-            # The plugin card, below the email byline and above the developer email.
-            cropped = im.crop((0, 280, im.width, 560))
-            self.session_uris[key] = self._image_uri(cropped)
-        out = image(self.session_uris.get(key, ""), 80, 80, 1440, 520) if key in self.session_uris else ""
-        return out + txt(80, 48, "ChatGPT MCP", 28, BLUE, True)
 
     def scheduled(self, t):
-        amount = max(0, min(1, (t - 28.0) / 0.7))
-        out = self.section_focus("scheduled", (0, 150, 1616, 245), BLUE, amount)
-        if t >= 31.6:
-            out += shortcut_overlay([], "09:00 · time skip", True)
+        # Full screen first, so you see where Scheduled lives; then focus it.
+        amount = ease_in_out((t - 29.9) / 0.6)
+        jump = ease_in_out((t - 33.0) / 0.35)
+        if jump <= 0:
+            out = self.section_focus("scheduled", (5, 7), BLUE, amount)
+        else:
+            out = self.section_focus("scheduled", (5, 7), BLUE, amount) + faded(
+                self.section_focus("continued", (5, 7), BLUE, amount), jump
+            )
+        if 32.4 <= t < 33.6:
+            out += shortcut_overlay([], "Tomorrow, 09:00 · time skip", t < 32.55)
         return out
 
     def bouncer(self, t):
-        amount = max(0, min(1, (t - 34.4) / 0.7))
-        return self.section_focus(
-            "scheduled", (0, 456, 1616, 552), "#179299", amount
-        )
-
-    def aligned_narration(self, t):
-        for cue in reversed(self.cues):
-            if cue["speaker"] != "NARRATOR" or not cue["at"] <= t <= cue["end"] + 0.25:
-                continue
-            lines = line_wrap(cue["text"])
-            width = max(font(23, True).getlength(line) for line in lines)
-            return reveal(
-                lines,
-                self.alignments[cue["file"]],
-                t - cue["at"],
-                (1600 - width) / 2,
-                856,
-                23,
-            )
-        return ""
+        amount = ease_in_out((t - 35.4) / 0.6)
+        return self.section_focus("continued", (16, 18), "#179299", amount)
 
     def frame(self, t):
+        self.t = t
         if t >= 40 and self.still is not None:
             return self.still.copy()
-        if t < 5.2:
+        if t < 4.9:
             content = self.intro(t)
-        elif t < 8.2:
-            content = self.navigation(t)
-        elif t < 11.1:
+        elif t < 6.9:
+            content = self.one_list(t)
+        elif t < 8.8:
+            content = self.navigation_beat(t)
+        elif t < 11.4:
             content = self.voice_intro(t)
-        elif t < 16.2:
+        elif t < 17.8:
             content = self.dialogue(t)
-        elif t < 21.2:
+        elif t < 23.1:
             content = self.chatgpt(t)
-        elif t < 24.3:
+        elif t < 26.0:
             content = self.projects(t)
-        elif t < 27:
+        elif t < 29.0:
             content = self.work_scope(t)
-        elif t < 34:
+        elif t < 34.6:
             content = self.scheduled(t)
         elif t < 40:
             content = self.bouncer(t)
