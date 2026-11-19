@@ -1103,10 +1103,11 @@ impl App {
 
     pub fn set_view_mode(&mut self, view_mode: ViewMode) {
         self.view_mode = view_mode;
-        self.collapsed.clear();
+        // Paused and Scheduled exist in both views; keep them as they were.
+        // Every other group is keyed per view and starts open.
+        self.collapsed
+            .retain(|key| key == PAUSED_GROUP_KEY || key == SCHEDULED_GROUP_KEY);
         self.revealed_shelves.clear();
-        self.collapsed.insert(PAUSED_GROUP_KEY.to_owned());
-        self.collapsed.insert(SCHEDULED_GROUP_KEY.to_owned());
         self.visible_limits.clear();
         self.rebuild_group_cache();
         self.reconcile_selection();
@@ -6515,7 +6516,7 @@ mod tests {
     }
 
     #[test]
-    fn toggling_view_resets_collapsed_groups_and_reconciles_selection() {
+    fn toggling_view_resets_view_groups_keeps_shelves_and_reconciles_selection() {
         let mut app = app_with(vec![session("one", SessionState::Working)]);
         app.selection = Some(SelectionKey::Group("state:Working".into()));
         app.collapsed.insert("state:Working".into());
@@ -6526,7 +6527,7 @@ mod tests {
         assert_eq!(app.view_mode, ViewMode::Directory);
         assert_eq!(
             app.collapsed,
-            BTreeSet::from([PAUSED_GROUP_KEY.to_owned(), SCHEDULED_GROUP_KEY.to_owned()])
+            BTreeSet::from([SCHEDULED_GROUP_KEY.to_owned()])
         );
         assert_eq!(app.selection, Some(SelectionKey::Session("one".into())));
         app.toggle_view();

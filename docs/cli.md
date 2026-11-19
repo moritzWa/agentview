@@ -744,7 +744,9 @@ On the dashboard, `/defer` uses the selected session's existing wake;
 works, for example `/defer 2026-12-01T10:00 Check the reply`. `/keep` brings the
 selected session back without cancelling its wakes. Both commands currently
 require a host OpenCode session and the local helper. `Ctrl+Y` or `/scheduled`
-expands the deferred section in either view.
+expands the deferred section in either view. Set `AGENTVIEW_DISABLE_CTRL_Y=1`
+to turn the `Ctrl+Y` key off and keep `/scheduled`. Switching views keeps
+Paused and Scheduled as they were.
 Scheduled stays at the top directly below Paused. Shell-exit notifications
 still count as session activity, but do not count as new messages from you and
 cannot clear a defer. Reminder and plain rows share the same column widths.

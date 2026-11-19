@@ -2484,7 +2484,10 @@ fn handle_key(app: &mut App, key: KeyEvent) -> AppAction {
                 app.toggle_view();
                 AppAction::None
             }
-            KeyCode::Char('y') if app.overlay == Overlay::None => {
+            KeyCode::Char('y')
+                if app.overlay == Overlay::None
+                    && std::env::var_os("AGENTVIEW_DISABLE_CTRL_Y").is_none() =>
+            {
                 app.toggle_scheduled();
                 AppAction::None
             }
