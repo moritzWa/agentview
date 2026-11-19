@@ -12,6 +12,63 @@ fn truncated_emoji_escape_does_not_block_projection() {
 }
 
 #[test]
+fn nul_and_oversized_text_are_made_to_fit_instead_of_stalling_the_session() {
+    let nul = source::project("m", "user", 1, 1, 1, &json!({"text":"a\u{0}b"}).to_string())
+        .unwrap()
+        .unwrap();
+    assert_eq!(nul.text, "a\u{fffd}b");
+    let huge = "é𝄞x".repeat(400_000);
+    let big = source::project("m", "user", 1, 1, 1, &json!({"text":huge}).to_string())
+        .unwrap()
+        .unwrap();
+    assert!(serde_json::to_vec(&big).unwrap().len() < 850_000);
+    assert!(big.text.ends_with("too large to sync]"));
+    let fine = source::project(
+        "m",
+        "user",
+        1,
+        1,
+        1,
+        &json!({"text":"x".repeat(700_000)}).to_string(),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(fine.text.len(), 700_000);
+}
+
+#[test]
+fn refused_batches_are_discarded_per_session_and_cloud_rejections_are_recognized() {
+    let dir = tempdir().unwrap();
+    let mut journal = Journal::open(&dir.path().join("j.sqlite")).unwrap();
+    for (n, sid) in [(1, "bad"), (2, "good"), (3, "bad")] {
+        journal
+            .db
+            .execute(
+                "INSERT INTO pending(body,native) VALUES (?1,1)",
+                [json!({"session_id":sid,"n":n}).to_string()],
+            )
+            .unwrap();
+    }
+    journal.discard_pending("bad").unwrap();
+    let left = journal.pending().unwrap().unwrap();
+    assert_eq!(left["session_id"], "good");
+    assert_eq!(
+        journal
+            .db
+            .query_row("SELECT count(*) FROM pending", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    assert!(cloud_rejected(&anyhow::anyhow!("bridge HTTP 400")));
+    assert!(cloud_rejected(&anyhow::anyhow!("bridge HTTP 413")));
+    assert!(!cloud_rejected(&anyhow::anyhow!("bridge HTTP 401")));
+    assert!(!cloud_rejected(&anyhow::anyhow!("bridge HTTP 503")));
+    assert!(!cloud_rejected(&anyhow::anyhow!(
+        "bridge network request failed"
+    )));
+}
+
+#[test]
 fn queued_context_allows_new_turns_but_blocks_rewritten_history() {
     let mut db = fixture();
     let mut capture = source::capture(&mut db, "s", None).unwrap().unwrap();

@@ -157,6 +157,24 @@ impl Journal {
         tx.commit()?;
         Ok(true)
     }
+    /// Drops batches the cloud permanently refused. The checkpoint is untouched,
+    /// so nothing is marked as synced; the session is retried later.
+    pub fn discard_pending(&mut self, session_id: &str) -> Result<()> {
+        let mut q = self.db.prepare("SELECT n,body FROM pending ORDER BY n")?;
+        let rows = q
+            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(q);
+        for (n, body) in rows {
+            let matches = serde_json::from_str::<Value>(&body)
+                .map(|v| v["session_id"] == session_id)
+                .unwrap_or(true);
+            if matches {
+                self.db.execute("DELETE FROM pending WHERE n=?1", [n])?;
+            }
+        }
+        Ok(())
+    }
     pub fn ack(&mut self, receipt: &Value) -> Result<()> {
         let tx = self.db.transaction()?;
         let (n, raw, native): (i64, String, bool) = tx.query_row(

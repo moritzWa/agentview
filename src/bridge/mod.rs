@@ -197,30 +197,160 @@ fn flush(journal: &mut Journal, config: &Config, token: &str) -> Result<usize> {
     Ok(count)
 }
 
+#[derive(Clone, Default, Serialize, Deserialize)]
+struct Health {
+    last_ok: u64,
+    failing: Vec<Failure>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct Failure {
+    session_id: String,
+    stage: String,
+    reason: String,
+    since: u64,
+    last_try: u64,
+    count: u32,
+}
+
+const RETRY_FAILED_AFTER: u64 = 300;
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+fn read_health(dir: &Path) -> Health {
+    std::fs::read(dir.join("sync-health.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+/// Cloud answers that retrying the same batch can never fix. They belong to one
+/// session and must not hold up every other session behind it.
+fn cloud_rejected(error: &anyhow::Error) -> bool {
+    ["400", "409", "413", "422"]
+        .iter()
+        .any(|code| error.to_string() == format!("bridge HTTP {code}"))
+}
+
+/// Short, content-free description for the log and health file.
+fn safe_reason(error: &anyhow::Error) -> String {
+    let text = format!("{error:#}");
+    if text.contains('"') || text.contains('`') || text.contains('/') {
+        return "unreadable source data".into();
+    }
+    text.chars().take(160).collect()
+}
+
+fn sync_session(
+    db: &mut rusqlite::Connection,
+    journal: &mut Journal,
+    config: &Config,
+    credential: &str,
+    id: &str,
+    uploads: &mut usize,
+) -> std::result::Result<(), (&'static str, anyhow::Error)> {
+    let old = journal.checkpoint(id).map_err(|e| ("checkpoint", e))?;
+    let native = source::native(db, id).map_err(|e| ("source", e))?;
+    if let Some(old) = &old {
+        if old.native != native {
+            return Err((
+                "source",
+                anyhow::anyhow!("source format changed; re-pair required"),
+            ));
+        }
+        if source::watermark(db, id).map_err(|e| ("source", e))? == old.observed {
+            return Ok(());
+        }
+    }
+    let capture =
+        source::capture(db, id, old.as_ref().map(|p| p.observed)).map_err(|e| ("capture", e))?;
+    if let Some(capture) = capture {
+        journal
+            .stage(id, capture, native)
+            .map_err(|e| ("stage", e))?;
+        match flush(journal, config, credential) {
+            Ok(n) => *uploads += n,
+            Err(error) if cloud_rejected(&error) => {
+                journal.discard_pending(id).map_err(|e| ("quarantine", e))?;
+                return Err(("upload", error));
+            }
+            Err(error) => return Err(("transport", error)),
+        }
+    }
+    Ok(())
+}
+
 pub fn sync_once(dir: &Path) -> Result<usize> {
     let _sync_lock = local_lock(&dir.join("sync.lock"))?;
     let config = load(dir)?;
     let credential = token(&config)?;
     let mut journal = Journal::open(&dir.join("journal.sqlite"))?;
-    let mut uploads = flush(&mut journal, &config, &credential)?;
+    let mut uploads = match flush(&mut journal, &config, &credential) {
+        Ok(n) => n,
+        Err(error) if cloud_rejected(&error) => {
+            if let Some(body) = journal.pending()? {
+                journal.discard_pending(body["session_id"].as_str().unwrap_or_default())?;
+            }
+            eprintln!("bridge dropped a batch the cloud refused; session will retry");
+            0
+        }
+        Err(error) => return Err(error),
+    };
     let mut db = source::open(&config.database)?;
     let ids = source::sessions(&db)?.into_iter().collect::<BTreeSet<_>>();
+    let previous = read_health(dir);
+    let now = now_secs();
+    let mut failing: Vec<Failure> = Vec::new();
     for id in &ids {
-        let old = journal.checkpoint(id)?;
-        let native = source::native(&db, id)?;
-        if let Some(old) = &old {
-            if old.native != native {
-                bail!("source format changed; re-pair required");
-            }
-            if source::watermark(&db, id)? == old.observed {
+        let before = previous.failing.iter().find(|f| &f.session_id == id);
+        if let Some(f) = before {
+            if now.saturating_sub(f.last_try) < RETRY_FAILED_AFTER {
+                failing.push(f.clone());
                 continue;
             }
         }
-        if let Some(capture) = source::capture(&mut db, id, old.as_ref().map(|p| p.observed))? {
-            journal.stage(id, capture, native)?;
-            uploads += flush(&mut journal, &config, &credential)?;
+        match sync_session(
+            &mut db,
+            &mut journal,
+            &config,
+            &credential,
+            id,
+            &mut uploads,
+        ) {
+            Ok(()) => {}
+            Err(("transport", error)) => return Err(error),
+            Err((stage, error)) => {
+                let count = before.map_or(1, |f| f.count + 1);
+                let reason = safe_reason(&error);
+                if count == 1 || count % 20 == 0 {
+                    eprintln!(
+                        "bridge session stuck session={id} stage={stage} attempts={count} reason={reason}"
+                    );
+                }
+                failing.push(Failure {
+                    session_id: id.clone(),
+                    stage: stage.into(),
+                    reason,
+                    since: before.map_or(now, |f| f.since),
+                    last_try: now,
+                    count,
+                });
+            }
         }
     }
+    let health = Health {
+        last_ok: if failing.is_empty() {
+            now
+        } else {
+            previous.last_ok
+        },
+        failing,
+    };
+    let _ = crate::fs_util::write_private_json(&dir.join("sync-health.json"), &health);
     for id in journal.known()? {
         if !ids.contains(&id) {
             journal.tombstone(&id)?;
@@ -340,7 +470,13 @@ pub fn deliver_once(dir: &Path) -> Result<bool> {
                 .as_millis() as i64
         {
             status = "failed";
-        } else if let Some(capture) = source::capture(&mut db, id, None)? {
+        } else if let Some(capture) = source::capture(&mut db, id, None).unwrap_or_else(|error| {
+            eprintln!(
+                "bridge delivery cannot read session={id} reason={}",
+                safe_reason(&error)
+            );
+            None
+        }) {
             let consistent = if message["context"].is_object() {
                 context::matches(&capture, &message["context"])
             } else {
@@ -503,6 +639,7 @@ fn log_unavailable(channel: &str, error: &anyhow::Error) {
 pub fn status(dir: &Path) -> Result<Value> {
     let config = load(dir)?;
     let journal = Journal::open(&dir.join("journal.sqlite"))?;
+    let health = read_health(dir);
     let (sessions, messages, pending): (i64, i64, i64) = (
         journal
             .db
@@ -515,7 +652,7 @@ pub fn status(dir: &Path) -> Result<Value> {
             .query_row("SELECT count(*) FROM pending", [], |r| r.get(0))?,
     );
     Ok(
-        json!({"paired":true,"endpoint":config.endpoint,"sessions":sessions,"messages":messages,"pending_batches":pending,"device_id":config.device_id,"database_epoch":config.database_epoch}),
+        json!({"paired":true,"endpoint":config.endpoint,"sessions":sessions,"messages":messages,"pending_batches":pending,"device_id":config.device_id,"database_epoch":config.database_epoch,"last_fully_synced":health.last_ok,"stuck_sessions":health.failing}),
     )
 }
 

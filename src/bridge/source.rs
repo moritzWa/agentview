@@ -238,7 +238,7 @@ pub fn capture(db: &mut Connection, id: &str, after: Option<i64>) -> Result<Opti
     tx.commit()?;
     Ok(Some(Capture {
         through,
-        state: json!({"title":title,"archived":archived.is_some(),"visible_before":visible_before,"deleted":false}),
+        state: json!({"title":fit_title(title),"archived":archived.is_some(),"visible_before":visible_before,"deleted":false}),
         messages,
         ids,
         cwd,
@@ -358,8 +358,47 @@ pub fn project(
         order,
         created_at: created,
         updated_at: updated,
-        text,
+        text: fit_text(text),
     }))
+}
+
+const TEXT_LIMIT: usize = 800_000;
+const TRUNCATED: &str = "\n[Agent View omitted the rest of this message: too large to sync]";
+
+/// The cloud rejects NUL characters and oversized text. A single such message
+/// must not stall its session forever, so make it fit and say so visibly.
+fn fit_text(text: String) -> String {
+    let mut text = if text.contains('\0') {
+        text.replace('\0', "\u{fffd}")
+    } else {
+        text
+    };
+    if serde_json::to_vec(&text).map_or(0, |v| v.len()) <= TEXT_LIMIT {
+        return text;
+    }
+    while serde_json::to_vec(&text).map_or(0, |v| v.len()) > TEXT_LIMIT - TRUNCATED.len() {
+        let mut end = text.len() * 9 / 10;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+    }
+    text.push_str(TRUNCATED);
+    text
+}
+
+fn fit_title(title: String) -> String {
+    let title = title.replace('\0', "\u{fffd}");
+    let mut units = 0;
+    let mut end = title.len();
+    for (index, ch) in title.char_indices() {
+        units += ch.len_utf16();
+        if units > 1000 {
+            end = index;
+            break;
+        }
+    }
+    title[..end].to_owned()
 }
 
 fn validate_event(kind: &str) -> Result<()> {
