@@ -773,24 +773,23 @@ impl App {
             Some(SelectionKey::Session(id)) => self.session_indices.get(id).copied(),
             _ => None,
         };
-        let keep_open: BTreeSet<String> = self
-            .revealed_shelves
-            .iter()
-            .filter(|key| {
-                groups.iter().any(|group| {
-                    group.key == **key
-                        && match &self.selection {
-                            Some(SelectionKey::Group(selected))
-                            | Some(SelectionKey::ShowMore(selected)) => selected == *key,
-                            Some(SelectionKey::Session(_)) => {
-                                selected_index.is_some_and(|index| group.sessions.contains(&index))
+        let keep_open: BTreeSet<String> =
+            self.revealed_shelves
+                .iter()
+                .filter(|key| {
+                    groups.iter().any(|group| {
+                        group.key == **key
+                            && match &self.selection {
+                                Some(SelectionKey::Group(selected))
+                                | Some(SelectionKey::ShowMore(selected)) => selected == *key,
+                                Some(SelectionKey::Session(_)) => selected_index
+                                    .is_some_and(|index| group.sessions.contains(&index)),
+                                None => false,
                             }
-                            None => false,
-                        }
+                    })
                 })
-            })
-            .cloned()
-            .collect();
+                .cloned()
+                .collect();
         for key in std::mem::take(&mut self.revealed_shelves) {
             if !keep_open.contains(&key) {
                 self.collapsed.insert(key);
