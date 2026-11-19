@@ -682,7 +682,7 @@ class Film45(Film):
         out = ""
         boxes = [
             (110, "ChatGPT voice", "your phone", BLUE),
-            (600, "AgentVoice MCP", "cloud", teal),
+            (600, "AgentVoice MCP", "cloud · keeps a chat copy", teal),
             (1090, "Agent View", "your Mac", BLUE if online >= 0.5 else grey),
         ]
         bw, bh, by = 400, 250, 300

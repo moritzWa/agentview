@@ -550,11 +550,11 @@ class Film:
         )
         out += (
             rect(615, 290, 535, 330, 28, "white")
-            + mark(882, 387, 1.7)
-            + txt(882, 493, "Agent View", 62, INK, True, "middle")
+            + mark(882, 395, 1.85)
+            + txt(882, 520, "Agent View", 62, INK, True, "middle")
             + txt(
                 882,
-                548,
+                572,
                 "Open source · Built in Rust · agent-view.app",
                 20,
                 BLUE,
