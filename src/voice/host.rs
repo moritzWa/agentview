@@ -442,7 +442,7 @@ impl VoiceHost for DashboardHost {
             scored.push((words_hit, score, session, snippet));
         }
         if request.recent {
-            scored.sort_by(|a, b| b.2.updated_at_ms.cmp(&a.2.updated_at_ms));
+            scored.sort_by_key(|hit| std::cmp::Reverse(hit.2.updated_at_ms));
         } else {
             scored
                 .sort_by(|a, b| (b.0, b.1, b.2.updated_at_ms).cmp(&(a.0, a.1, a.2.updated_at_ms)));
