@@ -623,7 +623,7 @@ pub fn run(dir: &Path) -> Result<()> {
         } else {
             let since = *unhealthy_since.get_or_insert_with(std::time::Instant::now);
             if since.elapsed() >= STUCK_ALERT_AFTER
-                && last_alert.is_none_or(|t| t.elapsed() >= STUCK_ALERT_EVERY)
+                && !last_alert.is_some_and(|t| t.elapsed() < STUCK_ALERT_EVERY)
             {
                 last_alert = Some(std::time::Instant::now());
                 notify_stuck();
