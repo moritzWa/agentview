@@ -636,7 +636,7 @@ class Film45(Film):
     def plugin_page(self, t):
         card = self.cached(
             ("plugin",),
-            lambda: Image.open(self.output / "captures/agentvoice-plugin-card.png"),
+            lambda: Image.open(self.output / "captures/agentvoice-plugin-card-icon.png"),
         )
         w = 1240
         h = w * 409 / 1498
