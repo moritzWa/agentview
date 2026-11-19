@@ -35,8 +35,8 @@ KEY_EVENTS = {
     "Right": 7.0,
     "Left": 7.91,
     "CmdK": 9.95,
-    "CtrlS": 23.2,
-    "Work": 26.31,
+    "CtrlS": 24.0,
+    "Work": 26.69,
 }
 
 
@@ -319,7 +319,7 @@ class Film45(Film):
         assert len(self.native_frames) >= 186, "Moving native6.2s excerpt missing"
         # Two real-time runs of the recording. The cut skips the frames where
         # the scrolled setup prompt passes the top of the window.
-        self.native_sequence = list(range(66, 120)) + list(range(144, 186))
+        self.native_sequence = list(range(166, 186))
         self.navigation = json.loads(
             (self.output / "navigation/recording.json").read_text()
         )
@@ -641,18 +641,20 @@ class Film45(Film):
         w = 1240
         h = w * 409 / 1498
         x, y = (1600 - w) / 2, 330
-        out = txt(800, 250, "ChatGPT MCP", 44, INK, True, "middle")
+        push = 1 + 0.05 * ease_in_out((t - 17.8) / 2.4)
+        out = f'<g transform="translate(800 450) scale({push}) translate(-800 -450)">'
+        out += txt(800, 250, "ChatGPT MCP", 44, INK, True, "middle")
         out += txt(
             800, 292, "Connect Agent View to ChatGPT", 24, MUTED, anchor="middle"
         )
         out += rect(x - 24, y - 24, w + 48, h + 48, 28, "#fcfcfc", "#e1e3e8")
-        return out + image(card, x, y, w, h)
+        return out + image(card, x, y, w, h) + "</g>"
 
     def chatgpt_window(self, t):
-        n = min(len(self.native_sequence) - 1, max(0, int((t - 19.2) * 30)))
+        # Real recording, real speed: the answer arrives, then the reply is
+        # typed and sent. Cut between the two takes, never retimed.
+        n = min(len(self.native_sequence) - 1, max(0, int((t - 20.2) * 30)))
         path = self.native_frames[self.native_sequence[n]]
-        # Whole window from its left edge; title bar off; the empty right of
-        # the conversation column trimmed so the window can fill the frame.
         data = self.cached(
             ("native", path.name),
             lambda: Image.open(path).convert("RGB").crop((0, 88, 2400, 1262)),
@@ -669,10 +671,73 @@ class Film45(Film):
             + "</g>"
         )
 
+    def bridge_diagram(self, t):
+        """How a reply reaches an offline Mac: phone, cloud queue, Mac."""
+        appear = ease_in_out((t - 20.85) / 0.3)
+        sent = ease_in_out((t - 21.2) / 0.5)  # reply: phone -> queue
+        online = ease_in_out((t - 22.75) / 0.3)  # the Mac comes back
+        delivered = ease_in_out((t - 22.95) / 0.5)  # queue -> Mac
+        teal = "#179299"
+        grey = "#9ca0b0"
+        out = ""
+        boxes = [
+            (110, "ChatGPT voice", "your phone", BLUE),
+            (600, "AgentVoice MCP", "cloud", teal),
+            (1090, "Agent View", "your Mac", BLUE if online >= 0.5 else grey),
+        ]
+        bw, bh, by = 400, 250, 300
+        for x, title, sub, color in boxes:
+            out += rect(x, by, bw, bh, 26, "white", color)
+            out += txt(x + bw / 2, by + 62, title, 34, INK, True, "middle")
+            out += txt(x + bw / 2, by + 98, sub, 22, MUTED, anchor="middle")
+        # Mac status
+        status = "online" if online >= 0.5 else "offline"
+        out += txt(
+            1290,
+            by + 136,
+            "● " + status,
+            22,
+            BLUE if online >= 0.5 else grey,
+            True,
+            "middle",
+        )
+        # Queue inside the cloud box
+        out += rect(640, by + 140, 320, 76, 16, "#eef7f7", teal)
+        out += txt(800, by + 125, "queued messages", 18, teal, True, "middle")
+        # Arrows
+        for x1, x2 in [(510, 600), (1000, 1090)]:
+            out += (
+                f'<line x1="{x1 + 8}" y1="{by + bh / 2}" x2="{x2 - 14}" y2="{by + bh / 2}" '
+                f'stroke="{MUTED}" stroke-width="3"/>'
+                f'<path d="M{x2 - 16} {by + bh / 2 - 9} L{x2 - 4} {by + bh / 2} L{x2 - 16} {by + bh / 2 + 9}z" fill="{MUTED}"/>'
+            )
+        # The reply chip travels phone -> queue (waits) -> Mac.
+        chip_w, chip_h = 230, 44
+        start_x, queue_x, mac_x = 195, 685, 1175
+        cx = start_x + (queue_x - start_x) * sent + (mac_x - queue_x) * delivered
+        cy = by + 156 if delivered <= 0 else by + 156 + 0 * delivered
+        out += rect(cx, cy, chip_w, chip_h, 22, "#11121b")
+        out += txt(
+            cx + chip_w / 2, cy + 29, "Tell it checkout.", 20, "white", True, "middle"
+        )
+        out += txt(
+            800,
+            690,
+            "Your Mac picks up queued replies when it comes back online.",
+            24,
+            MUTED,
+            anchor="middle",
+        )
+        return faded(out, appear)
+
     def chatgpt(self, t):
-        if t < 19.2:
+        if t < 20.2:
             return self.plugin_page(t)
-        return self.chatgpt_window(t)
+        if t < 20.85:
+            return self.chatgpt_window(t)
+        return faded(
+            self.chatgpt_window(t), 1 - ease_in_out((t - 20.85) / 0.3)
+        ) + self.bridge_diagram(t)
 
     def projects(self, t):
         key = KEY_EVENTS["CtrlS"]
@@ -722,9 +787,9 @@ class Film45(Film):
             content = self.voice_intro(t)
         elif t < 17.8:
             content = self.dialogue(t)
-        elif t < 23.1:
+        elif t < 23.9:
             content = self.chatgpt(t)
-        elif t < 26.0:
+        elif t < 26.3:
             content = self.projects(t)
         elif t < 29.0:
             content = self.work_scope(t)
