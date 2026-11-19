@@ -8,12 +8,12 @@ from pathlib import Path
 import numpy as np
 import resvg_py
 from PIL import Image, ImageFilter
-from propose45 import morph_box
 from soundtrack import decode
 from visual import (
     BLUE,
     INK,
     MUTED,
+    ROOT,
     VOICE_CHOICE,
     Film,
     H,
@@ -22,6 +22,7 @@ from visual import (
     image,
     rect,
     txt,
+    uri,
 )
 from waveform import VoiceTracks, envelope
 
@@ -79,6 +80,78 @@ PILL_Y = 806
 # Camera scale for the 23-row Scheduled and Heavy jobs captures.
 COMPACT_S = 0.965
 PILL_H = 80
+
+
+HARNESS_LOOK = {
+    "claude": {
+        "label": "Claude",
+        "title": "Claude Code",
+        "glyph": "✳",
+        "icon": "claude.svg",
+        "sub": "Opus · ~/Code/shop",
+        "footer": "▸▸ bypass permissions on (shift+tab to cycle)",
+        "accent": "#d20f39",
+    },
+    "codex": {
+        "label": "Codex",
+        "title": "OpenAI Codex",
+        "glyph": ">_",
+        "icon": "openai.png",
+        "sub": "gpt-6 · ~/Code/payments",
+        "footer": "⏎ send   ⇧⏎ newline   esc interrupt",
+        "accent": "#6c6f85",
+    },
+    "opencode": {
+        "label": "OpenCode",
+        "title": "OpenCode",
+        "glyph": "◧",
+        "icon": "opencode.svg",
+        "sub": "Build · GPT-6.1",
+        "footer": "Build · GPT-6.1 Sol   ctrl+p commands",
+        "accent": "#fe640b",
+    },
+    "cursor": {
+        "label": "Cursor",
+        "title": "Cursor Agent",
+        "glyph": "⬡",
+        "icon": "cursor.svg",
+        "sub": "auto · ~/Code/docs",
+        "footer": "Auto-run · ctrl+c to stop",
+        "accent": "#6c6f85",
+    },
+    "devin": {
+        "label": "Devin",
+        "title": "Devin",
+        "glyph": "◆",
+        "icon": "devin.png",
+        "sub": "~/Code/shop",
+        "footer": "devin › working",
+        "accent": "#179299",
+    },
+}
+
+
+def chat_script(a):
+    name = a["name"]
+    area = name.split("-")[0]
+    lines = [
+        f"> fix {name.replace('-', ' ')} and run the tests",
+        f"● Reading src/{area}/index.ts",
+        "  └ 214 lines",
+        f"● Update(src/{area}/{name}.ts)",
+        "  └ +18 −6",
+        f"● Bash(pnpm test {area})",
+        "  └ 41 passed · 1 failed",
+        f"● Update(src/{area}/{name}.test.ts)",
+        "  └ +4 −1",
+        f"● Bash(pnpm test {area})",
+        "  └ 42 passed",
+    ]
+    if a["state"] == "needs_input":
+        lines.append("? " + a["summary"])
+    else:
+        lines.append("• " + a["summary"] + "…")
+    return lines
 
 
 def row_y(row):
@@ -339,91 +412,87 @@ class Film45(Film):
 
     # Beats ----------------------------------------------------------------
 
-    def intro(self, t):
-        p = ease_in_out((t - 4.0) / 0.9)
-        out = faded(self.locked("overview"), (p - 0.85) / 0.15)
-        logs = [
-            "$ pnpm test checkout --watch",
-            "  compiling src/routes/cart.tsx…",
-            "@@ -38,7 +38,11 @@ checkout",
-            "+ const total = applyCoupon(cart);",
-            "  GET /api/checkout 200  182ms",
-            "  retrying flaky suite (3 of20)",
-            "  ███████░░░ 72% building",
-            "  watching184 changed files",
-            "  npm run typecheck -- --strict",
-            "  ✓ migrated12 schema changes",
-        ]
-        for i, a in enumerate(self.mapping):
-            destination = list(to_canvas(*a["cell_bounds"]))
-            x, y, w, h = morph_box(a["grid"], destination, p)
-            identifier = f"morph{i}"
-            radius = 4 * (1 - p)
-            out += f'<defs><clipPath id="{identifier}">{rect(x, y, w, h, radius)}</clipPath></defs><g clip-path="url(#{identifier})">'
-            out += rect(x, y, w, h, radius, "white", "#b8bec9" if p < 0.98 else "none")
-            row_mix = max(0, min(1, (p - 0.93) / 0.07))
-            out += f'<g opacity="{1 - row_mix}">' + rect(x, y, w, 24, 0, "#e3e6ed")
-            label = {
-                "claude": "Claude",
-                "codex": "Codex",
-                "opencode": "OpenCode",
-                "cursor": "Cursor",
-                "devin": "Devin",
-            }.get(a["provider"], a["provider"])
-            name_offset = a["actual_text"].index(a["name"]) * 12 * S
-            provider_offset = a["actual_text"].index(label) * 12 * S
-            baseline = y + 17 * (1 - p) + 19 * S * p
-            size = 11.5 * (1 - p) + 20 * S * p
-            out += txt(
-                x + 8 * (1 - p) + 12 * S * p,
-                baseline,
-                "✱" if a["state"] == "needs_input" else "✳",
-                size,
-                a["state_color"],
-                mono=True,
-            )
-            out += txt(
-                x + 26 * (1 - p) + name_offset * p,
-                baseline,
-                a["name"],
-                size,
-                INK,
-                mono=True,
-            )
-            provider_start = 360 - 8 - font(10, mono=True).getlength(label)
-            expand = max(0, (p - 0.5) * 2)
-            out += txt(
-                x + provider_start * (1 - expand) + provider_offset * expand,
-                baseline,
-                label,
-                10.5 * (1 - expand) + 20 * S * expand,
-                MUTED,
-                mono=True,
-            )
-            shift = (int(t * (3 + i % 3)) + i * 3) % len(logs)
-            for j in range(8):
-                line = logs[(shift + j) % len(logs)]
-                if j == 5:
-                    line = (
-                        ("? " + a["summary"])[:48]
-                        if a["state"] == "needs_input"
-                        else a["summary"][:48]
-                    )
-                out += txt(
-                    x + 8,
-                    y + 37 + j * 13,
-                    line,
-                    10.1,
-                    a["state_color"] if j == 5 else MUTED,
-                    mono=True,
-                )
-            out += "</g>"
+    def pane(self, i, a, x, y, w, h, t):
+        """One agent window: title bar, a chat streaming in, prompt, footer."""
+        harness = HARNESS_LOOK[a["provider"]]
+        out = rect(x, y, w, h, 10, "white", "#c9ced8")
+        out += rect(x, y, w, 22, 10, "#f3f4f7") + rect(x, y + 12, w, 10, 0, "#f3f4f7")
+        out += f'<line x1="{x}" y1="{y + 22}" x2="{x + w}" y2="{y + 22}" stroke="#e1e4ea"/>'
+        lights = ["#ff5f57", "#febc2e", "#28c840"] if i == 5 else ["#d5d8de"] * 3
+        for k, color in enumerate(lights):
             out += (
-                f'<g opacity="{row_mix}">'
-                + image(self.morph_rows[a["id"]], x, y, w, h).replace(
-                    "xMidYMid meet", "none"
-                )
-                + "</g></g>"
+                f'<circle cx="{x + 12 + k * 13}" cy="{y + 11}" r="4" fill="{color}"/>'
+            )
+        out += txt(
+            x + 56,
+            y + 15,
+            f"{harness['title']} · {a['name']}",
+            10,
+            MUTED,
+            True,
+        )
+        out += image(
+            uri(ROOT / "site/providers" / harness["icon"]), x + 10, y + 30, 22, 22
+        )
+        out += txt(x + 40, y + 41, harness["title"], 10, INK, True, mono=True)
+        out += txt(x + 40, y + 53, harness["sub"], 8.5, MUTED, mono=True)
+        # The conversation types in, each window at its own pace, and scrolls.
+        script = chat_script(a)
+        typed = 36 + max(0.0, t + 0.3 * (i % 5)) * (58 + 14 * (i % 4))
+        shown, budget = [], typed
+        for line in script:
+            if budget <= 0:
+                break
+            shown.append(line[: int(budget)])
+            budget -= len(line) + 6
+        body_top, line_h = y + 70, 12
+        rows = int((h - 70 - 46) / line_h)
+        for k, line in enumerate(shown[-rows:]):
+            asking = a["state"] == "needs_input" and line.startswith("? ")
+            color = (
+                "#df8e1d"
+                if asking
+                else INK
+                if line.startswith(("> ", "●", "•"))
+                else MUTED
+            )
+            out += txt(x + 10, body_top + k * line_h, line[:58], 8.6, color, mono=True)
+        base = y + h - 38
+        out += f'<line x1="{x + 8}" y1="{base}" x2="{x + w - 8}" y2="{base}" stroke="#d5d8de"/>'
+        out += txt(x + 10, base + 14, "❯", 9, INK, mono=True)
+        if int(t * 2.5) % 2 and a["state"] == "needs_input":
+            out += rect(x + 22, base + 5, 6, 11, 0, "#df8e1d")
+        out += f'<line x1="{x + 8}" y1="{base + 21}" x2="{x + w - 8}" y2="{base + 21}" stroke="#d5d8de"/>'
+        out += txt(
+            x + 10, base + 33, harness["footer"], 8.2, harness["accent"], mono=True
+        )
+        return out
+
+    def intro(self, t):
+        """Sixteen agent windows, then each one shrinks into its row."""
+        p = ease_in_out((t - 4.0) / 0.9)
+        gap = 14
+        gw, gh = (1600 - 5 * gap) / 4, (900 - 5 * gap) / 4
+        out = ""
+        if p > 0:
+            out += faded(self.locked("overview"), ease_in_out((p - 0.35) / 0.5))
+        for i, a in enumerate(self.mapping):
+            col, row = i % 4, i // 4
+            gx, gy = gap + col * (gw + gap), gap + row * (gh + gap)
+            if p <= 0:
+                out += self.pane(i, a, gx, gy, gw, gh, t)
+                continue
+            dx, dy, dw, dh = to_canvas(*a["cell_bounds"])
+            # Uniform scale only: the window keeps its shape while it flies
+            # to its row's centre and shrinks to the row's height.
+            scale = 1 + (dh * 2.2 / gh - 1) * p
+            cx = gx + gw / 2 + (dx + dw * 0.18 - gx - gw / 2) * p
+            cy = gy + gh / 2 + (dy + dh / 2 - gy - gh / 2) * p
+            out += faded(
+                f'<g transform="translate({cx} {cy}) scale({scale}) translate({-(gx + gw / 2)} {-(gy + gh / 2)})">'
+                + self.pane(i, a, gx, gy, gw, gh, t)
+                + "</g>",
+                1 - ease_in_out((p - 0.3) / 0.5),
             )
         return out
 
@@ -448,24 +517,57 @@ class Film45(Film):
         source = Image.open(self.output / "navigation" / frame["file"]).convert("RGB")
 
         def message():
-            return source.crop((0, row_y(7) * 3, source.width, row_y(10) * 3))
+            return source.crop((30 * 3, row_y(7) * 3, 1590 * 3, row_y(10) * 3))
 
         def composer():
-            box = source.crop((0, row_y(21) * 3, source.width, row_y(26) * 3)).copy()
-            # Title text on the composer's last line, right of the model name.
-            fill = box.getpixel((900 * 3, 10 * 3))
-            title_row = (row_y(24) - row_y(21)) * 3
-            box.paste(fill, (980 * 3, title_row, box.width - 60, title_row + 28 * 3))
+            box = source.crop((30 * 3, row_y(21) * 3, 1590 * 3, row_y(25) * 3)).copy()
+            # The session title sits on the composer's last text row, right of
+            # the model name. Clear it with the composer's own fill, inside the
+            # composer only, so its right edge and border stay intact.
+            title_top = (row_y(24) - row_y(21)) * 3
+            fill = box.getpixel((1400 * 3, title_top + 14 * 3))
+            box.paste(fill, (870 * 3, title_top, 1545 * 3, title_top + 28 * 3))
             return box
 
-        top = self.cached(("session", "message"), message)
-        bottom = self.cached(("session", "composer"), composer)
-        mx, my, mw, mh = to_canvas(0, row_y(1), 1616, row_y(10) - row_y(7))
-        # The dashboard's own prompt sits on rows 32-35; the composer lands there.
-        bx, by, bw, bh = to_canvas(0, row_y(31), 1616, row_y(26) - row_y(21))
-        return image(top, mx, my, mw, mh).replace("xMidYMid meet", "none") + image(
-            bottom, bx, by, bw, bh
-        ).replace("xMidYMid meet", "none")
+        top = self.cached(("session", "message2"), message)
+        bottom = self.cached(("session", "composer4"), composer)
+        z = 1500 / 1560
+        width = 1560 * z
+        x = (1600 - width) / 2
+        size, line = 20 * z, 28 * z
+        # Earlier turns of the same checkout conversation, in OpenCode's layout.
+        history = [
+            ("prompt", "Move checkout to one page and keep the tests green."),
+            ("gap", ""),
+            ("tool", "→ Read src/checkout/Cart.tsx"),
+            ("tool", "→ Read src/checkout/Checkout.tsx"),
+            ("tool", "← Edit src/checkout/Checkout.tsx   +42 −11"),
+            ("tool", "$ pnpm test checkout                 38 passed"),
+            ("gap", ""),
+            ("text", "Checkout is now one page. The coupon field still lives on"),
+            ("text", "the cart page, so the totals can disagree."),
+        ]
+        y0 = 160
+        tx = x + 36 * z + 9
+        out = ""
+        for k, (kind, text) in enumerate(history):
+            ly = y0 + k * line
+            if kind == "prompt":
+                out += rect(x + 14, ly - 8, width - 14, line + 16, 0, "#f0f0f0")
+                out += rect(x + 14, ly - 8, 4, line + 16, 0, "#e0784a")
+                out += txt(tx, ly + size * 0.95, text, size, INK, mono=True)
+            elif kind == "tool":
+                out += txt(tx, ly + size * 0.95, text, size, MUTED, mono=True)
+            elif kind == "text":
+                out += txt(tx, ly + size * 0.95, text, size, INK, mono=True)
+        my = y0 + len(history) * line + line * 0.6
+        message_h = (row_y(10) - row_y(7)) * z
+        composer_h = (row_y(25) - row_y(21)) * z
+        out += image(top, x, my, width, message_h).replace("xMidYMid meet", "none")
+        out += image(bottom, x, my + message_h + line, width, composer_h).replace(
+            "xMidYMid meet", "none"
+        )
+        return out
 
     def navigation_beat(self, t):
         right, left = KEY_EVENTS["Right"], KEY_EVENTS["Left"]
