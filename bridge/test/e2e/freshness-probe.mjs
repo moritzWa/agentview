@@ -27,7 +27,7 @@ async function rpc(name, args) {
 }
 const summarize = ({ms, value}) => ({
   http_ms: ms, cursor: value.cursor, synced_at: value.synced_at, source_checked_at: value.source_checked_at ? new Date(value.source_checked_at).toISOString() : null,
-  mac_seen_recently: value.mac_seen_recently, page_kind: value.page_kind,
+  mac_seen_recently: value.mac_seen_recently, history_fresh: value.history_fresh, history_age_ms: value.history_age_ms, retry_after_ms: value.retry_after_ms, page_kind: value.page_kind,
   messages: value.messages.map(m => ({id: m.message_id.slice(0, 18), order: Number(m.message_order), role: m.role, chars: m.text.length})),
 });
 
