@@ -265,7 +265,68 @@ static REMOVAL_REQUESTED: std::sync::atomic::AtomicBool = std::sync::atomic::Ato
 /// Whether the last foreground session returned through the removal key,
 /// clearing the request so it applies once.
 pub fn take_removal_request() -> bool {
-    REMOVAL_REQUESTED.swap(false, std::sync::atomic::Ordering::SeqCst)
+    let requested = REMOVAL_REQUESTED.swap(false, std::sync::atomic::Ordering::SeqCst);
+    if requested {
+        if let Ok(mut trace) = REMOVAL_TRACE.lock() {
+            if let Some(trace) = trace.as_mut() {
+                trace.consumed_at = Some(Instant::now());
+            }
+        }
+    }
+    requested
+}
+
+/// Where the time between the removal key and the dashboard's redraw goes,
+/// written to the perf log once the redraw has happened.
+struct RemovalTrace {
+    key_at: Instant,
+    detach_at: Option<Instant>,
+    consumed_at: Option<Instant>,
+}
+
+static REMOVAL_TRACE: Mutex<Option<RemovalTrace>> = Mutex::new(None);
+
+fn trace_removal_key(key_at: Instant) {
+    if let Ok(mut trace) = REMOVAL_TRACE.lock() {
+        *trace = Some(RemovalTrace {
+            key_at,
+            detach_at: None,
+            consumed_at: None,
+        });
+    }
+}
+
+#[cfg(unix)]
+fn trace_removal_detach() {
+    if let Ok(mut trace) = REMOVAL_TRACE.lock() {
+        if let Some(trace) = trace.as_mut() {
+            trace.detach_at = Some(Instant::now());
+        }
+    }
+}
+
+/// Called after every dashboard draw: the first one after a removal key has
+/// been turned into the confirmation row logs how long each step took.
+pub fn note_dashboard_drawn() {
+    let Ok(mut slot) = REMOVAL_TRACE.lock() else {
+        return;
+    };
+    let Some(consumed_at) = slot.as_ref().and_then(|trace| trace.consumed_at) else {
+        return;
+    };
+    let trace = slot.take().expect("checked above");
+    let now = Instant::now();
+    let since = |later: Instant, earlier: Option<Instant>| {
+        crate::perf_log::ms(earlier.map_or(Duration::ZERO, |earlier| later.duration_since(earlier)))
+    };
+    crate::perf!(
+        "removal-key",
+        "hold={} leave={} draw={} total={}",
+        since(trace.detach_at.unwrap_or(trace.key_at), Some(trace.key_at)),
+        since(consumed_at, trace.detach_at),
+        since(now, Some(consumed_at)),
+        since(now, Some(trace.key_at)),
+    );
 }
 
 /// Run or reattach one provider-native client. Non-TTY callers retain the
@@ -1058,7 +1119,13 @@ fn bridge_session(
                 revents: 0,
             },
         ];
-        let polled = unsafe { libc::poll(descriptors.as_mut_ptr(), descriptors.len() as _, 25) };
+        // Wake exactly when a held Ctrl+X or a lone Escape comes due instead of
+        // at the next 25 ms tick, which would add up to that much to the wait.
+        let poll_ms = parser
+            .next_deadline()
+            .map_or(25, |wait| (wait.as_millis() as libc::c_int + 1).min(25));
+        let polled =
+            unsafe { libc::poll(descriptors.as_mut_ptr(), descriptors.len() as _, poll_ms) };
         if polled < 0 {
             let error = std::io::Error::last_os_error();
             if error.kind() != std::io::ErrorKind::Interrupted {
@@ -1226,6 +1293,7 @@ fn bridge_session(
         }
         if !detach && parser.take_expired_leader() {
             REMOVAL_REQUESTED.store(true, std::sync::atomic::Ordering::SeqCst);
+            trace_removal_detach();
             detach = true;
         }
         if let Some(hook) = VOICE_HOOK.get() {
@@ -2398,7 +2466,9 @@ impl DetachParser {
                 continue;
             }
             if self.holds_leader && remaining == [CTRL_X] {
-                self.held_leader_since = Some(Instant::now());
+                let now = Instant::now();
+                self.held_leader_since = Some(now);
+                trace_removal_key(now);
                 break;
             }
             forward.push(bytes[index]);
@@ -2420,6 +2490,21 @@ impl DetachParser {
         }
         self.pending_since = None;
         Some(std::mem::take(&mut self.pending))
+    }
+
+    /// How long until a held key must be acted on, if one is held.
+    fn next_deadline(&self) -> Option<Duration> {
+        let leader = self
+            .held_leader_since
+            .map(|since| LEADER_HOLD.saturating_sub(since.elapsed()));
+        let escape = (!self.pending.is_empty())
+            .then_some(self.pending_since)
+            .flatten()
+            .map(|since| ESCAPE_FLUSH_DELAY.saturating_sub(since.elapsed()));
+        match (leader, escape) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
 
     fn take_expired_leader(&mut self) -> bool {
@@ -3397,6 +3482,22 @@ mod tests {
         assert!(parser.take_expired_leader());
         assert!(!parser.take_expired_leader());
         assert_eq!(parser.push(b"a"), vec![InputAction::Forward(b"a".to_vec())]);
+    }
+
+    #[test]
+    fn held_keys_report_how_long_until_they_come_due() {
+        let mut parser = DetachParser::for_session("opencode:ses_1");
+        assert_eq!(parser.next_deadline(), None);
+        parser.push(b"\x18");
+        let due = parser.next_deadline().expect("the leader is held");
+        assert!(due <= LEADER_HOLD && due > LEADER_HOLD - Duration::from_millis(100));
+        parser.held_leader_since = Some(Instant::now() - LEADER_HOLD);
+        assert_eq!(parser.next_deadline(), Some(Duration::ZERO));
+        parser.push(b"n");
+        assert_eq!(parser.next_deadline(), None);
+        parser.push(b"\x1b");
+        let due = parser.next_deadline().expect("the escape is held");
+        assert!(due <= ESCAPE_FLUSH_DELAY);
     }
 
     #[test]

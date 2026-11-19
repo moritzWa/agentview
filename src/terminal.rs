@@ -1082,6 +1082,7 @@ pub fn run_dashboard(
             watchdog::set_phase(watchdog::Phase::Draw);
             terminal.terminal.draw(|frame| ui::render(frame, &app))?;
             terminal.set_title(&ui::terminal_title(&app));
+            crate::native_session::note_dashboard_drawn();
             needs_draw = false;
             if !first_draw_logged {
                 first_draw_logged = true;
