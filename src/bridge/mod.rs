@@ -236,6 +236,14 @@ fn cloud_rejected(error: &anyhow::Error) -> bool {
         .any(|code| error.to_string() == format!("bridge HTTP {code}"))
 }
 
+fn cloud_failed(error: &anyhow::Error) -> bool {
+    error.to_string().starts_with("bridge HTTP 5")
+}
+
+fn bad_receipt(error: &anyhow::Error) -> bool {
+    error.to_string() == "invalid sync acknowledgement"
+}
+
 /// Short, content-free description for the log and health file.
 fn safe_reason(error: &anyhow::Error) -> String {
     let text = format!("{error:#}");
@@ -274,7 +282,7 @@ fn sync_session(
             .map_err(|e| ("stage", e))?;
         match flush(journal, config, credential) {
             Ok(n) => *uploads += n,
-            Err(error) if cloud_rejected(&error) => {
+            Err(error) if cloud_rejected(&error) || cloud_failed(&error) || bad_receipt(&error) => {
                 journal.discard_pending(id).map_err(|e| ("quarantine", e))?;
                 return Err(("upload", error));
             }
@@ -305,6 +313,7 @@ pub fn sync_once(dir: &Path) -> Result<usize> {
     let previous = read_health(dir);
     let now = now_secs();
     let mut failing: Vec<Failure> = Vec::new();
+    let mut server_errors = 0;
     for id in &ids {
         let before = previous.failing.iter().find(|f| &f.session_id == id);
         if let Some(f) = before {
@@ -321,9 +330,17 @@ pub fn sync_once(dir: &Path) -> Result<usize> {
             id,
             &mut uploads,
         ) {
-            Ok(()) => {}
+            Ok(()) => server_errors = 0,
             Err(("transport", error)) => return Err(error),
             Err((stage, error)) => {
+                // One session's batch can make the cloud answer 5xx every time,
+                // but three in a row across sessions looks like an outage.
+                if cloud_failed(&error) {
+                    server_errors += 1;
+                    if server_errors >= 3 {
+                        return Err(error);
+                    }
+                }
                 let count = before.map_or(1, |f| f.count + 1);
                 let reason = safe_reason(&error);
                 if count == 1 || count % 20 == 0 {
@@ -581,6 +598,8 @@ pub fn run(dir: &Path) -> Result<()> {
         }
     });
     let mut last_sync = std::time::Instant::now() - Duration::from_secs(900);
+    let mut unhealthy_since: Option<std::time::Instant> = None;
+    let mut last_alert: Option<std::time::Instant> = None;
     loop {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
@@ -593,7 +612,24 @@ pub fn run(dir: &Path) -> Result<()> {
             std::thread::sleep(Duration::from_secs(5));
             continue;
         }
-        match sync_once(dir) {
+        let outcome = sync_once(dir);
+        let healthy = outcome.is_ok() && read_health(dir).failing.is_empty();
+        let offline = outcome
+            .as_ref()
+            .err()
+            .is_some_and(|e| matches!(error_kind(&e.to_string()), "network" | "busy"));
+        if healthy || offline {
+            unhealthy_since = None;
+        } else {
+            let since = *unhealthy_since.get_or_insert_with(std::time::Instant::now);
+            if since.elapsed() >= STUCK_ALERT_AFTER
+                && last_alert.is_none_or(|t| t.elapsed() >= STUCK_ALERT_EVERY)
+            {
+                last_alert = Some(std::time::Instant::now());
+                notify_stuck();
+            }
+        }
+        match outcome {
             Ok(n) => {
                 last_sync = std::time::Instant::now();
                 if n > 0 {
@@ -612,9 +648,22 @@ pub fn run(dir: &Path) -> Result<()> {
     }
 }
 
-fn log_unavailable(channel: &str, error: &anyhow::Error) {
-    let message = error.to_string();
-    let kind = if message.contains("HTTP 401") {
+const STUCK_ALERT_AFTER: Duration = Duration::from_secs(30 * 60);
+const STUCK_ALERT_EVERY: Duration = Duration::from_secs(6 * 3600);
+
+fn notify_stuck() {
+    eprintln!("bridge sync stuck for 30+ minutes; notifying");
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("osascript")
+        .args([
+            "-e",
+            "display notification \"Phone sync has not completed for 30+ minutes. Run: agentview bridge status\" with title \"Agent View bridge\"",
+        ])
+        .status();
+}
+
+fn error_kind(message: &str) -> &'static str {
+    if message.contains("HTTP 401") {
         "authentication"
     } else if message.contains("HTTP 429") {
         "rate_limit"
@@ -628,7 +677,11 @@ fn log_unavailable(channel: &str, error: &anyhow::Error) {
         "network"
     } else {
         "local_or_native"
-    };
+    }
+}
+
+fn log_unavailable(channel: &str, error: &anyhow::Error) {
+    let kind = error_kind(&error.to_string());
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());

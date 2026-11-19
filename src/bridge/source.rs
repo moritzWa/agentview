@@ -49,7 +49,7 @@ fn check_schema(db: &Connection) -> Result<()> {
 }
 
 pub fn sessions(db: &Connection) -> Result<Vec<String>> {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(60);
     db.progress_handler(10_000, Some(move || Instant::now() > deadline));
     let mut s = db.prepare("SELECT id FROM session_v2 ORDER BY id")?;
     let mut ids = s
