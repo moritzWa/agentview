@@ -284,6 +284,7 @@ impl VoiceHost for DashboardHost {
             .map(|turn| Turn {
                 you: turn.you,
                 it: turn.it,
+                replies: turn.replies,
             })
             .collect())
     }
