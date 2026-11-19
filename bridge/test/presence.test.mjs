@@ -59,3 +59,28 @@ test('a partial connector check does not stamp history fresh, and presence ignor
   assert.equal(stamps.sync_skipped,0);
   assert.notEqual(token,'');
 });
+
+test('history reads say outright when the page may be stale, and clear the flag once the Mac has checked in',async()=>{
+  const map=new Map();
+  const put=(k,v)=>{if(typeof k==='object')for(const [a,b] of Object.entries(k))map.set(a,b);else map.set(k,v);};
+  const storage={get:async k=>Array.isArray(k)?new Map():map.get(k),put:async(k,v)=>put(k,v),delete:async()=>{},transaction:async f=>f({get:async k=>map.get(k),put:async(k,v)=>put(k,v)})};
+  const object=new WakeGate({storage});
+  const gate=gateClient({idFromName:x=>x,get:()=>({fetch:(url,init)=>object.fetch(new Request(url,init))})},'owner');
+  const source='device|epoch',t=Date.now();
+  map.set(`last_seen:${source}`,t-1000);map.set(`checked:${source}`,t-600_000);
+  const stale=await gate.activity(source,false,'history');
+  assert.equal(stale.history_fresh,false);
+  assert.equal(stale.retry_after_ms,5000);
+  assert.match(stale.history_note,/Repeat the same call/);
+  map.set(`last_seen:${source}`,t-600_000);
+  const offline=await gate.activity(source,false,'history');
+  assert.equal(offline.history_fresh,false);
+  assert.equal(offline.retry_after_ms,undefined);
+  map.set(`last_seen:${source}`,t);map.set(`checked:${source}`,t);
+  const fresh=await gate.activity(source,false,'history');
+  assert.equal(fresh.history_fresh,true);
+  assert.equal(fresh.history_note,undefined);
+  assert.equal(fresh.retry_after_ms,undefined);
+  const runtime=await gate.activity(source,false,'runtime');
+  assert.equal(runtime.history_fresh,undefined);
+});

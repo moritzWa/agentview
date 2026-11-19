@@ -181,26 +181,18 @@ pub fn pair(
     }
 }
 
-fn flush(journal: &mut Journal, config: &Config, token: &str) -> Result<usize> {
-    let mut count = 0;
-    while let Some(body) = journal.pending()? {
-        let receipt = http::request(
-            &config.endpoint,
-            "/v1/sync/batches",
-            Some(token),
-            Some(&body),
-            60,
-        )?;
-        journal.ack(&receipt)?;
-        count += 1;
-    }
-    Ok(count)
-}
-
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct Health {
     last_ok: u64,
     failing: Vec<Failure>,
+    #[serde(default)]
+    last_pass_at: u64,
+    #[serde(default)]
+    last_pass_ms: u64,
+    #[serde(default)]
+    scanned: usize,
+    #[serde(default)]
+    uploaded_batches: usize,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -213,7 +205,19 @@ struct Failure {
     count: u32,
 }
 
-const RETRY_FAILED_AFTER: u64 = 300;
+/// Seconds to wait before retrying a session that failed `count` times in a row.
+/// Short at first so a transient blip on a session in active use heals within a
+/// pass or two; long later so a permanently bad session costs almost nothing.
+fn retry_after(count: u32) -> u64 {
+    match count {
+        0 | 1 => 5,
+        2 => 15,
+        3 => 30,
+        4 => 60,
+        5 => 120,
+        _ => 300,
+    }
+}
 
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
@@ -228,20 +232,31 @@ fn read_health(dir: &Path) -> Health {
         .unwrap_or_default()
 }
 
-/// Cloud answers that retrying the same batch can never fix. They belong to one
-/// session and must not hold up every other session behind it.
-fn cloud_rejected(error: &anyhow::Error) -> bool {
-    ["400", "409", "413", "422"]
-        .iter()
-        .any(|code| error.to_string() == format!("bridge HTTP {code}"))
+/// What an upload failure tells us about whether the cloud applied the batch.
+#[derive(Debug, PartialEq)]
+enum Fault {
+    /// The cloud refused the batch inside its transaction, so nothing was
+    /// committed. Retrying the same bytes can never succeed.
+    Definite,
+    /// The cloud may have committed before it failed or before we saw the receipt.
+    /// The same batch must be retried verbatim: the cloud replays its stored
+    /// receipt, whereas a rebuilt batch would fail `cursor_gap` forever.
+    Ambiguous,
 }
 
-fn cloud_failed(error: &anyhow::Error) -> bool {
-    error.to_string().starts_with("bridge HTTP 5")
-}
-
-fn bad_receipt(error: &anyhow::Error) -> bool {
-    error.to_string() == "invalid sync acknowledgement"
+fn classify(error: &anyhow::Error) -> Option<Fault> {
+    let message = error.to_string();
+    if let Some(code) = message.strip_prefix("bridge HTTP ") {
+        return match code.parse::<u16>() {
+            Ok(400 | 409 | 413 | 422) => Some(Fault::Definite),
+            Ok(500..=599) => Some(Fault::Ambiguous),
+            _ => None,
+        };
+    }
+    if message == "invalid sync acknowledgement" {
+        return Some(Fault::Ambiguous);
+    }
+    None
 }
 
 /// Short, content-free description for the log and health file.
@@ -253,6 +268,42 @@ fn safe_reason(error: &anyhow::Error) -> String {
     text.chars().take(160).collect()
 }
 
+type Faults = Vec<(String, &'static str, anyhow::Error)>;
+
+/// Uploads queued batches. A failure that belongs to one session is set aside
+/// (held or dropped, per `classify`) so it cannot block other sessions. Anything
+/// else (network, auth, rate limit, local disk) is a pass-level error.
+fn flush_isolating(journal: &mut Journal, config: &Config, token: &str) -> Result<(usize, Faults)> {
+    let mut count = 0;
+    let mut faults: Faults = Vec::new();
+    while let Some(body) = journal.pending()? {
+        let session = body["session_id"].as_str().unwrap_or_default().to_owned();
+        let sent = http::request(
+            &config.endpoint,
+            "/v1/sync/batches",
+            Some(token),
+            Some(&body),
+            60,
+        )
+        .and_then(|receipt| journal.ack(&receipt));
+        match sent {
+            Ok(()) => count += 1,
+            Err(error) => match classify(&error) {
+                Some(Fault::Definite) => {
+                    journal.discard_pending(&session)?;
+                    faults.push((session, "upload", error));
+                }
+                Some(Fault::Ambiguous) => {
+                    journal.hold_pending(&session)?;
+                    faults.push((session, "upload", error));
+                }
+                None => return Err(error),
+            },
+        }
+    }
+    Ok((count, faults))
+}
+
 fn sync_session(
     db: &mut rusqlite::Connection,
     journal: &mut Journal,
@@ -261,6 +312,16 @@ fn sync_session(
     id: &str,
     uploads: &mut usize,
 ) -> std::result::Result<(), (&'static str, anyhow::Error)> {
+    // A batch with an unknown outcome goes first, byte for byte.
+    if journal.has_held(id).map_err(|e| ("checkpoint", e))? {
+        journal.restore_held(id).map_err(|e| ("checkpoint", e))?;
+        let (n, faults) =
+            flush_isolating(journal, config, credential).map_err(|e| ("transport", e))?;
+        *uploads += n;
+        if let Some((_, stage, error)) = faults.into_iter().next() {
+            return Err((stage, error));
+        }
+    }
     let old = journal.checkpoint(id).map_err(|e| ("checkpoint", e))?;
     let native = source::native(db, id).map_err(|e| ("source", e))?;
     if let Some(old) = &old {
@@ -280,13 +341,11 @@ fn sync_session(
         journal
             .stage(id, capture, native)
             .map_err(|e| ("stage", e))?;
-        match flush(journal, config, credential) {
-            Ok(n) => *uploads += n,
-            Err(error) if cloud_rejected(&error) || cloud_failed(&error) || bad_receipt(&error) => {
-                journal.discard_pending(id).map_err(|e| ("quarantine", e))?;
-                return Err(("upload", error));
-            }
-            Err(error) => return Err(("transport", error)),
+        let (n, faults) =
+            flush_isolating(journal, config, credential).map_err(|e| ("transport", e))?;
+        *uploads += n;
+        if let Some((_, stage, error)) = faults.into_iter().next() {
+            return Err((stage, error));
         }
     }
     Ok(())
@@ -294,30 +353,46 @@ fn sync_session(
 
 pub fn sync_once(dir: &Path) -> Result<usize> {
     let _sync_lock = local_lock(&dir.join("sync.lock"))?;
+    let started = std::time::Instant::now();
     let config = load(dir)?;
     let credential = token(&config)?;
     let mut journal = Journal::open(&dir.join("journal.sqlite"))?;
-    let mut uploads = match flush(&mut journal, &config, &credential) {
-        Ok(n) => n,
-        Err(error) if cloud_rejected(&error) => {
-            if let Some(body) = journal.pending()? {
-                journal.discard_pending(body["session_id"].as_str().unwrap_or_default())?;
-            }
-            eprintln!("bridge dropped a batch the cloud refused; session will retry");
-            0
-        }
-        Err(error) => return Err(error),
-    };
-    let mut db = source::open(&config.database)?;
-    let ids = source::sessions(&db)?.into_iter().collect::<BTreeSet<_>>();
     let previous = read_health(dir);
     let now = now_secs();
     let mut failing: Vec<Failure> = Vec::new();
+    let note = |failing: &mut Vec<Failure>, id: &str, stage: &str, error: &anyhow::Error| {
+        let before = previous.failing.iter().find(|f| f.session_id == id);
+        let count = before.map_or(1, |f| f.count + 1);
+        let reason = safe_reason(error);
+        if count == 1 || count % 20 == 0 {
+            eprintln!(
+                "bridge session stuck session={id} stage={stage} attempts={count} reason={reason}"
+            );
+        }
+        failing.retain(|f| f.session_id != id);
+        failing.push(Failure {
+            session_id: id.to_owned(),
+            stage: stage.into(),
+            reason,
+            since: before.map_or(now, |f| f.since),
+            last_try: now,
+            count,
+        });
+    };
+    let (mut uploads, queued_faults) = flush_isolating(&mut journal, &config, &credential)?;
+    for (id, stage, error) in &queued_faults {
+        note(&mut failing, id, stage, error);
+    }
+    let mut db = source::open(&config.database)?;
+    let ids = source::sessions(&db)?.into_iter().collect::<BTreeSet<_>>();
     let mut server_errors = 0;
     for id in &ids {
+        if failing.iter().any(|f| &f.session_id == id) {
+            continue;
+        }
         let before = previous.failing.iter().find(|f| &f.session_id == id);
         if let Some(f) = before {
-            if now.saturating_sub(f.last_try) < RETRY_FAILED_AFTER {
+            if now.saturating_sub(f.last_try) < retry_after(f.count) {
                 failing.push(f.clone());
                 continue;
             }
@@ -335,27 +410,27 @@ pub fn sync_once(dir: &Path) -> Result<usize> {
             Err((stage, error)) => {
                 // One session's batch can make the cloud answer 5xx every time,
                 // but three in a row across sessions looks like an outage.
-                if cloud_failed(&error) {
+                if classify(&error) == Some(Fault::Ambiguous) {
                     server_errors += 1;
                     if server_errors >= 3 {
                         return Err(error);
                     }
                 }
-                let count = before.map_or(1, |f| f.count + 1);
-                let reason = safe_reason(&error);
-                if count == 1 || count % 20 == 0 {
-                    eprintln!(
-                        "bridge session stuck session={id} stage={stage} attempts={count} reason={reason}"
-                    );
-                }
-                failing.push(Failure {
-                    session_id: id.clone(),
-                    stage: stage.into(),
-                    reason,
-                    since: before.map_or(now, |f| f.since),
-                    last_try: now,
-                    count,
-                });
+                note(&mut failing, id, stage, &error);
+            }
+        }
+    }
+    for id in journal.known()? {
+        if !ids.contains(&id) {
+            if journal.has_held(&id)? {
+                journal.restore_held(&id)?;
+                flush_isolating(&mut journal, &config, &credential)?;
+            }
+            journal.tombstone(&id)?;
+            let (n, faults) = flush_isolating(&mut journal, &config, &credential)?;
+            uploads += n;
+            for (id, stage, error) in &faults {
+                note(&mut failing, id, stage, error);
             }
         }
     }
@@ -366,14 +441,12 @@ pub fn sync_once(dir: &Path) -> Result<usize> {
             previous.last_ok
         },
         failing,
+        last_pass_at: now,
+        last_pass_ms: started.elapsed().as_millis() as u64,
+        scanned: ids.len(),
+        uploaded_batches: uploads,
     };
     let _ = crate::fs_util::write_private_json(&dir.join("sync-health.json"), &health);
-    for id in journal.known()? {
-        if !ids.contains(&id) {
-            journal.tombstone(&id)?;
-            uploads += flush(&mut journal, &config, &credential)?;
-        }
-    }
     // A scan with stuck sessions must not stamp history as fresh.
     http::request(
         &config.endpoint,
@@ -562,6 +635,9 @@ pub fn run(dir: &Path) -> Result<()> {
     let queue_dir = dir.to_owned();
     let active_until = Arc::new(AtomicU64::new(0));
     let activity = active_until.clone();
+    // The cloud wakes the poll thread the moment someone reads history. Waking
+    // the sync loop from it saves up to a full tick on the first read after idle.
+    let (wake, woken) = std::sync::mpsc::channel::<()>();
     std::thread::spawn(move || loop {
         let result = (|| -> Result<()> {
             let config = load(&queue_dir)?;
@@ -577,6 +653,7 @@ pub fn run(dir: &Path) -> Result<()> {
                 poll["active_until"].as_u64().unwrap_or(0),
                 Ordering::Relaxed,
             );
+            let _ = wake.send(());
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)?
                 .as_millis() as u64;
@@ -609,9 +686,10 @@ pub fn run(dir: &Path) -> Result<()> {
         if active_until.load(Ordering::Relaxed) <= now
             && last_sync.elapsed() < Duration::from_secs(900)
         {
-            std::thread::sleep(Duration::from_secs(5));
+            let _ = woken.recv_timeout(Duration::from_secs(5));
             continue;
         }
+        while woken.try_recv().is_ok() {}
         let outcome = sync_once(dir);
         let healthy = outcome.is_ok() && read_health(dir).failing.is_empty();
         let offline = outcome
@@ -644,7 +722,8 @@ pub fn run(dir: &Path) -> Result<()> {
             }
             Err(error) => log_unavailable("sync", &error),
         };
-        std::thread::sleep(Duration::from_secs(5));
+        // Sleep between passes, but not past a fresh wake from the cloud.
+        let _ = woken.recv_timeout(Duration::from_secs(5));
     }
 }
 
@@ -705,7 +784,7 @@ pub fn status(dir: &Path) -> Result<Value> {
             .query_row("SELECT count(*) FROM pending", [], |r| r.get(0))?,
     );
     Ok(
-        json!({"paired":true,"endpoint":config.endpoint,"sessions":sessions,"messages":messages,"pending_batches":pending,"device_id":config.device_id,"database_epoch":config.database_epoch,"last_fully_synced":health.last_ok,"stuck_sessions":health.failing}),
+        json!({"paired":true,"endpoint":config.endpoint,"sessions":sessions,"messages":messages,"pending_batches":pending,"device_id":config.device_id,"database_epoch":config.database_epoch,"last_fully_synced":health.last_ok,"last_pass_at":health.last_pass_at,"last_pass_ms":health.last_pass_ms,"scanned_sessions":health.scanned,"stuck_sessions":health.failing,"held_batches_for":journal.held_sessions()?}),
     )
 }
 

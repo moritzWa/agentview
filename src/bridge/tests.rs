@@ -56,35 +56,123 @@ fn nul_and_oversized_text_are_made_to_fit_instead_of_stalling_the_session() {
 }
 
 #[test]
-fn refused_batches_are_discarded_per_session_and_cloud_rejections_are_recognized() {
+fn upload_failures_are_classified_by_whether_the_cloud_may_have_committed() {
+    let e = |m: &str| anyhow::anyhow!("{m}");
+    for code in ["400", "409", "413", "422"] {
+        assert_eq!(
+            classify(&e(&format!("bridge HTTP {code}"))),
+            Some(Fault::Definite)
+        );
+    }
+    for code in ["500", "502", "503", "524"] {
+        assert_eq!(
+            classify(&e(&format!("bridge HTTP {code}"))),
+            Some(Fault::Ambiguous)
+        );
+    }
+    assert_eq!(
+        classify(&e("invalid sync acknowledgement")),
+        Some(Fault::Ambiguous)
+    );
+    for pass_level in [
+        "bridge HTTP 401",
+        "bridge HTTP 429",
+        "bridge HTTP 404",
+        "bridge network request failed",
+    ] {
+        assert_eq!(classify(&e(pass_level)), None);
+    }
+    assert_eq!(error_kind("bridge network request failed"), "network");
+}
+
+#[test]
+fn retry_backoff_is_short_first_and_capped() {
+    assert_eq!(retry_after(1), 5);
+    assert!(retry_after(2) > retry_after(1) && retry_after(4) > retry_after(3));
+    assert_eq!(retry_after(6), 300);
+    assert_eq!(retry_after(500), 300);
+}
+
+fn queue(journal: &Journal, session: &str, tag: i64) {
+    journal
+        .db
+        .execute(
+            "INSERT INTO pending(body,native) VALUES (?1,1)",
+            [json!({"session_id":session,"tag":tag}).to_string()],
+        )
+        .unwrap();
+}
+
+fn count(journal: &Journal, table: &str) -> i64 {
+    journal
+        .db
+        .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+        .unwrap()
+}
+
+#[test]
+fn discarding_drops_only_that_sessions_batches() {
     let dir = tempdir().unwrap();
     let mut journal = Journal::open(&dir.path().join("j.sqlite")).unwrap();
-    for (n, sid) in [(1, "bad"), (2, "good"), (3, "bad")] {
-        journal
-            .db
-            .execute(
-                "INSERT INTO pending(body,native) VALUES (?1,1)",
-                [json!({"session_id":sid,"n":n}).to_string()],
-            )
-            .unwrap();
+    for (tag, sid) in [(1, "bad"), (2, "good"), (3, "bad")] {
+        queue(&journal, sid, tag);
     }
     journal.discard_pending("bad").unwrap();
-    let left = journal.pending().unwrap().unwrap();
-    assert_eq!(left["session_id"], "good");
+    assert_eq!(journal.pending().unwrap().unwrap()["session_id"], "good");
+    assert_eq!(count(&journal, "pending"), 1);
+}
+
+#[test]
+fn held_batches_keep_their_exact_bytes_and_order_and_unblock_other_sessions() {
+    let dir = tempdir().unwrap();
+    let mut journal = Journal::open(&dir.path().join("j.sqlite")).unwrap();
+    for (tag, sid) in [(1, "a"), (2, "b"), (3, "a"), (4, "b")] {
+        queue(&journal, sid, tag);
+    }
+    let original: Vec<String> = journal
+        .db
+        .prepare("SELECT body FROM pending WHERE json_extract(body,'$.session_id')='a' ORDER BY n")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    journal.hold_pending("a").unwrap();
+    assert!(journal.has_held("a").unwrap() && !journal.has_held("b").unwrap());
+    assert_eq!(journal.held_sessions().unwrap(), vec!["a".to_string()]);
+    assert_eq!(count(&journal, "pending"), 2);
+    while journal.pending().unwrap().is_some() {
+        journal.discard_pending("b").unwrap();
+    }
+    assert_eq!(count(&journal, "pending"), 0);
+    journal.restore_held("a").unwrap();
+    assert!(!journal.has_held("a").unwrap());
+    let restored: Vec<String> = journal
+        .db
+        .prepare("SELECT body FROM pending ORDER BY n")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
     assert_eq!(
-        journal
-            .db
-            .query_row("SELECT count(*) FROM pending", [], |r| r.get::<_, i64>(0))
-            .unwrap(),
-        1
+        restored, original,
+        "a held batch must be retried byte for byte, in order"
     );
-    assert!(cloud_rejected(&anyhow::anyhow!("bridge HTTP 400")));
-    assert!(cloud_rejected(&anyhow::anyhow!("bridge HTTP 413")));
-    assert!(!cloud_rejected(&anyhow::anyhow!("bridge HTTP 401")));
-    assert!(!cloud_rejected(&anyhow::anyhow!("bridge HTTP 503")));
-    assert!(!cloud_rejected(&anyhow::anyhow!(
-        "bridge network request failed"
-    )));
+}
+
+#[test]
+fn held_batches_survive_a_restart() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("j.sqlite");
+    {
+        let mut journal = Journal::open(&path).unwrap();
+        queue(&journal, "s", 1);
+        journal.hold_pending("s").unwrap();
+    }
+    let journal = Journal::open(&path).unwrap();
+    assert!(journal.has_held("s").unwrap());
+    assert_eq!(count(&journal, "pending"), 0);
 }
 
 #[test]

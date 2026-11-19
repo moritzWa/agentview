@@ -32,7 +32,19 @@ export class WakeGate {
           await new Promise(resolve=>{let timer;const wake=()=>{clearTimeout(timer);this.waiters.delete(wake);resolve();};this.waiters.add(wake);timer=setTimeout(wake,Math.max(1,deadline-Date.now()));});
         }
       }
-      return Response.json({source_checked_at:await s.get(`checked:${p.source}`)??null,mac_seen_recently:seen>now-60_000});
+      const checkedAt=await s.get(`checked:${p.source}`)??null,macSeen=seen>now-60_000,result={source_checked_at:checkedAt,mac_seen_recently:macSeen};
+      if(p.kind!=='runtime') {
+        // Say it outright when the page may lack the newest messages, so a caller
+        // retries instead of presenting a stale tail as the latest.
+        const history_fresh=checkedAt!==null&&checkedAt>=now-historyAge;
+        result.history_fresh=history_fresh;
+        result.history_age_ms=checkedAt===null?null:Math.max(0,Date.now()-checkedAt);
+        if(!history_fresh)result.history_note=macSeen
+          ?'The Mac is syncing: this may be missing the newest messages. Repeat the same call in about 5 seconds before relying on the latest messages.'
+          :'The Mac has not been seen recently: history is only as current as source_checked_at.';
+        if(!history_fresh&&macSeen)result.retry_after_ms=5000;
+      }
+      return Response.json(result);
     }
     if(path==='/presence-read') {
       const source=p.source;

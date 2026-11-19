@@ -183,3 +183,24 @@ test('invalid ACK, redirects and cleartext endpoints never advance the local boo
   }), /invalid_sync_receipt/);
   assert.equal(acks, 0);
 });
+
+test('a rebuilt batch after an unseen commit fails cursor_gap, so unknown-outcome batches must be retried verbatim', async () => {
+  const session = 'unseen-commit';
+  const handler = privateHandler(store);
+  const post = body => handler(new Request('https://private.invalid/v1/sync/batches', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify(body) }));
+  assert.equal((await post(batch(session))).status, 200);
+  const committed = delta(session, 10, 20, { messages: [msg('m2', 2)] });
+  const first = await post(committed); // The cloud commits; pretend the daemon never saw the answer.
+  assert.equal(first.status, 200);
+  const receipt = await first.json();
+  // Rebuilding from the old checkpoint is what a discard-and-restage would do.
+  const rebuilt = delta(session, 10, 20, { messages: [msg('m2', 2)] });
+  const refused = await post(rebuilt);
+  assert.equal(refused.status, 409);
+  assert.equal((await refused.json()).error, 'cursor_gap');
+  // Retrying the original bytes is safe and returns the stored receipt.
+  const replay = await post(committed);
+  assert.equal(replay.status, 200);
+  assert.deepEqual(await replay.json(), receipt);
+  assert.equal((await store.read(reader, session)).messages.length, 2);
+});

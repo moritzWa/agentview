@@ -163,6 +163,17 @@ minutes of faster checks. Neon can suspend between idle syncs. `mac_presence`
 reports the connector heartbeat separately from history freshness. Accepting a
 queued message does not mean the Mac is online.
 
+Reads wake the connector at once, but the Worker waits at most 8 seconds. If the
+Mac has not finished a pass by then, the response carries `history_fresh: false`,
+`history_note` and `retry_after_ms`, and the caller should repeat the call.
+Each session fails alone: a bad session is retried with backoff (5, 15, 30, 60,
+120, then 300 seconds) while the rest keep syncing. A batch the cloud refused
+inside its transaction (HTTP 400, 409, 413, 422) is dropped. A batch with an
+unknown outcome (HTTP 5xx, unreadable receipt) is held and retried byte for
+byte, because the cloud may have committed it and a rebuilt batch would fail
+`cursor_gap`. `agentview bridge status` shows `stuck_sessions`,
+`held_batches_for` and the last pass duration.
+
 At 0.25 CU, 100 CU-hours covers 400 active hours per month. Five minutes awake
 after each 15-minute idle sync is about 240 active hours per 30 days. Continuous
 active use can exceed Free compute. The 1 GB database limit includes indexes and
