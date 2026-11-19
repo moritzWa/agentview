@@ -8,7 +8,7 @@
 //! Shift+Left and Shift+Right are immediate equivalents. In OpenCode, a Ctrl+X
 //! that no other key follows returns too and asks the dashboard to treat it as
 //! its own Ctrl+X on that row; a quick follow-up key keeps it OpenCode's
-//! leader. The
+//! leader (with `AGENTVIEW_OPENCODE_LEADER=off` it returns at once). The
 //! provider process keeps running on its own pseudo-terminal, and a drain
 //! thread holds the screen it produces. Selecting the same row attaches that
 //! live screen again.
@@ -40,6 +40,15 @@ const ARROW_RETURN_WINDOW: Duration = Duration::from_millis(1600);
 /// before it counts as the dashboard's removal key.
 const LEADER_HOLD: Duration = Duration::from_millis(350);
 const CTRL_X: u8 = 0x18;
+
+/// `AGENTVIEW_OPENCODE_LEADER=off` says OpenCode's Ctrl+X leader sequences are
+/// not used, so a Ctrl+X is the removal key without the wait for a second key.
+fn opencode_leader_off() -> bool {
+    static OFF: OnceLock<bool> = OnceLock::new();
+    *OFF.get_or_init(|| {
+        std::env::var("AGENTVIEW_OPENCODE_LEADER").is_ok_and(|value| value == "off")
+    })
+}
 /// What Cmd+Z sends. It undoes a hide on the dashboard, so the provider's own
 /// view must not receive it and suspend itself.
 const CTRL_Z: u8 = 0x1a;
@@ -1237,6 +1246,12 @@ fn bridge_session(
                                 detach = true;
                                 break;
                             }
+                            InputAction::Remove => {
+                                REMOVAL_REQUESTED.store(true, std::sync::atomic::Ordering::SeqCst);
+                                trace_removal_detach();
+                                detach = true;
+                                break;
+                            }
                             InputAction::ShiftArrow(bytes) => {
                                 // Shift+arrow selects text once the OpenCode prompt has a draft;
                                 // with nothing to select it still returns immediately.
@@ -2216,6 +2231,8 @@ enum InputAction {
     Arrow(ArrowDirection, &'static [u8]),
     ShiftArrow(&'static [u8]),
     Detach,
+    /// The removal key, with no OpenCode leader sequence to wait for.
+    Remove,
     Redraw,
     Voice,
 }
@@ -2244,6 +2261,8 @@ struct DetachParser {
     pending: Vec<u8>,
     pending_since: Option<Instant>,
     holds_leader: bool,
+    /// Ctrl+X is the removal key at once: no leader sequence follows it.
+    leader_off: bool,
     held_leader_since: Option<Instant>,
     redraws: bool,
     /// Voice Mode is available: Cmd+K, Ctrl+] and, where the provider leaves
@@ -2368,6 +2387,7 @@ impl DetachParser {
     fn for_session(session_key: &str) -> Self {
         Self {
             holds_leader: session_key.starts_with("opencode:"),
+            leader_off: opencode_leader_off(),
             redraws: redraws_on_ctrl_k(session_key),
             voice: VOICE_HOOK.get().is_some(),
             ..Self::default()
@@ -2462,6 +2482,15 @@ impl DetachParser {
                 break;
             }
             if remaining[0] == CTRL_Z {
+                index += 1;
+                continue;
+            }
+            if self.holds_leader && self.leader_off && remaining[0] == CTRL_X {
+                trace_removal_key(Instant::now());
+                if !forward.is_empty() {
+                    actions.push(InputAction::Forward(std::mem::take(&mut forward)));
+                }
+                actions.push(InputAction::Remove);
                 index += 1;
                 continue;
             }
@@ -3482,6 +3511,28 @@ mod tests {
         assert!(parser.take_expired_leader());
         assert!(!parser.take_expired_leader());
         assert_eq!(parser.push(b"a"), vec![InputAction::Forward(b"a".to_vec())]);
+    }
+
+    #[test]
+    fn with_the_leader_off_ctrl_x_removes_at_once() {
+        let mut parser = DetachParser::for_session("opencode:ses_1");
+        parser.leader_off = true;
+        assert_eq!(parser.push(b"\x18"), vec![InputAction::Remove]);
+        assert_eq!(parser.next_deadline(), None);
+        assert_eq!(
+            parser.push(b"hi\x18n"),
+            vec![
+                InputAction::Forward(b"hi".to_vec()),
+                InputAction::Remove,
+                InputAction::Forward(b"n".to_vec()),
+            ]
+        );
+        let mut other = DetachParser::for_session("claude:ses_1");
+        other.leader_off = true;
+        assert_eq!(
+            other.push(b"\x18"),
+            vec![InputAction::Forward(b"\x18".to_vec())]
+        );
     }
 
     #[test]
