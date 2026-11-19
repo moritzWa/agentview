@@ -406,6 +406,9 @@ pub struct App {
     /// OpenCode's favorite and recent models, pinned above the catalog.
     pub opencode_pins: crate::model_catalog::OpenCodePins,
     pub collapsed: BTreeSet<String>,
+    /// Paused or Scheduled groups a jump to one of their rows opened. They
+    /// fold shut again once the selection leaves them.
+    revealed_shelves: BTreeSet<String>,
     visible_limits: BTreeMap<String, usize>,
     session_page_size: usize,
     group_cache: Vec<Group>,
@@ -535,6 +538,7 @@ impl App {
                 PAUSED_GROUP_KEY.to_owned(),
                 SCHEDULED_GROUP_KEY.to_owned(),
             ]),
+            revealed_shelves: BTreeSet::new(),
             visible_limits: BTreeMap::new(),
             session_page_size: SESSION_PAGE_SIZE,
             group_cache: Vec::new(),
@@ -755,6 +759,44 @@ impl App {
         };
         self.selection = Some(keys[next].clone());
         self.notice = None;
+        self.refold_revealed_shelves();
+    }
+
+    /// Close Paused or Scheduled again when a jump opened it and the
+    /// selection has moved on, so it does not stay open by accident.
+    fn refold_revealed_shelves(&mut self) {
+        if self.revealed_shelves.is_empty() {
+            return;
+        }
+        let groups = self.groups();
+        let selected_index = match &self.selection {
+            Some(SelectionKey::Session(id)) => self.session_indices.get(id).copied(),
+            _ => None,
+        };
+        let keep_open: BTreeSet<String> = self
+            .revealed_shelves
+            .iter()
+            .filter(|key| {
+                groups.iter().any(|group| {
+                    group.key == **key
+                        && match &self.selection {
+                            Some(SelectionKey::Group(selected))
+                            | Some(SelectionKey::ShowMore(selected)) => selected == *key,
+                            Some(SelectionKey::Session(_)) => {
+                                selected_index.is_some_and(|index| group.sessions.contains(&index))
+                            }
+                            None => false,
+                        }
+                })
+            })
+            .cloned()
+            .collect();
+        for key in std::mem::take(&mut self.revealed_shelves) {
+            if !keep_open.contains(&key) {
+                self.collapsed.insert(key);
+            }
+        }
+        self.revealed_shelves = keep_open;
     }
 
     /// Jump one folder up or down, keeping the row's position inside it: the
@@ -795,6 +837,7 @@ impl App {
         let row = start + offset.min(end - start - 1);
         self.selection = Some(keys[row].clone());
         self.notice = None;
+        self.refold_revealed_shelves();
     }
 
     pub fn selected_session(&self) -> Option<&AgentSession> {
@@ -835,7 +878,11 @@ impl App {
         }) else {
             return false;
         };
-        self.collapsed.remove(&group_key);
+        if self.collapsed.remove(&group_key)
+            && (group_key == PAUSED_GROUP_KEY || group_key == SCHEDULED_GROUP_KEY)
+        {
+            self.revealed_shelves.insert(group_key.clone());
+        }
         let required = position.saturating_add(1).min(group_len);
         let current = self
             .visible_limits
@@ -954,6 +1001,7 @@ impl App {
             Overlay::Confirm(target) => self.confirm(target),
             Overlay::None => match self.selection.clone() {
                 Some(SelectionKey::Group(key)) => {
+                    self.revealed_shelves.remove(&key);
                     if !self.collapsed.remove(&key) {
                         self.collapsed.insert(key);
                     }
@@ -1057,6 +1105,7 @@ impl App {
     pub fn set_view_mode(&mut self, view_mode: ViewMode) {
         self.view_mode = view_mode;
         self.collapsed.clear();
+        self.revealed_shelves.clear();
         self.collapsed.insert(PAUSED_GROUP_KEY.to_owned());
         self.collapsed.insert(SCHEDULED_GROUP_KEY.to_owned());
         self.visible_limits.clear();
@@ -2651,6 +2700,7 @@ impl App {
     }
 
     pub fn toggle_scheduled(&mut self) {
+        self.revealed_shelves.remove(SCHEDULED_GROUP_KEY);
         if !self.collapsed.remove(SCHEDULED_GROUP_KEY) {
             self.collapsed.insert(SCHEDULED_GROUP_KEY.into());
         }
@@ -5893,6 +5943,44 @@ mod tests {
         assert!(!app
             .selectable_keys()
             .contains(&SelectionKey::Session("first".into())));
+    }
+
+    #[test]
+    fn a_paused_group_opened_by_a_jump_folds_shut_when_the_selection_leaves() {
+        let mut app = app_with(vec![
+            session("first", SessionState::NeedsInput),
+            session("second", SessionState::NeedsInput),
+        ]);
+        app.selection = Some(SelectionKey::Session("first".into()));
+        app.toggle_pause();
+        assert!(app.collapsed.contains(PAUSED_GROUP_KEY));
+
+        assert!(app.select_and_reveal_session("first"));
+        assert!(!app.collapsed.contains(PAUSED_GROUP_KEY));
+
+        app.select_next();
+        app.select_next();
+        assert!(app.collapsed.contains(PAUSED_GROUP_KEY));
+        assert!(!app
+            .selectable_keys()
+            .contains(&SelectionKey::Session("first".into())));
+    }
+
+    #[test]
+    fn a_paused_group_opened_by_hand_stays_open() {
+        let mut app = app_with(vec![
+            session("first", SessionState::NeedsInput),
+            session("second", SessionState::NeedsInput),
+        ]);
+        app.selection = Some(SelectionKey::Session("first".into()));
+        app.toggle_pause();
+        app.selection = Some(SelectionKey::Group(PAUSED_GROUP_KEY.into()));
+        app.activate();
+        app.select_next();
+        app.select_next();
+        app.select_next();
+
+        assert!(!app.collapsed.contains(PAUSED_GROUP_KEY));
     }
 
     #[test]
