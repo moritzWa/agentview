@@ -1339,15 +1339,14 @@ pub fn run_dashboard(
                                         if let Some(session_id) = ids.last().cloned() {
                                             pending_reveal = Some(PendingReveal {
                                                 session_id,
-                                                deadline: Instant::now()
-                                                    + REVEAL_DISCOVERY_TIMEOUT,
+                                                deadline: Instant::now() + REVEAL_DISCOVERY_TIMEOUT,
                                             });
                                         }
                                     }
                                     Ok(None) => app.set_notice("nothing to undo"),
-                                    Err(error) => app.set_notice(format!(
-                                        "failed to undo hide: {error:#}"
-                                    )),
+                                    Err(error) => {
+                                        app.set_notice(format!("failed to undo hide: {error:#}"))
+                                    }
                                 }
                                 ActionEffect {
                                     refresh: true,
