@@ -37,6 +37,20 @@ Tools: `list_sessions`, `session_brief`, `search_history`, `read_session`, `read
 `send_session_message`, `message_status`, `cancel_message`, `list_artifacts`,
 and `preview_artifact`.
 
+### Delivery contract
+
+Every `send_session_message`, `message_status` and `cancel_message` result starts with
+`delivery_state`, `say_to_owner`, `claim_ceiling` and `owner_action`. The model says
+`say_to_owner` and claims no more than `claim_ceiling` (`none`, `queued`, `accepted`,
+`completed`). States: `not_sent`, `queued_mac_offline`, `queued_waiting_for_mac`,
+`accepted_by_session`, `completed_confirmed`, `needs_confirmation`,
+`rejected_stale_context`, `cancelled`, `failed`, `expired`, `uncertain`. Failed sends
+return a JSON body (`error` keeps the old code, plus `sent`, `say_to_owner`, `next_step`).
+`sent: null` means unknown, so check `message_status` before claiming anything.
+`message_status` for an operation that was never sent returns `not_sent`, which is how a
+skipped send is caught. The logic is pure and lives in `delivery.mjs`. No safety check
+changed. Read-tool errors stay bare codes.
+
 ### Artifact previews
 
 `preview_artifact` always returns an original MCP file attachment and asks
