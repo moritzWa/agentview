@@ -13,10 +13,14 @@ use crate::domain::SessionState;
 
 /// One exchange of a session, as the voice reads it: what the developer
 /// asked and how the agent ended its turn. Tool calls and scripts are left out.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Turn {
     pub you: String,
+    /// The agent's last message of the exchange.
     pub it: String,
+    /// Every message the agent wrote in the exchange, oldest first. Empty
+    /// means only `it`.
+    pub replies: Vec<String>,
 }
 
 /// A session found by searching everything OpenCode remembers.
@@ -154,6 +158,47 @@ fn clip_reply(text: &str, max: usize) -> String {
     let head: String = text.chars().take(max / 2).collect();
     let tail: String = text.chars().skip(count - (max - max / 2)).collect();
     format!("{head}…{tail}")
+}
+
+/// All of an exchange's replies in order, cut to about `max` characters by
+/// dropping the oldest first. A long answer followed by a short status message
+/// keeps both: the answer is clipped to the room left, not dropped.
+fn clip_replies(replies: &[String], max: usize) -> String {
+    const SEPARATOR: &str = "\n\n";
+    const MIN_ROOM: usize = 200;
+    let mut kept: Vec<String> = Vec::new();
+    let mut used = 0;
+    let mut dropped = false;
+    let mut remaining = replies
+        .iter()
+        .map(|reply| reply.trim())
+        .filter(|reply| !reply.is_empty())
+        .rev();
+    for reply in remaining.by_ref() {
+        let cost = reply.chars().count() + if kept.is_empty() { 0 } else { SEPARATOR.len() };
+        if used + cost <= max {
+            used += cost;
+            kept.push(reply.to_owned());
+            continue;
+        }
+        let room = max.saturating_sub(used + SEPARATOR.len());
+        if kept.is_empty() {
+            kept.push(clip_reply(reply, max));
+        } else if room >= MIN_ROOM {
+            kept.push(clip_reply(reply, room));
+        } else {
+            dropped = true;
+        }
+        break;
+    }
+    dropped |= remaining.next().is_some();
+    kept.reverse();
+    let text = kept.join(SEPARATOR);
+    if dropped {
+        format!("…{SEPARATOR}{text}")
+    } else {
+        text
+    }
 }
 
 pub fn now_ms() -> u64 {
@@ -477,7 +522,11 @@ impl Tools {
         let mut total = 0;
         for turn in turns.iter().rev() {
             let you = clip_start(&turn.you, READ_YOU_CHARS);
-            let it = clip_reply(&turn.it, READ_IT_CHARS);
+            let it = if turn.replies.len() > 1 {
+                clip_replies(&turn.replies, READ_IT_CHARS)
+            } else {
+                clip_reply(&turn.it, READ_IT_CHARS)
+            };
             total += you.len() + it.len();
             if total > READ_TOTAL_CHARS && !kept.is_empty() {
                 break;
@@ -1051,10 +1100,12 @@ pub(crate) mod fake {
                 Turn {
                     you: "Run the benchmark.".into(),
                     it: "x".repeat(3000),
+                    ..Default::default()
                 },
                 Turn {
                     you: "y".repeat(2000),
                     it: "Done. Want me to merge it?".into(),
+                    ..Default::default()
                 },
             ])
         }
@@ -1255,6 +1306,7 @@ mod tests {
         *host.turns.lock().unwrap() = Some(vec![Turn {
             you: question.into(),
             it: String::new(),
+            ..Default::default()
         }]);
         let pending = tools.run("read_session", &json!({"id":"s1"}));
         assert_eq!(pending["answer_ready"], false);
@@ -1264,10 +1316,12 @@ mod tests {
             Turn {
                 you: "old question".into(),
                 it: "old answer ".repeat(600),
+                ..Default::default()
             },
             Turn {
                 you: question.into(),
                 it: reply.into(),
+                ..Default::default()
             },
         ]);
         let fresh = tools.run("read_session", &json!({"id":"s1"}));
@@ -1291,6 +1345,65 @@ mod tests {
         assert!(clipped.contains("latent working memory"));
         assert!(clipped.ends_with("Final answer."));
         assert_eq!(clipped.chars().count(), READ_IT_CHARS + 1);
+    }
+
+    fn replies_turn(replies: &[&str]) -> Turn {
+        Turn {
+            you: "ok yeah add these".into(),
+            it: replies.last().unwrap().to_string(),
+            replies: replies.iter().map(|reply| reply.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn a_detailed_answer_followed_by_a_short_status_message_is_still_read() {
+        let (host, tools) = tools(two());
+        tools.run("list_sessions", &json!({}));
+        let answer = "Done. The three boxes are in. Meta can't reward people who match more boxes.";
+        let status = "That notification is just the browser connection closing.";
+        *host.turns.lock().unwrap() = Some(vec![replies_turn(&[
+            "Next I'm checking whether Meta can reward matches.",
+            answer,
+            status,
+        ])]);
+        let read = tools.run("read_session", &json!({"id":"s1"}));
+        let it = read["latest_turn"]["it"].as_str().unwrap();
+        let (first, second, third) = (
+            it.find("Next I'm checking").unwrap(),
+            it.find(answer).unwrap(),
+            it.find(status).unwrap(),
+        );
+        assert!(first < second && second < third, "chronological: {it}");
+        assert_eq!(read["awaiting_reply"], false);
+    }
+
+    #[test]
+    fn a_long_answer_before_a_short_status_message_is_clipped_not_dropped() {
+        let (host, tools) = tools(two());
+        tools.run("list_sessions", &json!({}));
+        let narration = "old narration ".repeat(200);
+        let answer = format!(
+            "Decision: reward is not possible. {}",
+            "detail ".repeat(600)
+        );
+        let status = "Nothing is running.";
+        *host.turns.lock().unwrap() = Some(vec![replies_turn(&[&narration, &answer, status])]);
+        let read = tools.run("read_session", &json!({"id":"s1"}));
+        let it = read["latest_turn"]["it"].as_str().unwrap();
+        assert!(it.contains("Decision: reward is not possible."));
+        assert!(it.ends_with(status));
+        assert!(!it.contains("old narration"), "the oldest goes first");
+        assert!(it.starts_with('…'));
+        assert!(it.chars().count() <= READ_IT_CHARS + 8);
+    }
+
+    #[test]
+    fn a_single_reply_reads_exactly_as_before() {
+        let (host, tools) = tools(two());
+        tools.run("list_sessions", &json!({}));
+        *host.turns.lock().unwrap() = Some(vec![replies_turn(&["only one"])]);
+        let read = tools.run("read_session", &json!({"id":"s1"}));
+        assert_eq!(read["latest_turn"]["it"], "only one");
     }
 
     #[test]
