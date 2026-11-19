@@ -56,6 +56,26 @@ export class WakeGate {
         runtime_checked:await s.get(`runtime_checked:${source}`)??null,
       });
     }
+    if(path==='/changes') {
+      // What became "needs you" or finished since the last call. Only busy sessions are kept, so the marker stays small.
+      const source=p.source,keys=Array.from({length:64},(_,i)=>`runtime:${source}:${i}`);
+      const meta=await s.get(`runtime_meta:${source}`)??{available:false,partial:false};
+      if(!meta.available||meta.partial)return Response.json({available:false,baseline:false,changes:[]});
+      const stored=await s.get(keys),statuses=keys.flatMap(k=>JSON.parse(stored.get(k)??'[]')).filter(x=>x.top_level!==false);
+      return Response.json(await s.transaction(async tx=>{
+        const old=await tx.get(`seen:${source}`),baseline=old===undefined,before=baseline?{}:JSON.parse(old),current={},changes=[];
+        const ids=new Set(statuses.map(x=>x.session_id));
+        if(meta.truncated)for(const [id,mark] of Object.entries(before))if(!ids.has(id))current[id]=mark;
+        for(const x of statuses) {
+          const mark=`${x.status}:${x.reason??''}`,prior=before[x.session_id];
+          if(x.status==='needs_you'||x.status==='working')current[x.session_id]=mark;
+          if(x.status==='needs_you'&&prior!==mark)changes.push({session_id:x.session_id,change:'needs_you',reason:x.reason??null,directory:x.directory??null});
+          else if(x.status==='done'&&prior)changes.push({session_id:x.session_id,change:'finished',reason:null,directory:x.directory??null});
+        }
+        await tx.put(`seen:${source}`,JSON.stringify(current));
+        return {available:true,baseline,changes,checked_at:meta.checked_at??null};
+      }));
+    }
     if(path==='/runtime-read') {
       const keys=Array.from({length:64},(_,i)=>`runtime:${p.source}:${i}`),stored=await s.get(keys);
       const meta=await s.get(`runtime_meta:${p.source}`)??{available:false,partial:false,checked_at:null};
@@ -120,7 +140,7 @@ export function gateClient(namespace,key) {
   return {enroll:p=>call('/enroll',p),revoke:token_hash=>call('/revoke',{token_hash}),signal:source=>call('/signal',{source}),
     clear:(source,generation)=>call('/clear',{source,generation}),poll:token_hash=>call('/poll',{token_hash}),
     inspect:token_hash=>call('/inspect',{token_hash}),checked:(token_hash,meta={})=>call('/checked',{token_hash,...meta}),
-    presence:source=>call('/presence-read',{source}),
+    presence:source=>call('/presence-read',{source}),changes:source=>call('/changes',{source}),
     activity:(source,wait=false,kind='history',opts={})=>call('/activity',{source,wait,kind,...opts}),
     runtime:source=>call('/runtime-read',{source}),setRuntime:(token_hash,snapshot)=>call('/runtime-write',{token_hash,snapshot}),
     signalReceipt:(source,operation_id)=>call('/receipt-signal',{source,operation_id}),waitReceipt:(source,operation_id)=>call('/receipt-wait',{source,operation_id}),rate:key=>call('/rate',{key})};
