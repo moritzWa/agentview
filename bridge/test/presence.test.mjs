@@ -1,0 +1,61 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {macPresence,HEARTBEAT_ONLINE_MS,HISTORY_FRESH_MS} from '../private/presence.mjs';
+import {WakeGate,gateClient} from '../private/gate.mjs';
+import {privateMcp} from '../private/mcp.mjs';
+
+const now=1_700_000_000_000;
+test('a recent heartbeat is online and reachable, without reading any queue',()=>{
+  const report=macPresence(now,{last_seen:now-20_000,checked:now-60_000,sync_skipped:0});
+  assert.equal(report.bridge,'online');
+  assert.equal(report.internet,'reachable');
+  assert.equal(report.history_sync,'fresh');
+  assert.equal(report.stale,false);
+  assert.equal(report.queue_acceptance_means_mac_online,false);
+  assert.equal(report.cadence.idle_history_sync_seconds,900);
+  assert.equal(report.cadence.active_tick_seconds,5);
+});
+test('silence is offline bridge and unknown internet, not a claimed outage',()=>{
+  const report=macPresence(now,{last_seen:now-HEARTBEAT_ONLINE_MS-1,checked:now-HISTORY_FRESH_MS-1});
+  assert.equal(report.bridge,'offline');
+  assert.equal(report.internet,'unknown');
+  assert.equal(report.history_sync,'stale');
+  assert.equal(report.stale,true);
+});
+test('never seen is unknown, and a partial scan does not count as fresh history',()=>{
+  assert.equal(macPresence(now,{}).bridge,'unknown');
+  assert.equal(macPresence(now,{}).internet,'unknown');
+  assert.equal(macPresence(now,{}).history_sync,'unknown');
+  const partial=macPresence(now,{last_seen:now-1_000,checked:now-60_000,sync_attempted:now-1_000,sync_skipped:2});
+  assert.equal(partial.bridge,'online');
+  assert.equal(partial.history_sync,'partial');
+  assert.equal(partial.stale,true);
+});
+test('a partial connector check does not stamp history fresh, and presence ignores the queue',async()=>{
+  const map=new Map();
+  const storage={get:async k=>Array.isArray(k)?new Map():map.get(k),put:async(k,v)=>{if(typeof k==='object')for(const [a,b] of Object.entries(k))map.set(a,b);else map.set(k,v);},delete:async()=>{},transaction:async fn=>fn(storage)};
+  const object=new WakeGate({storage});
+  const namespace={idFromName:x=>x,get:()=>({fetch:(url,init)=>object.fetch(new Request(url,init))})};
+  const gate=gateClient(namespace,'owner');
+  const token='t'.repeat(43);
+  await gate.enroll({token_hash:'hash',owner_id:'owner',device_id:'device',database_epoch:'epoch',expires_at:now+60_000});
+  map.set('token:hash',{device_id:'device',database_epoch:'epoch',expires_at:Date.now()+60_000});
+  await gate.checked('hash',{complete:false,skipped:1});
+  assert.equal(map.get('checked:device|epoch'),undefined);
+  assert.equal(map.get('sync_skipped:device|epoch'),1);
+  assert.equal(typeof map.get('sync_attempted:device|epoch'),'number');
+  await gate.checked('hash',{});
+  assert.equal(typeof map.get('checked:device|epoch'),'number');
+  const stamps=await gate.presence('device|epoch');
+  const outbox=new Proxy({},{get(){throw new Error('queue_must_not_define_presence');}});
+  const response=await privateMcp(new Request('https://test.invalid/mcp',{method:'POST',headers:{'Content-Type':'application/json',Accept:'application/json, text/event-stream'},body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'mac_presence',arguments:{}}})}),{
+    db:{query:async()=>({rows:[{scopes:'history:read',device_id:'device',database_epoch:'epoch'}]})},store:{},principal:{device_id:'device',database_epoch:'epoch',owner_id:'owner',token_hash:'hash'},outbox,gate,
+  });
+  const body=await response.json();
+  assert.equal(body.result.isError,undefined);
+  const report=JSON.parse(body.result.content[0].text);
+  assert.equal(report.queue_acceptance_means_mac_online,false);
+  assert.equal(report.bridge,'online');
+  assert.equal(stamps.sync_skipped,0);
+  assert.notEqual(token,'');
+});

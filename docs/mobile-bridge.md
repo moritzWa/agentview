@@ -63,9 +63,14 @@ recall content already retrieved by ChatGPT.
 
 ## Freshness and queued work
 
-Idle sync runs every 15 minutes so Neon can suspend. Mobile requests notify the
-connector to check more often for five minutes. Reads report the last cloud sync
-and successful source check. Offline reads are snapshots.
+Idle history sync runs every 15 minutes so Neon can suspend. Five seconds is
+only the loop tick while a phone request has asked for a faster check, for about
+five minutes. It is not the idle interval. A failed scan backs off 30 seconds
+and does not stamp history as fresh. One bad session does not block the others.
+Reads report the last cloud sync and successful source check. Offline reads are
+snapshots. `mac_presence` separates the connector heartbeat from history
+freshness. A queued message is not proof the Mac is online. Silence is unknown
+internet, not a claimed outage, because sleep looks the same.
 
 `list_sessions(status="needs_you")` reads the same native states as the dashboard,
 including questions and approvals. It excludes hidden and paused rows. Status

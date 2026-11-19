@@ -34,6 +34,16 @@ export class WakeGate {
       }
       return Response.json({source_checked_at:await s.get(`checked:${p.source}`)??null,mac_seen_recently:seen>now-60_000});
     }
+    if(path==='/presence-read') {
+      const source=p.source;
+      return Response.json({
+        last_seen:await s.get(`last_seen:${source}`)??null,
+        checked:await s.get(`checked:${source}`)??null,
+        sync_attempted:await s.get(`sync_attempted:${source}`)??null,
+        sync_skipped:await s.get(`sync_skipped:${source}`)??0,
+        runtime_checked:await s.get(`runtime_checked:${source}`)??null,
+      });
+    }
     if(path==='/runtime-read') {
       const keys=Array.from({length:64},(_,i)=>`runtime:${p.source}:${i}`),stored=await s.get(keys);
       const meta=await s.get(`runtime_meta:${p.source}`)??{available:false,partial:false,checked_at:null};
@@ -67,7 +77,13 @@ export class WakeGate {
       for(const wake of this.waiters)wake();
       return Response.json({ok:true});
     }
-    if(path==='/checked') {const now=Date.now();await s.put({[`checked:${source}`]:now,[`last_seen:${source}`]:now});for(const wake of this.waiters)wake();}
+    if(path==='/checked') {
+      const now=Date.now(),complete=p.complete!==false,skipped=Number.isInteger(p.skipped)&&p.skipped>=0?p.skipped:0;
+      const put={[`last_seen:${source}`]:now,[`sync_attempted:${source}`]:now,[`sync_skipped:${source}`]:skipped};
+      if(complete)put[`checked:${source}`]=now;
+      await s.put(put);for(const wake of this.waiters)wake();
+      return Response.json({ok:true,complete});
+    }
     if(path==='/poll') {
       await s.put(`last_seen:${source}`,Date.now());
       if(!(await s.get(`pending:${source}`))) {
@@ -91,7 +107,8 @@ export function gateClient(namespace,key) {
   };
   return {enroll:p=>call('/enroll',p),revoke:token_hash=>call('/revoke',{token_hash}),signal:source=>call('/signal',{source}),
     clear:(source,generation)=>call('/clear',{source,generation}),poll:token_hash=>call('/poll',{token_hash}),
-    inspect:token_hash=>call('/inspect',{token_hash}),checked:token_hash=>call('/checked',{token_hash}),
+    inspect:token_hash=>call('/inspect',{token_hash}),checked:(token_hash,meta={})=>call('/checked',{token_hash,...meta}),
+    presence:source=>call('/presence-read',{source}),
     activity:(source,wait=false,kind='history',opts={})=>call('/activity',{source,wait,kind,...opts}),
     runtime:source=>call('/runtime-read',{source}),setRuntime:(token_hash,snapshot)=>call('/runtime-write',{token_hash,snapshot}),
     signalReceipt:(source,operation_id)=>call('/receipt-signal',{source,operation_id}),waitReceipt:(source,operation_id)=>call('/receipt-wait',{source,operation_id}),rate:key=>call('/rate',{key})};

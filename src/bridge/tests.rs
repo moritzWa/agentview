@@ -4,6 +4,25 @@ use source::{Capture, Message};
 use tempfile::tempdir;
 
 #[test]
+fn an_unknown_source_event_reconciles_visible_text_instead_of_stalling_sync() {
+    let mut db = fixture();
+    db.execute_batch(
+        "INSERT INTO event VALUES('s',2,'message.part.updated.1','{\"text\":\"PRIVATE_EVENT\"}');
+         INSERT INTO session_message VALUES('msg_b','s','assistant',2,2,2,'{\"content\":[{\"type\":\"text\",\"text\":\"Visible after unknown event\"}]}');
+         UPDATE event_sequence SET seq=2;",
+    )
+    .unwrap();
+    let capture = source::capture(&mut db, "s", Some(1)).unwrap().unwrap();
+    assert!(capture
+        .messages
+        .iter()
+        .any(|m| m.text == "Visible after unknown event"));
+    assert!(!serde_json::to_string(&capture.messages)
+        .unwrap()
+        .contains("PRIVATE_EVENT"));
+}
+
+#[test]
 fn truncated_emoji_escape_does_not_block_projection() {
     let raw = r#"{"text":"a \ud83d\n b \ude00 c \ud83d\ude00 \\ud83d"}"#;
     assert!(serde_json::from_str::<Value>(raw).is_err());

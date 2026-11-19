@@ -129,9 +129,14 @@ pub fn capture(db: &mut Connection, id: &str, after: Option<i64>) -> Result<Opti
                     reconcile = true;
                 }
                 expected = seq + 1;
-                validate_event(&kind)?;
-                if let Some(mid) = row.get::<_, Option<String>>(2)? {
-                    dirty.insert(mid);
+                // A new OpenCode event name must not freeze this session forever.
+                // Reproject the current messages instead of trusting this event.
+                if validate_event(&kind).is_ok() {
+                    if let Some(mid) = row.get::<_, Option<String>>(2)? {
+                        dirty.insert(mid);
+                    }
+                } else {
+                    reconcile = true;
                 }
             }
             // V2 persists sequence watermarks even when event-body persistence

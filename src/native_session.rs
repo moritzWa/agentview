@@ -1368,7 +1368,8 @@ fn forward_ready_initial_input(
 fn restore_dashboard_terminal_modes(stdout: &mut impl Write) -> Result<()> {
     // A shown provider's own pushes are forwarded live, on top of the one resume push, so a
     // single pop can leave a mode behind. Pop everything: the dashboard pushes its own after.
-    stdout.write_all(b"\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[<99u\x1b[?25h")?;
+    stdout
+        .write_all(b"\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[<99u\x1b[?25h")?;
     stdout.flush()?;
     Ok(())
 }
@@ -2446,7 +2447,10 @@ struct ArrowProbe {
 
 fn cursor_row(screen: &vt100::Parser, row: u16) -> Option<Vec<u8>> {
     let (_, cols) = screen.screen().size();
-    screen.screen().rows_formatted(0, cols).nth(usize::from(row))
+    screen
+        .screen()
+        .rows_formatted(0, cols)
+        .nth(usize::from(row))
 }
 
 #[derive(Debug)]
@@ -3345,11 +3349,14 @@ mod tests {
             assert_eq!(parser.push(b"5~"), vec![InputAction::Detach]);
             // Ghostty sends F13 like this once a provider has enabled the kitty protocol.
             let mut parser = DetachParser::for_session(session);
-            assert_eq!(parser.push(b"x\x1b[57376uy"), vec![
-                InputAction::Forward(b"x".to_vec()),
-                InputAction::Detach,
-                InputAction::Forward(b"y".to_vec()),
-            ]);
+            assert_eq!(
+                parser.push(b"x\x1b[57376uy"),
+                vec![
+                    InputAction::Forward(b"x".to_vec()),
+                    InputAction::Detach,
+                    InputAction::Forward(b"y".to_vec()),
+                ]
+            );
             assert_eq!(parser.push(b"\x1b[57376;1u"), vec![InputAction::Detach]);
             assert_eq!(parser.push(b"\x1b[57376;1:3u"), vec![]);
             assert_eq!(parser.push(b"\x1b[573"), vec![]);
