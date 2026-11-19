@@ -23,8 +23,20 @@ pub struct Turn {
     pub replies: Vec<String>,
 }
 
-/// A session found by searching everything OpenCode remembers.
+/// What `search_history` asks of the history.
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HistoryQuery {
+    pub query: String,
+    /// Only this session (its real id): its matching messages come back.
+    pub session: Option<String>,
+    /// Newest first, not best match first.
+    pub recent: bool,
+    /// Sessions, or messages when `session` is set.
+    pub limit: usize,
+}
+
+/// A session found by searching everything OpenCode remembers.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HistoryHit {
     pub id: String,
     pub title: String,
@@ -33,6 +45,8 @@ pub struct HistoryHit {
     /// Where the words matched, when they matched inside the conversation.
     pub snippet: String,
     pub message: Option<crate::history_index::MessageMatch>,
+    /// Every matching message, when one session was searched.
+    pub messages: Vec<crate::history_index::MessageMatch>,
 }
 
 /// What Voice Mode needs from the dashboard. The real one wraps the control
@@ -44,13 +58,9 @@ pub trait VoiceHost: Send + Sync {
     fn running_shells(&self, _id: &str) -> Result<Vec<crate::opencode_supervisor::ShellSummary>> {
         Ok(Vec::new())
     }
-    /// Sessions of the whole history matching `query`, best first, and a note
-    /// when the answer may be incomplete.
-    fn search_history(
-        &self,
-        query: &str,
-        limit: usize,
-    ) -> Result<(Vec<HistoryHit>, Option<String>)>;
+    /// Sessions of the whole history matching the query, best first or newest
+    /// first, and a note when the answer may be incomplete.
+    fn search_history(&self, query: &HistoryQuery) -> Result<(Vec<HistoryHit>, Option<String>)>;
     /// Stops what the session is doing and removes it from Agent View. Its
     /// history stays and `search_history` still finds it.
     fn close(&self, id: &str) -> Result<String>;
@@ -218,6 +228,8 @@ const READ_YOU_CHARS: usize = 700;
 const READ_IT_CHARS: usize = 1800;
 const READ_TOTAL_CHARS: usize = 7000;
 const SEARCH_LIMIT: usize = 8;
+/// Messages returned when one session is searched and no limit is given.
+const SESSION_MATCHES: usize = 3;
 const MATCH_CHARS: usize = 240;
 
 impl Tools {
@@ -584,7 +596,29 @@ impl Tools {
 
     fn search(&self, args: &Value) -> Result<Value> {
         let query = Self::text(args, "query")?;
-        let (hits, note) = self.host.search_history(&query, SEARCH_LIMIT)?;
+        let recent = match args.get("sort").and_then(Value::as_str) {
+            None | Some("best") => false,
+            Some("recent") => true,
+            Some(other) => bail!("sort is \"best\" or \"recent\", not \"{other}\""),
+        };
+        let session = match args.get("session").and_then(Value::as_str).map(str::trim) {
+            Some(given) if !given.is_empty() => Some(self.resolve(&json!({ "id": given }))?),
+            _ => None,
+        };
+        let limit = args.get("limit").and_then(Value::as_u64).map_or(
+            if session.is_some() {
+                SESSION_MATCHES
+            } else {
+                SEARCH_LIMIT
+            },
+            |n| (n as usize).clamp(1, SEARCH_LIMIT),
+        );
+        let (hits, note) = self.host.search_history(&HistoryQuery {
+            query,
+            session,
+            recent,
+            limit,
+        })?;
         let now = (self.clock)();
         let mut handles = self.handles.lock().unwrap();
         let results: Vec<Value> = hits
@@ -602,7 +636,9 @@ impl Tools {
                         MATCH_CHARS
                     ));
                 }
-                if let Some(message) = &hit.message {
+                if !hit.messages.is_empty() {
+                    row["messages"] = json!(hit.messages);
+                } else if let Some(message) = &hit.message {
                     row["message"] = json!(message);
                 }
                 row
@@ -1111,10 +1147,15 @@ pub(crate) mod fake {
         }
         fn search_history(
             &self,
-            query: &str,
-            limit: usize,
+            query: &HistoryQuery,
         ) -> Result<(Vec<HistoryHit>, Option<String>)> {
-            self.record(format!("search {query} {limit}"))?;
+            self.record(format!(
+                "search {} {} {} {}",
+                query.query,
+                query.limit,
+                query.session.as_deref().unwrap_or("-"),
+                if query.recent { "recent" } else { "best" }
+            ))?;
             Ok((self.hits.lock().unwrap().clone(), None))
         }
         fn send_draft(&self, id: &str, text: &str) -> Result<()> {
@@ -1480,10 +1521,13 @@ mod tests {
             cwd: PathBuf::from("/work/digitalization"),
             updated_ms: 1_000_000,
             snippet: "the  pilot\nwith tokens".into(),
-            message: None,
+            ..Default::default()
         });
         let found = tools.run("search_history", &json!({"query": "digitization pilot"}));
-        assert_eq!(host.log.lock().unwrap()[0], "search digitization pilot 8");
+        assert_eq!(
+            host.log.lock().unwrap()[0],
+            "search digitization pilot 8 - best"
+        );
         let row = &found["sessions"][0];
         assert_eq!(row["title"], "library digitization pilot");
         assert_eq!(row["folder"], "digitalization");
@@ -1498,6 +1542,70 @@ mod tests {
         let none = tools.run("search_history", &json!({"query": "zebra"}));
         assert!(none["note"].as_str().unwrap().contains("nothing"));
         assert!(tools.run("search_history", &json!({}))["error"].is_string());
+    }
+
+    #[test]
+    fn searching_one_session_passes_its_id_sort_and_limit() {
+        let (host, tools) = tools(two());
+        tools.run("list_sessions", &json!({}));
+        host.hits.lock().unwrap().push(HistoryHit {
+            id: "opencode:host:a".into(),
+            title: "one".into(),
+            ..Default::default()
+        });
+        let found = tools.run(
+            "search_history",
+            &json!({"query": "pricing", "session": "s1", "sort": "recent", "limit": 5}),
+        );
+        assert_eq!(
+            host.log.lock().unwrap().last().unwrap(),
+            "search pricing 5 opencode:host:a recent"
+        );
+        assert_eq!(found["sessions"][0]["title"], "one");
+        tools.run("search_history", &json!({"query": "pricing", "limit": 100}));
+        assert_eq!(
+            host.log.lock().unwrap().last().unwrap(),
+            "search pricing 8 - best"
+        );
+        let bad = tools.run("search_history", &json!({"query": "x", "sort": "oldest"}));
+        assert!(bad["error"].as_str().unwrap().contains("recent"));
+        let unknown = tools.run(
+            "search_history",
+            &json!({"query": "x", "session": "no such title"}),
+        );
+        assert!(unknown["error"].is_string());
+    }
+
+    #[test]
+    fn a_searched_session_lists_every_matching_message() {
+        use crate::history_index::{MessageExcerpt, MessageMatch};
+        let (host, tools) = tools(two());
+        let message = |id: &str| MessageMatch {
+            source_session_id: "a".into(),
+            before: Vec::new(),
+            matched: MessageExcerpt {
+                id: id.into(),
+                role: "assistant".into(),
+                created_at_ms: Some(1),
+                text: id.into(),
+            },
+            after: Vec::new(),
+        };
+        host.hits.lock().unwrap().push(HistoryHit {
+            id: "opencode:host:a".into(),
+            title: "one".into(),
+            message: Some(message("m2")),
+            messages: vec![message("m2"), message("m1")],
+            ..Default::default()
+        });
+        let found = tools.run(
+            "search_history",
+            &json!({"query": "x", "session": "semantic"}),
+        );
+        let row = &found["sessions"][0];
+        assert_eq!(row["messages"].as_array().unwrap().len(), 2);
+        assert_eq!(row["messages"][0]["matched"]["id"], "m2");
+        assert!(row.get("message").is_none());
     }
 
     #[test]
