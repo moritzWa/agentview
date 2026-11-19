@@ -10,6 +10,8 @@ harnesses and plain shell jobs.
 [![Release](https://img.shields.io/badge/release-v0.2.0-506CF7.svg)](https://github.com/moritzWa/agentview/releases/latest)
 [![License](https://img.shields.io/badge/license-MIT-506CF7.svg)](LICENSE)
 
+<a href="https://agent-view.app/film.mp4"><img src="docs/assets/film-thumbnail.jpg" alt="Play the 45-second Agent View film" width="800"></a>
+
 <img src="docs/assets/demo.gif" alt="agentview demo in light mode: usage limits in the header, OpenCode sub-sessions indented under the session that started them, searching 500 past sessions by message text with Ctrl+G, and picking a model grouped by provider" width="800">
 
 </div>
