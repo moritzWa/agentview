@@ -4,6 +4,14 @@ use source::{Capture, Message};
 use tempfile::tempdir;
 
 #[test]
+fn truncated_emoji_escape_does_not_block_projection() {
+    let raw = r#"{"text":"a \ud83d\n b \ude00 c \ud83d\ude00 \\ud83d"}"#;
+    assert!(serde_json::from_str::<Value>(raw).is_err());
+    let value = source::parse_json(raw).unwrap();
+    assert_eq!(value["text"], "a \u{fffd}\n b \u{fffd} c \u{1F600} \\ud83d");
+}
+
+#[test]
 fn queued_context_allows_new_turns_but_blocks_rewritten_history() {
     let mut db = fixture();
     let mut capture = source::capture(&mut db, "s", None).unwrap().unwrap();

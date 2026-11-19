@@ -155,7 +155,9 @@ pub fn capture(db: &mut Connection, id: &str, after: Option<i64>) -> Result<Opti
             let row=tx.query_row("SELECT id,type,seq,time_created,time_updated,data FROM session_message WHERE id=?1 AND session_id=?2",rusqlite::params![mid,id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?,r.get::<_,String>(5)?))).optional()?;
             if let Some((mid, kind, order, created, updated, raw)) = row {
                 if kind == "assistant" {
-                    let value: Value = serde_json::from_str(&raw)?;
+                    let value: Value = parse_json(&raw).with_context(|| {
+                        format!("invalid assistant message {mid} in session {id}")
+                    })?;
                     if !value["content"].is_array() && !has_table(&tx, "session_part")? {
                         bail!("unknown assistant content schema");
                     }
@@ -252,13 +254,67 @@ fn split_text(db: &Connection, id: &str) -> Result<String> {
     })? {
         let (kind, raw) = row?;
         if kind == "text" {
-            let p: Value = serde_json::from_str(&raw)?;
+            let p: Value =
+                parse_json(&raw).with_context(|| format!("invalid text part in message {id}"))?;
             parts.push(p["text"].as_str().context("invalid split text")?.to_owned());
         } else if !matches!(kind.as_str(), "tool" | "reasoning") {
             bail!("unknown source part type");
         }
     }
     Ok(parts.join("\n"))
+}
+
+/// OpenCode can store text cut in the middle of an emoji, leaving a lone UTF-16
+/// surrogate escape that serde_json rejects. One such message must not block
+/// syncing every later session, so retry with those escapes replaced by U+FFFD.
+pub fn parse_json(raw: &str) -> Result<Value> {
+    match serde_json::from_str(raw) {
+        Ok(value) => Ok(value),
+        Err(first) => serde_json::from_str(&replace_lone_surrogates(raw)).map_err(|_| first.into()),
+    }
+}
+
+fn replace_lone_surrogates(raw: &str) -> String {
+    fn unit(chars: &[char], at: usize) -> Option<u32> {
+        if chars.get(at) != Some(&'\\') || chars.get(at + 1) != Some(&'u') {
+            return None;
+        }
+        let hex: String = chars.get(at + 2..at + 6)?.iter().collect();
+        u32::from_str_radix(&hex, 16).ok()
+    }
+    let chars: Vec<char> = raw.chars().collect();
+    let mut out = String::with_capacity(raw.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] != '\\' {
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        }
+        match unit(&chars, i) {
+            Some(0xD800..=0xDBFF) => {
+                if matches!(unit(&chars, i + 6), Some(0xDC00..=0xDFFF)) {
+                    out.extend(&chars[i..i + 12]);
+                    i += 12;
+                } else {
+                    out.push_str("\\ufffd");
+                    i += 6;
+                }
+            }
+            Some(0xDC00..=0xDFFF) => {
+                out.push_str("\\ufffd");
+                i += 6;
+            }
+            _ => {
+                out.push('\\');
+                if let Some(next) = chars.get(i + 1) {
+                    out.push(*next);
+                }
+                i += 2;
+            }
+        }
+    }
+    out
 }
 
 pub fn project(
@@ -272,7 +328,7 @@ pub fn project(
     if !matches!(kind, "user" | "assistant") {
         return Ok(None);
     }
-    let value: Value = serde_json::from_str(raw).context("invalid source message")?;
+    let value: Value = parse_json(raw).context("invalid source message")?;
     let text = if kind == "user" {
         value["text"]
             .as_str()
