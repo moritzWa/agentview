@@ -4,6 +4,16 @@ on:
   push:
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+"
+  # auto-release.yml starts this after it tags main. A tag pushed with the
+  # workflow token does not trigger the tag event above.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build, such as v0.3.4
+        required: true
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 permissions:
   contents: read
@@ -27,16 +37,22 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_TAG }}
       - uses: dtolnay/rust-toolchain@1.75.0
-      - name: Check the tag matches the crate version
+      - name: Stamp the crate version from the tag
         shell: bash
         run: |
-          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
-          [ "v${version}" = "${GITHUB_REF_NAME}" ] || {
-            echo "tag ${GITHUB_REF_NAME} does not match Cargo.toml version ${version}" >&2
-            exit 1
-          }
+          version="${RELEASE_TAG#v}"
+          export version
+          # Only the first `version =` line, which is the package's own.
+          perl -0pi -e 's/^version = "[^"]*"/version = "$ENV{version}"/m' Cargo.toml
+          perl -0pi -e 's/(name = "agentview"\r?\nversion = )"[^"]*"/$1"$ENV{version}"/' Cargo.lock
+          grep -m1 '^version' Cargo.toml
       - run: cargo build --release --locked --target ${{ matrix.target }}
+        env:
+          # Only published builds check GitHub for a newer release.
+          AGENTVIEW_RELEASE_BUILD: "1"
       - if: runner.os != 'Windows'
         run: scripts/package-release.sh ${{ matrix.target }}
       - if: runner.os == 'Windows'
@@ -68,8 +84,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           ls -l dist
-          gh release create "${GITHUB_REF_NAME}" dist/* \
+          gh release create "${RELEASE_TAG}" dist/* \
             --repo "${GITHUB_REPOSITORY}" \
             --verify-tag \
             --generate-notes \
-            --title "agentview ${GITHUB_REF_NAME}"
+            --title "agentview ${RELEASE_TAG}"
