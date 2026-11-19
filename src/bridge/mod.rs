@@ -357,12 +357,12 @@ pub fn sync_once(dir: &Path) -> Result<usize> {
             uploads += flush(&mut journal, &config, &credential)?;
         }
     }
-    // Freshness heartbeat goes to the durable wake gate, not Postgres.
+    // A scan with stuck sessions must not stamp history as fresh.
     http::request(
         &config.endpoint,
         "/v1/connector/checked",
         Some(&credential),
-        Some(&json!({})),
+        Some(&json!({"complete":health.failing.is_empty(),"skipped":health.failing.len()})),
         30,
     )?;
     if let Err(error) = publish_runtime(dir, &config, &credential) {

@@ -156,8 +156,12 @@ them has not been observed here; do not rely on text alone.
 
 Idle connector polls use a SQLite Durable Object, not Postgres. Polls wait up to
 20 seconds, about 4,320 requests per day for one Mac. The daemon checks source
-history every 15 minutes while idle. Mobile use requests five minutes of faster
-checks. Neon can suspend between idle syncs.
+history every 15 minutes while idle. Five seconds is the loop tick during the
+five-minute window after a phone request, not the idle interval. A failed scan
+backs off 30 seconds and does not mark history fresh. Mobile use requests five
+minutes of faster checks. Neon can suspend between idle syncs. `mac_presence`
+reports the connector heartbeat separately from history freshness. Accepting a
+queued message does not mean the Mac is online.
 
 At 0.25 CU, 100 CU-hours covers 400 active hours per month. Five minutes awake
 after each 15-minute idle sync is about 240 active hours per 30 days. Continuous

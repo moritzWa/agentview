@@ -34,9 +34,15 @@ export function application({database=openDatabase}={}) {
       if(Number(request.headers.get('content-length')??0)>1_000_000)throw new SyncError('request_too_large',413);
       if(path.startsWith('/.well-known/'))return await new OwnerAuth(null,env).handle(request)??json({error:'not_found'},404);
       if(path==='/')return new Response('AgentVoice private bridge. Pair a device to get started.',{headers:{'Cache-Control':'no-store'}});
-      if((path==='/v1/connector/poll' || path==='/v1/connector/checked') && request.method==='POST') {
+      if(path==='/v1/connector/checked' && request.method==='POST') {
         if(!/^[A-Za-z0-9_-]{43}$/.test(token))throw new SyncError('unauthorized',401);
-        const value=path.endsWith('/checked')?await gate.checked(await digest(token)):await gate.poll(await digest(token));
+        const body=await request.json().catch(()=>({}));
+        await gate.checked(await digest(token),{complete:body?.complete!==false,skipped:Number(body?.skipped)||0});
+        return json({ok:true}); // No Neon query. A partial scan does not stamp history fresh.
+      }
+      if(path==='/v1/connector/poll' && request.method==='POST') {
+        if(!/^[A-Za-z0-9_-]{43}$/.test(token))throw new SyncError('unauthorized',401);
+        const value=await gate.poll(await digest(token));
         return json({pending:value.pending,generation:value.generation,active_until:value.active_until}); // No Neon query.
       }
       if(path==='/v1/connector/runtime' && request.method==='POST') {
