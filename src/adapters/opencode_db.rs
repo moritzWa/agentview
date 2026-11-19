@@ -1711,6 +1711,40 @@ mod tests {
             .collect())
     }
 
+    fn record_ids(runner: &DirectDbRunner, sql: &str) -> Vec<String> {
+        let out = runner.run(&db_request(sql)).unwrap();
+        out.stdout_text()
+            .unwrap()
+            .lines()
+            .skip(1)
+            .map(|line| {
+                serde_json::from_str::<serde_json::Value>(line).unwrap()["id"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn choosing_the_window_first_lists_the_same_sessions_as_sorting_every_row() {
+        let (_dir, runner) = large_mixed_store(false);
+        for (limit, oldest_first) in [(10, false), (1000, true)] {
+            let plain = format!(
+                "{} ORDER BY s.time_updated {} LIMIT {limit}",
+                super::super::opencode::GLOBAL_SESSION_ROWS,
+                if oldest_first { "ASC" } else { "DESC" },
+            );
+            let windowed = super::super::opencode::global_session_query(limit, oldest_first);
+            assert_ne!(plain, windowed);
+            assert_eq!(
+                record_ids(&runner, &windowed),
+                record_ids(&runner, &plain),
+                "limit {limit} oldest_first {oldest_first}"
+            );
+        }
+    }
+
     #[test]
     fn stray_v1_rows_are_listed_once_after_v2() {
         let (_dir, runner) = large_mixed_store(false);

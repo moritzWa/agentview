@@ -23,7 +23,7 @@ use crate::adapters::{DiscoveryEngine, DiscoveryRequest};
 use crate::aliases::SessionAliases;
 use crate::app::{
     hidden_picker_rows_for_height, App, AppAction, ComposerMode, CursorMovement, Overlay,
-    SESSION_PAGE_SIZE,
+    SelectionKey, SESSION_PAGE_SIZE,
 };
 use crate::control::{ControlHub, ControlOutcome, LaunchPresentation, RestorableSession};
 use crate::domain::{AgentSession, Capability, Provider, SessionSnapshot, SessionState};
@@ -106,6 +106,9 @@ struct PendingLaunch {
     provider_session_id: String,
     known_session_ids: BTreeSet<String>,
     deadline: Instant,
+    /// Where the cursor was when the task was sent. A session that shows up
+    /// seconds later takes the cursor only if the user has not moved it.
+    selection_at_launch: Option<Option<SelectionKey>>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -132,6 +135,7 @@ struct LaunchWorkerResult {
     model: Option<String>,
     prompt: String,
     known_session_ids: BTreeSet<String>,
+    selection_at_launch: Option<SelectionKey>,
     result: Result<ControlOutcome, String>,
 }
 
@@ -143,6 +147,7 @@ struct LaunchJob {
     prompt: String,
     cwd: Option<PathBuf>,
     known_session_ids: BTreeSet<String>,
+    selection_at_launch: Option<SelectionKey>,
 }
 
 #[derive(Debug)]
@@ -683,6 +688,9 @@ pub fn run_dashboard(
                                             provider: completed.provider,
                                             provider_session_id,
                                             known_session_ids: completed.known_session_ids,
+                                            selection_at_launch: Some(
+                                                completed.selection_at_launch,
+                                            ),
                                             deadline: Instant::now() + LAUNCH_DISCOVERY_TIMEOUT,
                                         }
                                     });
@@ -759,6 +767,7 @@ pub fn run_dashboard(
                                             provider: completed.request.target,
                                             provider_session_id: outcome.session_id,
                                             known_session_ids: BTreeSet::new(),
+                                            selection_at_launch: None,
                                             deadline: Instant::now() + LAUNCH_DISCOVERY_TIMEOUT,
                                         });
                                         pending_launch_retry_at = None;
@@ -1536,6 +1545,7 @@ pub fn run_dashboard(
                                                 prompt,
                                                 cwd,
                                                 known_session_ids,
+                                                selection_at_launch: app.selection.clone(),
                                             },
                                             launch_tx.clone(),
                                         );
@@ -1572,6 +1582,7 @@ pub fn run_dashboard(
                                 provider: intent.provider,
                                 provider_session_id: intent.provider_session_id,
                                 known_session_ids: intent.known_session_ids,
+                                selection_at_launch: None,
                                 deadline: Instant::now() + LAUNCH_DISCOVERY_TIMEOUT,
                             });
                             pending_launch_retry_at = None;
@@ -2031,6 +2042,7 @@ fn schedule_launch_job(
             model: job.model,
             prompt: job.prompt,
             known_session_ids: job.known_session_ids,
+            selection_at_launch: job.selection_at_launch,
             result,
         });
     });
@@ -2175,6 +2187,18 @@ fn select_pending_launch(app: &mut App, pending: Option<&PendingLaunch>) -> Opti
         newly_discovered.next().is_none().then_some(candidate)
     })?;
     let session_id = session.id.clone();
+    // The row can take seconds to show up. By then the user has often gone on
+    // to another row, and moving the cursor under them would send their next
+    // Enter, or the open already waiting on a preview, to the new session.
+    let moved = pending
+        .selection_at_launch
+        .as_ref()
+        .is_some_and(|at_launch| *at_launch != app.selection);
+    if moved {
+        crate::perf!("launch-found", "session={session_id} selection=kept");
+        return Some(session_id);
+    }
+    crate::perf!("launch-found", "session={session_id} selection=moved");
     app.select_and_reveal_session(&session_id)
         .then_some(session_id)
 }
@@ -5885,6 +5909,7 @@ mod tests {
                 prompt: "build".into(),
                 cwd: None,
                 known_session_ids: BTreeSet::from(["pi:host:old".into()]),
+                selection_at_launch: None,
             },
             sender,
             || {
@@ -5937,6 +5962,7 @@ mod tests {
             provider_session_id: "same".into(),
             known_session_ids: BTreeSet::new(),
             deadline: Instant::now() + Duration::from_secs(1),
+            selection_at_launch: None,
         };
 
         assert!(select_pending_launch(&mut app, Some(&pending)).is_some());
@@ -5970,6 +5996,7 @@ mod tests {
             provider_session_id: "provisional".into(),
             known_session_ids: BTreeSet::from(["muse:host:old".into()]),
             deadline: Instant::now() + Duration::from_secs(1),
+            selection_at_launch: None,
         };
 
         assert_eq!(
@@ -5990,6 +6017,48 @@ mod tests {
     }
 
     #[test]
+    fn a_launched_row_does_not_take_the_cursor_after_the_user_moved_it() {
+        let mut app = app();
+        let mut launched = app.snapshot.sessions[0].clone();
+        launched.id = "pi:host:new".into();
+        launched.provider_session_id = "new".into();
+        launched.provider = Provider::Pi;
+        let mut sessions = app.snapshot.sessions.clone();
+        sessions.push(launched);
+        app.replace_snapshot(SessionSnapshot {
+            sessions,
+            warnings: Vec::new(),
+        });
+        let at_launch = Some(SelectionKey::Session("elsewhere".into()));
+        let pending = PendingLaunch {
+            provider: Provider::Pi,
+            provider_session_id: "new".into(),
+            known_session_ids: BTreeSet::new(),
+            deadline: Instant::now() + Duration::from_secs(1),
+            selection_at_launch: Some(at_launch),
+        };
+        let moved_to = Some(SelectionKey::Session(app.snapshot.sessions[0].id.clone()));
+        app.selection = moved_to.clone();
+
+        assert_eq!(
+            select_pending_launch(&mut app, Some(&pending)).as_deref(),
+            Some("pi:host:new"),
+            "the launch is resolved"
+        );
+        assert_eq!(
+            app.selection, moved_to,
+            "the cursor stays where the user put it"
+        );
+
+        app.selection = Some(SelectionKey::Session("elsewhere".into()));
+        select_pending_launch(&mut app, Some(&pending));
+        assert_eq!(
+            app.selection,
+            Some(SelectionKey::Session("pi:host:new".into()))
+        );
+    }
+
+    #[test]
     fn pending_launch_refresh_temporarily_queries_hidden_result_classes() {
         let request = DiscoveryRequest::default();
         let pending = PendingLaunch {
@@ -5997,6 +6066,7 @@ mod tests {
             provider_session_id: "exact".into(),
             known_session_ids: BTreeSet::new(),
             deadline: Instant::now() + Duration::from_secs(1),
+            selection_at_launch: None,
         };
 
         let regular = discovery_request_for_pending_launch(&request, None);
