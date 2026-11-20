@@ -870,7 +870,7 @@ pub fn verify(dir: &Path) -> Result<Value> {
             continue;
         };
         let text = source::projection_text(capture.through, &capture.state, &capture.messages);
-        let local_hash = format!("{:x}", Sha256::digest(text.as_bytes()));
+        let local_hash = format!("{:x}", md5::Md5::digest(text.as_bytes()));
         let report = match http::request(
             &config.endpoint,
             "/v1/sync/verify",

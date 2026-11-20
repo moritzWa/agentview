@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
@@ -233,6 +234,15 @@ test('an abandoned replacement does not delete the copy people can read', async 
   await store.apply(writer, replace('abandon', { upload_id: 'half', complete: false, messages: [msg('half', 2, 'Half')] }));
   await store.apply(writer, replace('abandon', { upload_id: 'other', messages: [msg('other', 3, 'Other')] }));
   assert.deepEqual((await store.read(reader, 'abandon')).messages.map(m => m.text), ['Other']);
+});
+
+test('verify hashes the same bytes as the Mac, including a session with messages', async () => {
+  await store.apply(writer, batch('verify-me', { messages: [msg('m1', 1, 'hi')], through: 10 }));
+  const hash = createHash('md5').update(projectionText(10, state, [{ id: 'm1', order: 1, role: 'assistant', text: 'hi' }])).digest('hex');
+  const result = await store.verify(writer, { session_id: 'verify-me', hash });
+  assert.equal(result.match, true, JSON.stringify(result));
+  assert.equal(result.cloud_count, 1);
+  assert.equal((await store.verify(writer, { session_id: 'missing-verify', hash })).reason, 'missing');
 });
 
 test('projection text matches the Mac byte for byte', () => {

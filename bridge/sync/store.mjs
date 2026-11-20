@@ -1,4 +1,4 @@
-import { digest, parseBatch, projectionText, SyncError } from './projection.mjs';
+import { digest, parseBatch, SyncError } from './projection.mjs';
 
 const key = p => [p.owner_id, p.device_id, p.database_epoch];
 const predicate = 'owner_id=$1 AND device_id=$2 AND database_epoch=$3';
@@ -132,20 +132,21 @@ export class SyncStore {
     return {mismatch};
   }
 
-  /** One session, hashes only. The old copy stays the one reads see until a replace commits. */
+  /** One session, a hash only. Hashed in Postgres so a long session cannot exceed the Worker CPU limit. */
   async verify(principal, input) {
     if (principal.audience !== 'sync') throw new SyncError('forbidden', 403);
     const sessionId = input?.session_id;
-    if (typeof sessionId !== 'string' || sessionId.length > 200 || typeof input?.hash !== 'string' || !/^[a-f0-9]{64}$/.test(input.hash)) throw new SyncError('invalid_verify', 400);
-    const rows = (await this.db.query(`SELECT s.cursor, s.state, m.message_id, m.message_order, m.role, m.text
-      FROM av_sessions s LEFT JOIN av_messages m ON m.owner_id=s.owner_id AND m.device_id=s.device_id AND m.database_epoch=s.database_epoch
-      AND m.session_id=s.session_id AND m.generation=s.generation
-      WHERE ${sessionPredicate} AND s.cursor IS NOT NULL AND (s.state->>'deleted')::boolean=false
-      ORDER BY m.message_order, m.message_id`, [...key(principal), sessionId])).rows;
-    if (!rows.length) return {session_id: sessionId, match: false, reason: 'missing'};
-    const state = rows[0].state, messages = rows.filter(r => r.message_id).map(r => ({id: r.message_id, order: Number(r.message_order), role: r.role, text: r.text}));
-    const cloud_hash = await digest(projectionText(Number(rows[0].cursor), state, messages));
-    return {session_id: sessionId, match: cloud_hash === input.hash, cloud_cursor: Number(rows[0].cursor), cloud_count: messages.length, reason: cloud_hash === input.hash ? 'match' : 'differs'};
+    if (typeof sessionId !== 'string' || sessionId.length > 200 || typeof input?.hash !== 'string' || !/^[a-f0-9]{32}$/.test(input.hash)) throw new SyncError('invalid_verify', 400);
+    const sk = [...key(principal), sessionId];
+    const row = (await this.db.query(`SELECT s.cursor,
+      (SELECT count(*) FROM av_messages m WHERE m.owner_id=s.owner_id AND m.device_id=s.device_id AND m.database_epoch=s.database_epoch AND m.session_id=s.session_id AND m.generation=s.generation) AS n,
+      md5('cursor=' || s.cursor::text || E'\\n' || 'archived=' || COALESCE(s.state->>'archived','false') || E'\\n' || 'deleted=' || COALESCE(s.state->>'deleted','false') || E'\\n' || 'title=' || COALESCE(s.state->>'title','') || E'\\n' || 'visible_before=' || COALESCE(s.state->>'visible_before','') || COALESCE(E'\\n' || (
+        SELECT string_agg(m.message_id || E'\\t' || m.message_order::text || E'\\t' || m.role || E'\\t' || m.text, E'\\n' ORDER BY m.message_order, m.message_id)
+        FROM av_messages m WHERE m.owner_id=s.owner_id AND m.device_id=s.device_id AND m.database_epoch=s.database_epoch AND m.session_id=s.session_id AND m.generation=s.generation
+      ), '')) AS hash
+      FROM av_sessions s WHERE s.owner_id=$1 AND s.device_id=$2 AND s.database_epoch=$3 AND s.session_id=$4 AND s.cursor IS NOT NULL AND (s.state->>'deleted')::boolean=false`, sk)).rows[0];
+    if (!row) return {session_id: sessionId, match: false, reason: 'missing'};
+    return {session_id: sessionId, match: row.hash === input.hash, cloud_cursor: Number(row.cursor), cloud_count: Number(row.n), reason: row.hash === input.hash ? 'match' : 'differs'};
   }
 
   /** No search/reader API can see incomplete baselines or undone messages. */
