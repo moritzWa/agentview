@@ -54,7 +54,7 @@ provider test. Follow [`tui-validation.md`](tui-validation.md) for the exhaustiv
 keyboard route, populated-session fixture, and visual acceptance criteria.
 
 Hermes and MastraCode have additional credential-free **actual native CLI**
-probes, including three conversation turns and exact resume after agentview restarts.
+probes, including three conversation turns and exact resume after betteragentview restarts.
 See [their integration guide](exploration/shared-sqlite-harnesses.md#tests)
 for the commands. Their
 fixture tests run in the ordinary platform matrix; Hermes/MastraCode queued
@@ -95,7 +95,7 @@ perform these checks:
 Verify the run rather than relying on a branch badge:
 
 ```console
-repo=moritzWa/agentview
+repo=moritzWa/betteragentview
 commit="$(git rev-parse HEAD)"
 gh run list --repo "$repo" --commit "$commit" --workflow ci.yml
 gh run view RUN_ID --repo "$repo"
@@ -110,7 +110,7 @@ does not validate the release commit.
 Download the artifacts from the successful run into a new temporary directory:
 
 ```console
-repo=moritzWa/agentview
+repo=moritzWa/betteragentview
 stage="$(mktemp -d)"
 gh run download RUN_ID --repo "$repo" --dir "$stage"
 find "$stage" -type f -print | sort
@@ -134,7 +134,7 @@ find "$stage" -name '*.sha256' -print0 |
 
 Use `tar -tzf ARCHIVE` for Unix archives and `unzip -Z1 ARCHIVE` for the
 Windows ZIP. Each archive must contain one top-level versioned directory and
-the canonical executable (`agentview` or `agentview.exe`).
+the canonical executable (`betteragentview` or `betteragentview.exe`).
 
 Before publication, enforce the exact-commit invariant:
 
@@ -166,7 +166,7 @@ docker run --rm -e AGENTVIEW_TEST_VERSION="$VERSION" ubuntu:22.04 bash -lc '
   apt-get update -qq
   DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ca-certificates curl >/dev/null
   mkdir -p /tmp/agentview-bin
-  curl -fsSL https://raw.githubusercontent.com/moritzWa/agentview/main/install.sh \
+  curl -fsSL https://raw.githubusercontent.com/moritzWa/betteragentview/main/install.sh \
     -o /tmp/install-agentview.sh
   AGENTVIEW_VERSION="$AGENTVIEW_TEST_VERSION" bash /tmp/install-agentview.sh --install-dir /tmp/agentview-bin
   /tmp/agentview-bin/agentview --version
@@ -189,7 +189,7 @@ project instructions.
 VERSION=MAJOR.MINOR.PATCH
 test_root="$(mktemp -d)"
 trap 'rm -rf -- "$test_root"' EXIT HUP INT TERM
-curl -fsSL https://raw.githubusercontent.com/moritzWa/agentview/main/install.sh \
+curl -fsSL https://raw.githubusercontent.com/moritzWa/betteragentview/main/install.sh \
   -o "$test_root/install.sh"
 AGENTVIEW_VERSION="$VERSION" bash "$test_root/install.sh" --install-dir "$test_root/bin"
 uname -s -m
@@ -215,12 +215,12 @@ try {
     $Installer = Join-Path $Root "install.ps1"
     Invoke-WebRequest `
         -UseBasicParsing `
-        -Uri "https://raw.githubusercontent.com/moritzWa/agentview/main/install.ps1" `
+        -Uri "https://raw.githubusercontent.com/moritzWa/betteragentview/main/install.ps1" `
         -OutFile $Installer
     & $Installer -Version $Version -InstallDir $Bin -SkipPathUpdate
-    & (Join-Path $Bin "agentview.exe") --version
+    & (Join-Path $Bin "betteragentview.exe") --version
     & (Join-Path $Bin "av.exe") --version
-    $Snapshot = & (Join-Path $Bin "agentview.exe") --json --no-host-providers |
+    $Snapshot = & (Join-Path $Bin "betteragentview.exe") --json --no-host-providers |
         ConvertFrom-Json
     if ($Snapshot.sessions.Count -ne 0 -or $Snapshot.warnings.Count -ne 0) {
         throw "unexpected provider-free startup output"
@@ -249,7 +249,7 @@ Cross-platform tests must not mutate a maintainer's real sessions by default.
   the account and workspace are intended for testing, and cleanup is defined.
 
 Provider installation, login, model discovery, and native-TUI behavior require
-their own live test on each claimed platform. A mock verifies agentview's protocol and
+their own live test on each claimed platform. A mock verifies betteragentview's protocol and
 error handling; it does not prove that a current provider release still accepts
 the same login or model-selection flow.
 

@@ -161,7 +161,7 @@ impl AppServerClient {
             json!({
                 "clientInfo": {
                     "name": "agentview",
-                    "title": "agentview",
+                    "title": "BetterAgentView",
                     "version": env!("CARGO_PKG_VERSION")
                 }
             }),

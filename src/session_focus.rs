@@ -85,7 +85,7 @@ mod platform {
         let entries = match fs::read_dir(directory()?) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                bail!("no running Agent View dashboard; start av first")
+                bail!("no running BetterAgentView dashboard; start av first")
             }
             Err(error) => return Err(error.into()),
         };
@@ -104,7 +104,7 @@ mod platform {
                 return Ok(());
             }
         }
-        bail!("no running Agent View dashboard; start av first")
+        bail!("no running BetterAgentView dashboard; start av first")
     }
 
     #[cfg(target_os = "macos")]

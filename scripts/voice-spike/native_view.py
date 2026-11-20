@@ -77,7 +77,7 @@ os.write(fd, title.encode()); pump(0.5)
 os.write(fd, b"\r"); pump(1.5)
 os.write(fd, b"\r"); pump(8)               # enter: open the session's own view
 screen = "\n".join(vt.display)
-check("the session's own view is showing", "agentview v0.2.0" not in screen.split("\n")[0], screen.split("\n")[0][:80])
+check("the session's own view is showing", "BetterAgentView v0.2.0" not in screen.split("\n")[0], screen.split("\n")[0][:80])
 os.write(fd, voice_key); pump(1.5)           # the voice key
 def badge_cells():
     out = []

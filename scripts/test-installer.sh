@@ -105,7 +105,9 @@ output="$({
 [[ -L "${home}/.local/bin/av" ]] || fail "av shorthand was not installed"
 [[ "$("${home}/.local/bin/av" --version)" == "agentview ${version}" ]] ||
   fail "av shorthand reports the wrong version"
-[[ "$output" == *"installed agentview ${version}"* ]] || fail "success output is missing"
+[[ "$output" == *"installed BetterAgentView ${version}"* ]] || fail "success output is missing"
+[[ -L "${home}/.local/bin/betteragentview" ]] || fail "betteragentview command was not installed"
+[[ "$(readlink "${home}/.local/bin/betteragentview")" == "agentview" ]] || fail "betteragentview must share the existing binary"
 [[ "$output" == *"installed shorthand: av"* ]] || fail "shorthand output is missing"
 [[ "$output" == *"add ${home}/.local/bin to PATH"* ]] || fail "PATH guidance is missing"
 
@@ -187,8 +189,8 @@ for platform in "${platforms[@]}"; do
 done
 
 api_root="${temp_root}/api"
-install -d "${api_root}/repos/moritzWa/agentview/releases"
-printf '{"tag_name":"%s"}\n' "$tag" >"${api_root}/repos/moritzWa/agentview/releases/latest"
+install -d "${api_root}/repos/moritzWa/betteragentview/releases"
+printf '{"tag_name":"%s"}\n' "$tag" >"${api_root}/repos/moritzWa/betteragentview/releases/latest"
 latest_bin="${temp_root}/latest/bin"
 HOME="${temp_root}/latest-home" \
   PATH="/usr/bin:/bin" \

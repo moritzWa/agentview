@@ -130,7 +130,7 @@ pub fn pair(
         "/pair/start",
         None,
         Some(
-            &json!({"device_id":device_id,"database_epoch":epoch,"label":std::env::var("USER").unwrap_or_else(|_|"Mac".into())+" Agent View"}),
+            &json!({"device_id":device_id,"database_epoch":epoch,"label":std::env::var("USER").unwrap_or_else(|_|"Mac".into())+" BetterAgentView"}),
         ),
         30,
     )?;
@@ -1026,7 +1026,7 @@ fn notify_stuck() {
     let _ = std::process::Command::new("osascript")
         .args([
             "-e",
-            "display notification \"Phone sync has not completed for 30+ minutes. Run: agentview bridge status\" with title \"Agent View bridge\"",
+            "display notification \"Phone sync has not completed for 30+ minutes. Run: agentview bridge status\" with title \"BetterAgentView bridge\"",
         ])
         .status();
 }

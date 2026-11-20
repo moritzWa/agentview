@@ -1,6 +1,6 @@
 # Validation record
 
-This file records the checks used for the initial `agentview` prototype.
+This file records the checks used for the initial `betteragentview` prototype.
 They are intentionally split between deterministic tests and disposable runtime
 probes. Existing user containers and live agent sessions were never used as
 test targets for lifecycle operations.
@@ -130,7 +130,7 @@ checks; the guide also contains release gates that are not yet complete.
   persistence, and refusal of control characters, oversized values, symlinks,
   wrong owners, and permissive files. The real PTY renames, filters by the new
   name, resets it, and observes the fixture's canonical provider name again.
-- Installer tests execute `agentview` and `av`, and prove an unrelated
+- Installer tests execute `betteragentview` and `av`, and prove an unrelated
   pre-existing `av` is retained.
 - `cargo build --release --locked`: release-mode compilation against the
   committed lock file and Rust 1.75 minimum-version dependency set.
@@ -178,7 +178,7 @@ checks; the guide also contains release gates that are not yet complete.
 - `scripts/fresh-provider-setup-tests.sh` is the networked, explicitly invoked
   E2E tier. It starts fifteen independent containers from the pinned
   `node:22-bookworm-slim` digest with empty homes and no mounted credentials or
-  workspaces, lets the real agentview binary run each current official installer,
+  workspaces, lets the real betteragentview binary run each current official installer,
   verifies the installed executable/version, and requires a native PTY login
   handoff. Browser/device authorization is deliberately bounded rather than
   completed. On 2026-08-25 this passed for Claude Code 2.1.245, Codex 0.149.1,
@@ -226,11 +226,11 @@ checks; the guide also contains release gates that are not yet complete.
   separate startup case makes Claude discovery sleep for two seconds and
   requires an immediately available Antigravity row within 750 ms, proving
   that the first screen is not gated on the slowest provider.
-- An authenticated Antigravity 1.1.20 regression (isolated workspace plus agentview
+- An authenticated Antigravity 1.1.20 regression (isolated workspace plus betteragentview
   state/cache) verified a 14-model live catalog, exact selected-model launch,
   foreground response, Shift+Left return, immediate exact managed row,
   transcript-derived current summary/time, exact Ctrl+X stop, and rediscovery
-  from a fresh agentview process. The CLI reused its existing login internally; the
+  from a fresh betteragentview process. The CLI reused its existing login internally; the
   test did not read or copy authentication material.
 - A separate default-mode PTY supplies 1,000 completed fixture records without
   a visibility flag, requires the bounded Completed page within 750 ms, then
@@ -250,9 +250,9 @@ checks; the guide also contains release gates that are not yet complete.
   `sha256:8f170f660813ac358f347fa8a3580139972f3ea7a9fb087834f1da44669d9392`:
   `claude agents` 2.1.209 rendered its empty Needs input/Working/Completed
   dashboard, opened and closed shortcut help with `?`, and restored terminal
-  modes on Escape; the mounted `agentview` release rendered its empty
+  modes on Escape; the mounted `betteragentview` release rendered its empty
   dashboard, opened and closed contextual help, switched to directory view with
-  `ctrl+s`, and restored the alternate screen on Escape. The agentview
+  `ctrl+s`, and restored the alternate screen on Escape. The betteragentview
   probe additionally ran unprivileged with a read-only root, dropped
   capabilities, `no-new-privileges`, a PID limit, and isolated tmpfs home/state.
 - The exact fresh-container command shape is documented in
@@ -274,7 +274,7 @@ checks; the guide also contains release gates that are not yet complete.
   degradation/exit. The exhaustive action matrix ran against the actual binary
   in host `openpty`; it was not redundantly repeated inside Docker.
 - The v0.1.13 candidate repeated that fresh-container comparison after the
-  history changes: the populated agentview binary rendered both provider columns,
+  history changes: the populated betteragentview binary rendered both provider columns,
   help, directory grouping, and clean alternate-screen restoration; Claude
   2.1.209 independently rendered its empty dashboard/help and restored the
   terminal. Both used the same network-disabled, read-only, non-root,
@@ -288,7 +288,7 @@ checks; the guide also contains release gates that are not yet complete.
 - The v0.1.15 candidate drives Enter on a managed Pi row through the real PTY,
   asserts alternate-screen suspension/restoration instead of Peek, and opens
   the exact completed Pi history on this Linux host in a read-only native-TUI
-  probe before returning cleanly to agentview. Space remains independently
+  probe before returning cleanly to betteragentview. Space remains independently
   covered as the inline Peek route.
 - The v0.1.16 candidate adds a process-level completed-Pi native handoff and a
   stop-to-delete lifecycle. The mock proves stop returns within 500 ms, exit is
@@ -353,7 +353,7 @@ checks; the guide also contains release gates that are not yet complete.
   invoke a model, clean EOF, and exact native TUI resume/terminal restoration
   were verified.
 - `tests/real_managed_launch.rs` adds explicit ignored, credentialed host
-  lifecycles without reusing the ordinary agentview supervisor state. Pi 0.84.2 used
+  lifecycles without reusing the ordinary betteragentview supervisor state. Pi 0.84.2 used
   a temporary daemon and session directory: it launched an exact-response
   prompt, inspected the assistant transcript, started a second turn,
   interrupted it, stopped the daemon, and proved the exact provider PID exited
@@ -559,7 +559,7 @@ examples.
   created through its agentview-owned Linux supervisor are shown and controlled;
   macOS has no managed Cursor discovery/control until an equally race-safe
   process identity primitive is implemented. Cursor's native TTY picker remains
-  available outside agentview.
+  available outside betteragentview.
 - Copilot provider-wide list results remain observe/native-open in the
   dashboard. agentview-created IDs and bounded latest-message metadata survive a
   restart, while live prompt/permission authority still applies only to the

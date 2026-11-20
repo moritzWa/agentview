@@ -84,7 +84,7 @@ enum Commands {
         #[command(subcommand)]
         command: BridgeCommand,
     },
-    /// Download, verify, and install the latest agentview release.
+    /// Download, verify, and install the latest BetterAgentView release.
     #[command(alias = "upgrade")]
     Update,
     /// Check provider, Docker, and target availability without changing them.
@@ -140,7 +140,7 @@ enum BridgeCommand {
         /// Explicit source path for isolated testing or a nondefault OpenCode profile.
         #[arg(long)]
         database: Option<PathBuf>,
-        /// Isolated Agent View OpenCode supervisor directory, for test profiles.
+        /// Isolated BetterAgentView OpenCode supervisor directory, for test profiles.
         #[arg(long)]
         supervisor_state: Option<PathBuf>,
     },
@@ -297,9 +297,9 @@ enum DockerCommand {
 
 /// Open terminal dashboard for all your coding agents.
 #[derive(Debug, Parser)]
-#[command(name = "agentview", version, about, disable_version_flag = true)]
+#[command(name = command_name(), version, about, disable_version_flag = true)]
 struct Cli {
-    /// Print the agentview version.
+    /// Print the BetterAgentView version.
     #[arg(
         short = 'v',
         short_alias = 'V',
@@ -564,6 +564,20 @@ struct Cli {
     /// Only harnesses with an exact, verified equivalent can launch.
     #[arg(long)]
     yolo: bool,
+}
+
+// Older scripts verify the exact `agentview VERSION` response. Keep that
+// compatibility only for the legacy executable, not the new public command.
+fn command_name() -> &'static str {
+    let executable = std::env::args_os().next().unwrap_or_default();
+    if std::path::Path::new(&executable)
+        .file_stem()
+        .is_some_and(|name| name == "agentview")
+    {
+        "agentview"
+    } else {
+        "betteragentview"
+    }
 }
 
 fn main() -> Result<()> {
@@ -1516,7 +1530,7 @@ fn run_session_command(command: &SessionCommand, cli: &Cli) -> Result<()> {
                 println!();
             } else if inserted {
                 println!(
-                    "Hidden {} from agentview. Provider history was not changed.",
+                    "Hidden {} from BetterAgentView. Provider history was not changed.",
                     sanitize_cli_text(session_id)
                 );
             } else {
@@ -1601,7 +1615,7 @@ fn print_session_aliases(records: &[SessionAliasRecord], json: bool) -> Result<(
         return Ok(());
     }
     if records.is_empty() {
-        println!("No sessions have local agentview names.");
+        println!("No sessions have local BetterAgentView names.");
         return Ok(());
     }
     println!(
@@ -1631,7 +1645,7 @@ fn print_hidden_sessions(records: &[HiddenSessionRecord], json: bool) -> Result<
         return Ok(());
     }
     if records.is_empty() {
-        println!("No sessions are hidden from agentview.");
+        println!("No sessions are hidden from BetterAgentView.");
         return Ok(());
     }
     println!(
@@ -1815,7 +1829,7 @@ enum HarnessInstaller {
 
 fn run_harness_setup(provider: LaunchProvider, confirmed: bool, cli: &Cli) -> Result<()> {
     if provider == LaunchProvider::Terminal {
-        println!("Terminal is built into agentview; choose it with Tab or `/harness terminal`.");
+        println!("Terminal is built into BetterAgentView; choose it with Tab or `/harness terminal`.");
         return Ok(());
     }
     let (label, executable, login_args, installer) = match provider {
@@ -2060,7 +2074,7 @@ fn run_harness_setup(provider: LaunchProvider, confirmed: bool, cli: &Cli) -> Re
     if !status.success() {
         bail!("{label} login exited with status {status}");
     }
-    println!("✓ {label} setup completed. Return to agentview and retry the model picker.");
+    println!("✓ {label} setup completed. Return to BetterAgentView and retry the model picker.");
     Ok(())
 }
 
@@ -2169,7 +2183,7 @@ fn run_official_script_installer(url: &str, args: &[&str]) -> Result<std::proces
 fn run_self_update() -> Result<()> {
     let previous_version = env!("CARGO_PKG_VERSION");
     let repository =
-        std::env::var("AGENTVIEW_REPO").unwrap_or_else(|_| "moritzWa/agentview".into());
+        std::env::var("AGENTVIEW_REPO").unwrap_or_else(|_| "moritzWa/betteragentview".into());
     if !repository
         .split_once('/')
         .is_some_and(|(owner, name)| !owner.is_empty() && !name.is_empty())
@@ -2207,7 +2221,7 @@ fn run_self_update() -> Result<()> {
     };
     let script = directory.join(installer_name);
     let result = (|| -> Result<()> {
-        println!("Checking for the latest agentview release…");
+        println!("Checking for the latest BetterAgentView release…");
         let mut downloaded = false;
         if executable_available("gh") {
             let output = std::fs::File::create(&script)?;
@@ -2307,9 +2321,9 @@ fn run_self_update() -> Result<()> {
             }
             let installed_version = installed_agentview_version(&install_dir)?;
             if installed_version == previous_version {
-                println!("agentview is already up to date at {installed_version}.");
+                println!("BetterAgentView is already up to date at {installed_version}.");
             } else {
-                println!("Updated agentview from {previous_version} to {installed_version}.");
+                println!("Updated BetterAgentView from {previous_version} to {installed_version}.");
             }
             Ok(())
         }
@@ -2356,6 +2370,7 @@ fn installed_agentview_version(install_dir: &std::path::Path) -> Result<String> 
         .trim();
     let version = reported
         .strip_prefix("agentview ")
+        .or_else(|| reported.trim().strip_prefix("betteragentview "))
         .filter(|version| {
             !version.is_empty()
                 && !version

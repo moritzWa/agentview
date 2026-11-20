@@ -90,7 +90,7 @@ def run(args):
                     if b"\x1b[6n" in output: os.write(master,b"\x1b[1;1R")
                     stream.feed(output)
                 visible="\n".join(screen.display)
-                if marker in visible and (not native or "agentview v" not in visible): return visible
+                if marker in visible and (not native or "BetterAgentView v" not in visible): return visible
                 if child.poll() is not None: break
             raise AssertionError(f"{args.provider}: waiting for {marker}\n{visible[-5000:]}")
         def send(text): os.write(master,text.encode())

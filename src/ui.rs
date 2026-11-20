@@ -27,7 +27,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
     );
     if area.width < 32 || area.height < 8 {
         let message = if area.width >= 18 && area.height >= 2 {
-            vec![Line::from("agentview needs"), Line::from("at least 32×8")]
+            vec![Line::from("BetterAgentView needs"), Line::from("at least 32×8")]
         } else {
             vec![Line::from("needs 32×8")]
         };
@@ -112,13 +112,13 @@ pub fn terminal_title(app: &App) -> String {
         .filter(|(count, _)| *count > 0)
         .map(|(count, label)| format!("{count} {label}"))
         .collect::<Vec<_>>();
-    parts.push("agentview".into());
+    parts.push("BetterAgentView".into());
     parts.join(" · ")
 }
 
 fn render_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let title = format!(
-        "agentview v{}{}{}",
+        "BetterAgentView v{}{}{}",
         env!("CARGO_PKG_VERSION"),
         if app.work_only { " · Work only" } else { "" },
         crate::update_check::newer_version()
@@ -631,7 +631,7 @@ fn empty_state_lines(includes_completed: bool) -> Vec<Line<'static>> {
         )),
         Line::default(),
         Line::from(Span::styled(
-            "Hand off a substantial task below. agentview will organize it by status so you can see when it needs you.",
+            "Hand off a substantial task below. BetterAgentView will organize it by status so you can see when it needs you.",
             Style::default().fg(palette().dim),
         )),
     ]
@@ -1702,7 +1702,7 @@ fn contextual_footer(app: &App, width: u16) -> String {
             "rename · type name · enter save · esc cancel".into()
         }
         Overlay::Composer(ComposerMode::MigrationName { .. }) if width >= 70 => {
-            "migration name is local to agentview · enter migrate · esc target picker".into()
+            "migration name is local to BetterAgentView · enter migrate · esc target picker".into()
         }
         Overlay::Composer(ComposerMode::MigrationName { .. }) => {
             "enter migrate · esc targets".into()
@@ -3154,7 +3154,7 @@ mod tests {
         terminal.draw(|frame| render(frame, &app)).unwrap();
         let rendered = buffer_text(terminal.backend().buffer());
 
-        assert!(rendered.contains("agentview"));
+        assert!(rendered.contains("BetterAgentView"));
         assert!(rendered.contains("Ready for review"));
         assert!(rendered.contains("Needs input"));
         assert!(rendered.contains("Working"));
@@ -3174,10 +3174,10 @@ mod tests {
             ],
             warnings: vec![],
         });
-        assert_eq!(terminal_title(&app), "2 need input · 2 done · agentview");
+        assert_eq!(terminal_title(&app), "2 need input · 2 done · BetterAgentView");
         assert_eq!(
             terminal_title(&App::new(SessionSnapshot::default())),
-            "agentview"
+            "BetterAgentView"
         );
     }
 
@@ -3949,7 +3949,7 @@ mod tests {
         terminal.draw(|frame| render(frame, &app)).unwrap();
 
         let rendered = buffer_text(terminal.backend().buffer());
-        assert!(rendered.contains("agentview needs"));
+        assert!(rendered.contains("BetterAgentView needs"));
         assert!(rendered.contains("at least 32×8"));
     }
 
@@ -4178,7 +4178,7 @@ mod tests {
         let naming = buffer_text(terminal.backend().buffer());
         assert!(naming.contains("migrate to Codex · choose local name"));
         assert!(naming.contains("name ❯ review API (Codex)"));
-        assert!(naming.contains("migration name is local to agentview"));
+        assert!(naming.contains("migration name is local to BetterAgentView"));
     }
 
     #[test]

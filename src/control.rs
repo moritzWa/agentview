@@ -605,7 +605,7 @@ impl ControlHub {
         self.ensure_provider_io()?;
         if provider == &Provider::Terminal {
             return Ok(ControlOutcome {
-                message: "Terminal is built into agentview and needs no setup".into(),
+                message: "Terminal is built into BetterAgentView and needs no setup".into(),
                 provider_session_hint: None,
             });
         }
@@ -647,7 +647,7 @@ impl ControlHub {
             crate::native_session::NativeSessionExit::Exited(status) if status.success() => {
                 Ok(ControlOutcome {
                     message: format!(
-                        "{} setup completed; restart agentview if it was newly installed",
+                        "{} setup completed; restart BetterAgentView if it was newly installed",
                         provider.label()
                     ),
                     provider_session_hint: None,

@@ -2763,7 +2763,7 @@ exit 1
 fn wide_real_tty_exercises_primary_interactions_and_restores_terminal() {
     let _serial = serialize_real_tty_test();
     let mut app = PtyApp::spawn(120, 34);
-    let expected_version = format!("agentview v{}", env!("CARGO_PKG_VERSION"));
+    let expected_version = format!("BetterAgentView v{}", env!("CARGO_PKG_VERSION"));
     let startup = app.wait_for("populated startup view", |screen| {
         screen.contains(&expected_version)
             && screen.contains("Ready for review")
@@ -3204,7 +3204,7 @@ fn has_help_entry(screen: &str, key: &str, description: &str) -> bool {
 fn narrow_and_tiny_real_ttys_have_bounded_fallback_layouts() {
     let _serial = serialize_real_tty_test();
     let mut narrow = PtyApp::spawn(55, 18);
-    let expected_version = format!("agentview v{}", env!("CARGO_PKG_VERSION"));
+    let expected_version = format!("BetterAgentView v{}", env!("CARGO_PKG_VERSION"));
     let startup = narrow.wait_for("narrow startup", |screen| {
         screen.contains(&expected_version)
             && screen.contains("Needs input")
@@ -3227,7 +3227,7 @@ fn narrow_and_tiny_real_ttys_have_bounded_fallback_layouts() {
 
     let mut tiny = PtyApp::spawn(31, 7);
     let fallback = tiny.wait_for("tiny terminal fallback", |screen| {
-        screen.contains("agentview needs")
+        screen.contains("BetterAgentView needs")
             && screen.contains("at least 32×8")
             && !screen.contains("release-reviewer")
     });

@@ -5,7 +5,7 @@ Status: approved on 2026-08-17.
 ## Product
 
 Build an open reproduction of the workflow exposed by `claude agents`, named
-**agentview** and launched from the shell as `agentview`.
+**betteragentview** and launched from the shell as `betteragentview`.
 
 The primary experience is a terminal UI that discovers and supervises local
 coding-agent sessions on the host or in explicitly enrolled Docker targets. It
@@ -32,11 +32,11 @@ capability; no integration is described as having a uniform full lifecycle.
   draft-preserving harness picker and draft-preserving searchable provider
   model picker. Authentication errors hand off to the provider's native login
   in an isolated setup terminal and reload the account catalog; credentials
-  never pass through agentview.
+  never pass through betteragentview.
 - A live completed-history toggle, 25-row progressive reveal, and reversible
-  local hiding for rows that agentview can observe but does not own.
+  local hiding for rows that betteragentview can observe but does not own.
 - Private local session names keyed by stable normalized ID. Provider-native
-  titles remain canonical; a local name wins only in agentview until explicitly reset.
+  titles remain canonical; a local name wins only in betteragentview until explicitly reset.
 - A bounded provider-history window with an explicit CLI override; ordinary
   active-session refreshes must never scan an unbounded persisted store.
 - An owned-only default inventory; provider-wide external history requires the
@@ -73,8 +73,8 @@ capability; no integration is described as having a uniform full lifecycle.
 ## Delivery
 
 - Rust and Ratatui, with Rust 1.75 as the initial MSRV.
-- A single binary named `agentview`, installed with `av` as its shorthand.
-- Public repository at `moritzWa/agentview`, suitable for a
+- A single binary named `betteragentview`, installed with `av` as its shorthand.
+- Public repository at `moritzWa/betteragentview`, suitable for a
   later public release under the MIT license.
 - Frequent coherent commits, exploration records, architectural decisions,
   tests, and reproducible installation instructions.

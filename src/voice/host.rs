@@ -125,7 +125,7 @@ impl DashboardHost {
     }
 
     /// The session to act on. One that is only in the history is brought back
-    /// under Agent View's control first, as restoring it from the picker does.
+    /// under BetterAgentView's control first, as restoring it from the picker does.
     fn controllable(&self, id: &str) -> Result<AgentSession> {
         let in_dashboard = self
             .sessions
@@ -145,7 +145,7 @@ impl DashboardHost {
         self.session(id)
     }
 
-    /// The session to send words to. Agent View writes only to OpenCode
+    /// The session to send words to. BetterAgentView writes only to OpenCode
     /// sessions it owns, and a row it lists without owning has no `Reply`.
     /// The developer asking the voice to message that one session is the
     /// consent, so it is adopted here, when asked, and not up front: every
@@ -504,7 +504,7 @@ impl VoiceHost for DashboardHost {
                 done.push("it was between turns, so there was nothing to stop")
             }
             Err(error) if working => bail!(
-                "it is still working and could not be stopped, so it was left in Agent View: {error:#}"
+                "it is still working and could not be stopped, so it was left in BetterAgentView: {error:#}"
             ),
             Err(_) => {}
         }
@@ -514,7 +514,7 @@ impl VoiceHost for DashboardHost {
         }
         self.refresh();
         done.push(
-            "removed it from Agent View (its history is kept and search_history still finds it)",
+            "removed it from BetterAgentView (its history is kept and search_history still finds it)",
         );
         Ok(done.join(" and "))
     }

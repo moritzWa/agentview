@@ -2,7 +2,7 @@
 
 ## Design overview
 
-`agentview` is divided into four layers:
+`betteragentview` is divided into four layers:
 
 ```text
 CLI/TUI
@@ -37,7 +37,7 @@ The initial lifecycle states are `ready_for_review`, `needs_input`, `working`,
 Provider discovery owns canonical titles. A final local presentation layer
 applies private session aliases by stable normalized ID after discovery and
 ownership filtering. This deliberately does not become an adapter capability:
-renaming the agentview row grants no authority over provider history. Clearing an
+renaming the betteragentview row grants no authority over provider history. Clearing an
 alias exposes the newest provider title on the next refresh.
 
 ## Adapter contract
@@ -125,7 +125,7 @@ computed in one snapshot pass, provider labels are deduplicated without sorting
 the full history, and ready key/typing bursts produce one final frame.
 
 Default discovery is ownership-scoped and includes completed managed work.
-Claude rows are filtered against agentview's private launch registry; Codex, Pi,
+Claude rows are filtered against betteragentview's private launch registry; Codex, Pi,
 OpenCode, Cursor, and Copilot contribute only exact supervisor-owned records;
 Antigravity contributes exact agentview-owned launch records correlated from its
 bounded local transcript store; Terminal contributes only the
@@ -224,7 +224,7 @@ separate short-lived headless SDK connection calls `models.list` and exits
 without creating a session; ACP applies the selected model before the first
 prompt.
 
-Antigravity exposes no documented all-conversation listing protocol. agentview
+Antigravity exposes no documented all-conversation listing protocol. betteragentview
 records exact conversations it launches by matching a newly created bounded
 local transcript to the exact launch prompt. A provisional process-local row
 bridges the short period before the ID is available. Launch uses `--sandbox`,

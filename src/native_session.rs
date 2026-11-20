@@ -2725,7 +2725,7 @@ fn write_return_hint(
     let (rows, cols) = screen.screen().size();
     let tenths = remaining.as_millis().div_ceil(100);
     let message = format!(
-        " Press {} again to return to agentview · {:.1}s · Shift+←/→ anytime",
+        " Press {} again to return to BetterAgentView · {:.1}s · Shift+←/→ anytime",
         direction.symbol(),
         tenths as f64 / 10.0
     );

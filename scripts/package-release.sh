@@ -44,6 +44,8 @@ trap 'rm -rf -- "$stage_root"' EXIT HUP INT TERM
 
 install -d "${stage_root}/${stem}" "$dist_dir"
 install -m 0755 "$binary" "${stage_root}/${stem}/agentview"
+ln -s agentview "${stage_root}/${stem}/betteragentview"
+ln -s agentview "${stage_root}/${stem}/av"
 install -m 0644 "${repo_dir}/LICENSE" "${repo_dir}/README.md" "${stage_root}/${stem}/"
 
 if tar --version 2>/dev/null | grep -q 'GNU tar'; then

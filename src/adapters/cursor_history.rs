@@ -855,7 +855,7 @@ mod tests {
             root,
             "d3643a72",
             CHAT_B,
-            "Agent View Setup",
+            "BetterAgentView Setup",
             "/Users/m/Code",
             1_000_000,
         );

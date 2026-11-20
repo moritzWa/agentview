@@ -774,7 +774,7 @@ pub fn run_dashboard(
                                         completed_migration_needs_refresh = true;
                                     }
                                     Err(error) => app.set_notice(format!(
-                                        "migration succeeded, but agentview could not index it: {error:#}"
+                                        "migration succeeded, but BetterAgentView could not index it: {error:#}"
                                     )),
                                 }
                             }
@@ -1158,7 +1158,7 @@ pub fn run_dashboard(
                         if action == AppAction::Quit && migrating_target.is_some() {
                             app.should_quit = false;
                             app.set_notice(
-                                "migration is still running; agentview will be ready to exit when it finishes",
+                                "migration is still running; BetterAgentView will be ready to exit when it finishes",
                             );
                             action = AppAction::None;
                         }

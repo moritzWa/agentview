@@ -1,7 +1,7 @@
 # Text-only sync core
 
 The core is deployed through the separate [private Worker](../private/README.md).
-Agent View provides the production Rust source reader, journal and login daemon.
+BetterAgentView provides the production Rust source reader, journal and login daemon.
 The public MCP probe remains in voizecode, synthetic and separate from this code.
 
 ## Scope
@@ -41,7 +41,7 @@ and out of scope. Prefer Workers Free + Neon Free, subject to CPU/quota tests.
   ACK. No pending batch means no request and no Neon wake-up from history sync.
 - `journal.mjs`: Node 24 local integration harness, not the production Mac daemon.
   Durable pending batch and receipt in a separate user-only SQLite file, bound to
-  one source identity. Refuses unrelated SQLite files. The real Agent View daemon
+  one source identity. Refuses unrelated SQLite files. The real BetterAgentView daemon
   must use its shared Rust adapters rather than a second JavaScript source reader.
 
 ## Protocol
@@ -94,7 +94,7 @@ tests in voizecode prove the public tool surface still exposes synthetic data on
 
 Owner Google login, MCP code/PKCE OAuth, revocation, device pairing, a private
 Workers/Neon deployment and a separate instruction outbox are implemented.
-The Rust daemon reuses Agent View's profile resolver and shared supervisor.
+The Rust daemon reuses BetterAgentView's profile resolver and shared supervisor.
 Its source reader supports inline/split V2 text and unmigrated legacy sessions.
 Missing event-body ranges reconcile a current source snapshot. Database identity
 changes and regressed watermarks fail closed. Native fork, revert/unrevert and

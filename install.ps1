@@ -2,7 +2,7 @@
 param(
     [string]$Version = $env:AGENTVIEW_VERSION,
     [string]$InstallDir = $env:AGENTVIEW_INSTALL_DIR,
-    [string]$Repo = $(if ($env:AGENTVIEW_REPO) { $env:AGENTVIEW_REPO } else { "moritzWa/agentview" }),
+    [string]$Repo = $(if ($env:AGENTVIEW_REPO) { $env:AGENTVIEW_REPO } else { "moritzWa/betteragentview" }),
     [string]$ReleaseBaseUrl = $env:AGENTVIEW_RELEASE_BASE_URL,
     [int]$WaitForProcessId = 0,
     [string]$PreviousVersion = "",
@@ -14,7 +14,7 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version 2.0
 
 function Write-AgentviewMessage([string]$Message) {
-    Write-Host "agentview: $Message"
+    Write-Host "BetterAgentView: $Message"
 }
 
 function Copy-OrDownload([string]$Source, [string]$Destination) {
@@ -29,7 +29,7 @@ function Install-AgentviewAlias([string]$Source, [string]$Destination) {
     if (Test-Path -LiteralPath $Destination) {
         $reported = ""
         try { $reported = (& $Destination --version 2>$null | Out-String).Trim() } catch {}
-        if ($reported -notmatch '^agentview [0-9]+\.[0-9]+\.[0-9]+$') {
+        if ($reported -notmatch '^(agentview|betteragentview) [0-9]+\.[0-9]+\.[0-9]+$') {
             Write-AgentviewMessage "left unrelated existing command in place: $Destination"
             return
         }
@@ -104,11 +104,12 @@ try {
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
     Copy-Item -LiteralPath $binary -Destination $staged -Force
     $reported = (& $staged --version | Out-String).Trim()
-    if ($reported -ne "agentview $resolvedVersion") {
+    if ($reported -ne "agentview $resolvedVersion" -and $reported -ne "betteragentview $resolvedVersion") {
         throw "downloaded binary reported an unexpected version: $reported"
     }
     Move-Item -LiteralPath $staged -Destination (Join-Path $InstallDir "agentview.exe") -Force
     $canonical = Join-Path $InstallDir "agentview.exe"
+    Install-AgentviewAlias $canonical (Join-Path $InstallDir "betteragentview.exe")
     Install-AgentviewAlias $canonical (Join-Path $InstallDir "av.exe")
 
     if (-not $SkipPathUpdate) {
@@ -119,9 +120,9 @@ try {
         }
         if (($env:Path -split ';') -notcontains $InstallDir) { $env:Path = "$InstallDir;$env:Path" }
     }
-    Write-AgentviewMessage "installed agentview $resolvedVersion to $InstallDir\agentview.exe"
+    Write-AgentviewMessage "installed BetterAgentView $resolvedVersion to $InstallDir\betteragentview.exe"
     Write-AgentviewMessage "installed shorthand: av"
-    Write-AgentviewMessage "open a new terminal, then run: agentview (or av)"
+    Write-AgentviewMessage "open a new terminal, then run: betteragentview (or av)"
     if ($PreviousVersion) {
         if ($PreviousVersion -eq $resolvedVersion) {
             Write-AgentviewMessage "agentview is already up to date at $resolvedVersion"

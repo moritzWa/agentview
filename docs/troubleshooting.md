@@ -1,15 +1,15 @@
 # Troubleshooting and recovery
 
-Start with read-only evidence. agentview deliberately refuses recovery
+Start with read-only evidence. betteragentview deliberately refuses recovery
 that could adopt or signal the wrong provider process or container.
 
 ```console
-agentview --version
-agentview doctor
-agentview --json --all
+betteragentview --version
+betteragentview doctor
+betteragentview --json --all
 ```
 
-If the installed agentview itself is stale, `av update` (or `av upgrade`)
+If the installed betteragentview itself is stale, `av update` (or `av upgrade`)
 downloads and verifies the latest published release.
 
 Add the provider's `--no-host-*` flag to isolate one host adapter, and
@@ -21,41 +21,41 @@ contain private paths, task text, or authentication metadata.
 ## The dashboard says a TTY is required
 
 The interactive dashboard requires both stdin and stdout to be terminals. Use
-`agentview --json` in a pipe, CI job, editor task, or redirected command.
+`betteragentview --json` in a pipe, CI job, editor task, or redirected command.
 For interactive use, run it directly in a terminal or allocate a TTY with the
 relevant SSH/container option.
 
 ## One provider is unavailable
 
 `doctor` reports missing host provider executables as warnings because a
-single-provider or Docker-only setup is valid. agentview searches `PATH`
+single-provider or Docker-only setup is valid. betteragentview searches `PATH`
 and conventional user installs such as `~/.npm-global/bin/codex` and
 `~/.opencode/bin/opencode`; confirm that the resolved command's `--version`
 works. If the executable has another nonstandard location, pass its `--*-bin`
 option explicitly.
 
 To install a missing harness without a source checkout or Cargo, use
-`agentview setup HARNESS`. agentview names the official source and asks before it
+`betteragentview setup HARNESS`. betteragentview names the official source and asks before it
 downloads or installs anything; `--yes` is required in non-interactive use.
 Restart the dashboard afterward so Tab's harness picker is rebuilt.
 
 Use a temporary adapter exclusion to regain the dashboard while investigating:
 
 ```console
-agentview --no-host-codex
-agentview --no-host-claude
-agentview --no-host-pi
-agentview --no-host-opencode
+betteragentview --no-host-codex
+betteragentview --no-host-claude
+betteragentview --no-host-pi
+betteragentview --no-host-opencode
 ```
 
 An explicitly selected Docker container is stricter: it must exist and already
-be running. agentview will not start it during discovery. Check it with
+be running. betteragentview will not start it during discovery. Check it with
 ordinary read-only Docker inspection, or remove the `--docker-container`
 option.
 
 ## Completed sessions or a large dashboard are sluggish
 
-Plain `agentview` shows completed agentview-managed sessions by default. The
+Plain `betteragentview` shows completed agentview-managed sessions by default. The
 roughly 70,000 rows reported by an earlier build were provider-wide OpenCode
 history, not agentview-created work. That global store is no longer queried by
 default.
@@ -100,7 +100,7 @@ For exact agentview-owned completed Codex threads, preview bounded provider-nati
 archiving before changing anything:
 
 ```console
-agentview sessions archive --older-than-days 30 --limit 100
+betteragentview sessions archive --older-than-days 30 --limit 100
 ```
 
 Review every candidate, then repeat with `--yes` if the scope is correct.
@@ -111,40 +111,40 @@ use that provider's documented native maintenance interface.
 ## I did not create a row and cannot delete it
 
 External provider history is excluded by default. If an unexpected row still
-appears without `--include-external`, it must correspond to an agentview ownership
+appears without `--include-external`, it must correspond to an betteragentview ownership
 record; report the normalized ID and provider without deleting registry files.
 If an idle row was shown with `--include-external`, select it and press `ctrl+x`
-twice to remove it reversibly from agentview's view. The same works for an active row
+twice to remove it reversibly from betteragentview's view. The same works for an active row
 without stop authority; provider history and the live process are retained.
 
 For a scriptable equivalent, copy the exact normalized ID from Peek or
-`agentview --json --include-external --all`:
+`betteragentview --json --include-external --all`:
 
 ```console
-agentview sessions hide 'PROVIDER:RUNTIME:EXACT_ID'
-agentview sessions hidden
-agentview sessions unhide 'PROVIDER:RUNTIME:EXACT_ID'
+betteragentview sessions hide 'PROVIDER:RUNTIME:EXACT_ID'
+betteragentview sessions hidden
+betteragentview sessions unhide 'PROVIDER:RUNTIME:EXACT_ID'
 ```
 
 Unhiding does not recreate anything; the row returns only when the provider
 still reports it. Use provider-native delete/archive only when you actually
-intend to mutate provider history. Do not remove a JSONL file or edit an agentview
+intend to mutate provider history. Do not remove a JSONL file or edit an betteragentview
 ownership registry to make an old row disappear.
 
 ## Pi says `No session found matching ...`
 
 Pi's default history store is recursive: a session file can live in a
 per-workspace child directory, while `pi --session` searches only the exact
-`--session-dir` it receives. agentview resolves the UUID to the JSONL file
+`--session-dir` it receives. betteragentview resolves the UUID to the JSONL file
 and passes that file's parent directory. Upgrade and retry. If it persists,
-confirm `agentview --json --include-external --all` reports the exact UUID and that the JSONL
+confirm `betteragentview --json --include-external --all` reports the exact UUID and that the JSONL
 file still exists under the configured `--pi-session-dir`; do not move or edit
 provider history as a recovery step.
 
 ## Antigravity reports a missing workspace
 
 Antigravity's documented cache can retain the last conversation for a deleted
-workspace. agentview suppresses those stale entries during discovery and
+workspace. betteragentview suppresses those stale entries during discovery and
 refuses a stale injected row with `the cached Antigravity workspace no longer
 exists` before spawning `agy`. It does not rewrite or delete Antigravity's
 cache. Reopen the conversation from an existing workspace through
@@ -169,7 +169,7 @@ leader shortcut.
 Older builds handed the terminal directly to the provider, so Pi/OpenCode Left
 did nothing and Claude consumed it for its own agent view. `ctrl+c` in that
 mode could terminate the provider frontend. Use the double-arrow hint or a
-Shift+Arrow for the agentview return path. If the dashboard itself exits, agentview cleans up retained frontend
+Shift+Arrow for the betteragentview return path. If the dashboard itself exits, betteragentview cleans up retained frontend
 processes but does not target separately supervised provider backends.
 
 ## Slash opens the wrong mode or harness/model selection is unclear
@@ -191,13 +191,13 @@ arrows/Tab/Page Up/Page Down, then Enter; Escape preserves the prior model and
 draft. `/model NAME` remains the escape hatch for an exact valid custom
 identifier that the catalog does not show.
 
-If the picker reports an authentication error, press Enter or `l`. agentview suspends
+If the picker reports an authentication error, press Enter or `l`. betteragentview suspends
 the dashboard, runs that provider's native login/setup UI in its own private
 terminal, restores the dashboard, and reloads the exact account catalog. Left
 backgrounds the login as a visible Terminal row; Enter/Right resumes that
 exact screen rather than attaching to the last agent. `/login` starts the same
 handoff explicitly, while `/setup HARNESS` also checks installation and can run
-the confirmed official installer. agentview never asks you to paste a token into its
+the confirmed official installer. betteragentview never asks you to paste a token into its
 UI. Pi and Oh My Pi setup use their no-session TUIs; choose `/login` there.
 Antigravity uses its first-run browser login. Grok, Kilo Code, and OpenHands use
 `grok login`, `kilo auth login`, and `openhands login` respectively.
@@ -206,7 +206,7 @@ The same picker now opens automatically when a direct Cursor or Copilot launch
 fails authentication. The task draft remains intact; Enter no longer acts on
 the dashboard row behind the error. An authenticated Cursor account can still
 advertise zero models, and an authenticated `gh` account can still lack
-Copilot entitlement—those are provider/account results, not credentials agentview
+Copilot entitlement—those are provider/account results, not credentials betteragentview
 can manufacture.
 
 For deeper diagnosis, run the provider surface directly in the same shell:
@@ -221,9 +221,9 @@ credentials, region, or provider configuration does not authorize it.
 If Antigravity previously opened and immediately printed `Agent execution
 terminated due to error`, inspect only its redacted provider error. On the
 reporting account, Antigravity 1.1.17 logged `neither PlanModel nor
-RequestedModel specified`. Current agentview refuses to start Antigravity without an
+RequestedModel specified`. Current betteragentview refuses to start Antigravity without an
 exact model. On the same host, Antigravity 1.1.19's own `agy models` timed out
-and its native `/model` showed no available models. agentview cannot manufacture an
+and its native `/model` showed no available models. betteragentview cannot manufacture an
 account catalog: press Enter/`l` for native setup and Ctrl+R to retry. It does
 not promote model-search text to an unverified Antigravity ID, guess a provider
 model, or bypass the provider's sandbox/permissions.
@@ -237,14 +237,14 @@ catalog after an account change, run `/login` for Antigravity or remove
 ## A newly launched task does not appear
 
 Managed task submission runs in a worker so the composer, arrows, and Escape
-remain responsive. When launch completes, agentview refreshes immediately
+remain responsive. When launch completes, betteragentview refreshes immediately
 and selects the exact new provider/session ID. Providers that persist
 asynchronously are retried every 250 ms for up to five seconds. If the footer
 eventually asks for a manual refresh, press `ctrl+l`, then compare the relevant
-provider in `agentview --json --all`.
+provider in `betteragentview --json --all`.
 
 Antigravity is a special case: its documented last-conversation cache is
-written only when the native UI exits. agentview therefore shows a provisional
+written only when the native UI exits. betteragentview therefore shows a provisional
 managed row immediately, correlates the exact new local transcript in the
 background, and replaces the provisional ID without waiting for exit. A task
 that returned with Shift+Left should be visible and stoppable at once.
@@ -259,7 +259,7 @@ to the exact new row. Background-provider
 launches animate independently of the worker, so arrows, typing, and Escape do
 not wait on startup.
 
-agentview also handles two fast-completion edge cases: agentview-owned Codex
+betteragentview also handles two fast-completion edge cases: agentview-owned Codex
 threads stay visible even when Codex reports their source as `cli`, and a task
 that is already completed at the first refresh automatically reveals completed
 sessions and selects the exact returned ID. Claude's bounded bootstrap has a
@@ -267,7 +267,7 @@ sessions and selects the exact returned ID. Claude's bounded bootstrap has a
 runs off the input thread, so a cold start animates without freezing arrows or
 typing.
 
-If Codex is missing only inside agentview, confirm `agentview doctor`
+If Codex is missing only inside betteragentview, confirm `betteragentview doctor`
 and `codex --version` succeed in the same shell. A nonstandard executable can be
 selected with `--codex-bin /absolute/path/to/codex`. Do the equivalent with
 `--pi-bin` or `--opencode-bin`; do not assume a desktop-launched process has the
@@ -276,7 +276,7 @@ same `PATH` as an interactive shell.
 ## A Pi summary or age stays on the first message
 
 Older builds let a stopped supervisor preview
-overwrite the newer durable Pi JSONL transcript on every refresh. agentview now keeps
+overwrite the newer durable Pi JSONL transcript on every refresh. betteragentview now keeps
 managed ownership/lifecycle from the supervisor while taking newer summary and
 modification time from Pi's own session file. Relative ages are also redrawn on
 refresh even when no other row field changes. A read-only check against the
@@ -303,7 +303,7 @@ Re-running with elevated privileges does not legitimately add authority and is
 not a recovery method.
 
 For a Codex provider request, open peek with `space` and read the exact request.
-Only one agentview process holds the controller lease. A second dashboard
+Only one betteragentview process holds the controller lease. A second dashboard
 can observe the request but will not advertise `y`, `n`, or structured-answer
 authority. Close the controlling dashboard and refresh the other if you intend
 to transfer control. File changes without a correlated diff, expanded
@@ -330,13 +330,13 @@ user ownership, and file modes before reuse. Linux reads those facts from
   next managed startup uses a new unique socket and leaves stale socket files
   alone.
 - A verified live process with an unavailable socket is reported instead of
-  being replaced. There is currently no `agentview` supervisor stop/status
+  being replaced. There is currently no `betteragentview` supervisor stop/status
   command.
 - Never kill the numeric PID merely because it appears in `supervisor.json`;
   PIDs can be reused. Do not unlink a socket while a verified server may be
   live.
 
-If normal restart does not recover, close all agentview dashboards,
+If normal restart does not recover, close all betteragentview dashboards,
 preserve a private copy of the entire `codex-supervisor` directory for
 diagnosis, and report the redacted error plus binary/provider versions. Manual
 process cleanup is intentionally outside the supported pre-alpha workflow.
@@ -344,10 +344,10 @@ process cleanup is intentionally outside the supported pre-alpha workflow.
 ### An owned Codex delete takes longer than expected
 
 Codex 0.147 can withhold `thread/delete` responses for a thread still loaded by
-its owning App Server. agentview first archives the exact idle thread. It never calls
+its owning App Server. betteragentview first archives the exact idle thread. It never calls
 a timeout “deleted”: success requires the normal response or the exact
 `thread/deleted` notification. If the owner wedges and every agentview-owned turn is
-idle on Linux, agentview can stop the exact listener through a revalidated pidfd, finish the
+idle on Linux, betteragentview can stop the exact listener through a revalidated pidfd, finish the
 same ID through an isolated App Server, restart the durable owner, and restore
 the remaining ownership records. A private recovery lock makes other dashboard
 connections wait across that replacement. This recovery can take tens of
@@ -355,7 +355,7 @@ seconds. macOS refuses this exceptional restart because it does not expose a
 pidfd-equivalent stable signaling handle; ordinary launch, reconnect, reply,
 interrupt, archive, and successful deletion remain supported.
 
-agentview refuses that restart while any owned Codex turn is active. Finish or
+betteragentview refuses that restart while any owned Codex turn is active. Finish or
 interrupt the named work and retry. Do not remove the supervisor record or kill
 an App Server by a copied PID; doing so discards the evidence used to keep the
 recovery scoped.
@@ -372,7 +372,7 @@ or `~/.local/state/agentview/pi/`. Inspect `supervisor.log` for daemon
 startup/transport errors and `pi-rpc.log` for provider stderr. These files may
 contain private paths or provider messages; redact them before sharing.
 
-The saved daemon PID is not authority by itself. agentview requires the
+The saved daemon PID is not authority by itself. betteragentview requires the
 exact Linux start token, command line, private socket location, owner, and file
 modes. A dead daemon is ignored and a later managed launch can create a new
 one. A verified live daemon whose socket is unavailable is reported and not
@@ -391,7 +391,7 @@ depends on Linux `/proc` identity.
 Ctrl+X never waits for Pi's model-facing abort response. It asks the verified
 supervisor to close only the selected RPC stdin and returns immediately. After
 refresh observes process exit, the row advertises Delete and a second Ctrl+X
-removes only the exact JSONL file under agentview's private managed session root.
+removes only the exact JSONL file under betteragentview's private managed session root.
 The exact header ID and canonical root are checked before removal. An older
 supervisor without per-session stop can be shut down only when it owns no other
 active Pi work; completed histories remain available afterward.
@@ -404,7 +404,7 @@ any owned work is active, it refuses the upgrade and names up to three active
 sessions; finish or interrupt those exact sessions, then retry. It never kills
 an older daemon or abandons live Pi work just to apply a model selection.
 
-agentview accepts the common upgrade case where an older verified record
+betteragentview accepts the common upgrade case where an older verified record
 stores `pi` and the current launcher resolves that same file to an absolute
 path such as `~/.local/bin/pi`. Both names must resolve to the same canonical
 executable. The client still refuses a different file, and it does not restart
@@ -431,12 +431,12 @@ the whole private directory when reporting an identity or listener mismatch.
 
 Only sessions created through that authenticated server receive inspect,
 reply, and active-work interrupt controls. Existing CLI history remains
-inspect/native-open only. agentview opens a managed row by attaching the
+inspect/native-open only. betteragentview opens a managed row by attaching the
 native TUI to that exact authenticated loopback server and session; the secret
 is child-local environment, never an argument. The native return gesture goes
-back to agentview without stopping the server, and Enter/Right resumes the retained frontend.
+back to betteragentview without stopping the server, and Enter/Right resumes the retained frontend.
 
-agentview also accepts a live record written as bare `opencode` when the
+betteragentview also accepts a live record written as bare `opencode` when the
 current configured path (for example `~/.opencode/bin/opencode`) and the
 verified server's `/proc/PID/exe` resolve to the same canonical file. A
 different executable remains a hard refusal. Inline permission or
@@ -446,7 +446,7 @@ stays on the history/native-open path.
 ## Cursor session is missing or refuses control
 
 Cursor does not expose a machine-readable global session list. On Linux, Open
-Agent View lists only runs it launched and recorded under:
+BetterAgentView lists only runs it launched and recorded under:
 
 ```text
 $XDG_STATE_HOME/agentview/cursor/
@@ -462,12 +462,12 @@ not edit `sessions.json`, signal its recorded numeric PID manually, or delete
 the bounded logs to force a state change; preserve the directory and report a
 redacted error if exact identity verification refuses control.
 
-Before `create-chat`, agentview runs Cursor's read-only model catalog with
+Before `create-chat`, betteragentview runs Cursor's read-only model catalog with
 a four-second bound. An account reporting no models gets an immediate
 `cursor-agent login` instruction instead of waiting for the old 15-second
 create timeout. A successful catalog is still followed by a bounded
 `create-chat`. Normal launches never add Cursor's permission-bypass flags;
-starting agentview explicitly with `--yolo` records the mode and passes Cursor's
+starting betteragentview explicitly with `--yolo` records the mode and passes Cursor's
 documented `--force` flag to the subsequent native turn on Linux.
 
 ## Copilot session is visible but read-only
@@ -475,7 +475,7 @@ documented `--force` flag to the subsequent native turn on Linux.
 Persisted Copilot rows come from ACP `session/list` on a discovery connection.
 Provider-wide rows requested with `--include-external` are observe/native-open
 only and do not inherit control from a previous dashboard. Exact sessions
-created by agentview are retained in `copilot/sessions.json`; on refresh a
+created by betteragentview are retained in `copilot/sessions.json`; on refresh a
 short-lived ACP connection replays their persisted message history and exact
 `updatedAt` value without sending a prompt. Only a row loaded on the current
 process's retained ACP control connection can be prompted, cancelled, or given
@@ -491,10 +491,10 @@ credentials.
 If model discovery reports `Authentication required`, press Enter/`l` in the
 picker or run `copilot login`. Copilot also documents `gh auth status` and its own GitHub CLI
 credential fallback, but an authenticated GitHub account can still lack
-Copilot entitlement or organization policy access. agentview leaves authentication
+Copilot entitlement or organization policy access. betteragentview leaves authentication
 to Copilot and never reads or persists its token. A failed launch now reports
 these actions without dumping the ACP response payload. Current Copilot builds
-may omit optional ACP `session/close`; agentview now negotiates that capability and,
+may omit optional ACP `session/close`; betteragentview now negotiates that capability and,
 for an idle owned row, safely releases the retained ACP process before native
 resume. It never drops a connection that still has another active task.
 
@@ -511,15 +511,15 @@ ls -l -- /absolute/state/directory/record-name.json
 ```
 
 Do not recursively change ownership or permissions on a broad directory. If
-the exact state directory is yours and was created for agentview, correct
+the exact state directory is yours and was created for betteragentview, correct
 that exact directory/file or select a new empty state root via
 `XDG_STATE_HOME`. Retain the old state until you understand which owned
 sessions or containers it identifies.
 
 ## Managed Docker reports unavailable or mismatched
 
-Use `agentview docker list` and
-`agentview docker status NAME_OR_ID` first. A missing container, modified
+Use `betteragentview docker list` and
+`betteragentview docker status NAME_OR_ID` first. A missing container, modified
 ownership label, changed instance label, registry mismatch, or Docker failure
 is surfaced as unavailable/refused. The tool does not adopt the container or
 silently rewrite its owner record.
@@ -530,14 +530,14 @@ create a new container; leave the questionable registry untouched for review.
 There is no supported stale-record pruning/adoption command yet.
 
 If creation says Docker created a stopped container but saving the owner record
-failed, the error identifies the immutable orphan. It has no agentview
+failed, the error identifies the immutable orphan. It has no betteragentview
 lifecycle authority. Inspect that exact full ID and either retain it for
 forensics or remove the verified stopped container with ordinary Docker. Never
 copy labels or fabricate an owner entry to adopt it.
 
 Removal retains the host workspace and state-home directories. Conversely,
 manually removing those directories while a container exists can break the
-agent inside it; agentview does not back them up.
+agent inside it; betteragentview does not back them up.
 
 ## The terminal looks corrupted after exit
 
@@ -561,7 +561,7 @@ Install a new checkout over the executable only after its locked tests pass.
 Do not discard the state directory during an upgrade: it prevents a future
 binary from silently adopting unrelated sessions or containers. Uninstalling
 the binary intentionally leaves all provider sessions, host bind mounts, and
-agentview authority records in place. There is no supported all-state
+betteragentview authority records in place. There is no supported all-state
 purge command in the pre-alpha.
 
 For implementation-level safety rationale, see the

@@ -61,7 +61,7 @@ pub trait VoiceHost: Send + Sync {
     /// Sessions of the whole history matching the query, best first or newest
     /// first, and a note when the answer may be incomplete.
     fn search_history(&self, query: &HistoryQuery) -> Result<(Vec<HistoryHit>, Option<String>)>;
-    /// Stops what the session is doing and removes it from Agent View. Its
+    /// Stops what the session is doing and removes it from BetterAgentView. Its
     /// history stays and `search_history` still finds it.
     fn close(&self, id: &str) -> Result<String>;
     /// Sends the final message of a draft the developer started typing into the
@@ -1163,7 +1163,7 @@ pub(crate) mod fake {
         }
         fn close(&self, id: &str) -> Result<String> {
             self.record(format!("close {id}"))?;
-            Ok("stopped it and removed it from Agent View".into())
+            Ok("stopped it and removed it from BetterAgentView".into())
         }
         fn send(&self, id: &str, text: &str) -> Result<()> {
             self.record(format!("send {id} {text}"))

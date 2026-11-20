@@ -23,17 +23,17 @@ permission/question prompts through this bridge. Check `message_status` for
 delivery and completion; a queued receipt is not proof of execution.
 
 This is **separate from [built-in Voice Mode](voice.md)**, which runs OpenAI/Grok
-audio in Agent View. ChatGPT mobile voice uses ChatGPT's audio and MCP connection.
-It needs neither Agent View's voice API keys nor an open dashboard.
+audio in BetterAgentView. ChatGPT mobile voice uses ChatGPT's audio and MCP connection.
+It needs neither BetterAgentView's voice API keys nor an open dashboard.
 
 ## Pair the Mac
 
 ```console
-agentview --opencode-bin ~/.local/bin/opencode-dev bridge pair
-agentview bridge sync-once
-agentview bridge install
-agentview bridge status
-agentview bridge stop
+betteragentview --opencode-bin ~/.local/bin/opencode-dev bridge pair
+betteragentview bridge sync-once
+betteragentview bridge install
+betteragentview bridge status
+betteragentview bridge stop
 ```
 
 `pair` prints a Google approval URL. It does not open a browser or upload history.
@@ -120,7 +120,7 @@ The Mac must be awake and logged in to execute work. This bridge does not wake
 it. Revoke retired devices through `/revoke` with the connector token. Revocation
 does not delete cloud history. Encrypted database backups are a separate project.
 
-The backend's end-to-end harness runs real OpenCode and Agent View in the Cua
+The backend's end-to-end harness runs real OpenCode and BetterAgentView in the Cua
 macOS VM. It uses a deterministic local model and actual tool-output canaries.
 It checks Google/PKCE login, search, sends, duplicate admission, revert/unrevert,
 forks, dashboard-independent delivery and OAuth revocation.
