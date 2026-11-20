@@ -790,22 +790,10 @@ pub fn start_once(dir: &Path) -> Result<bool> {
         .as_str()
         .context("invalid start directory")?;
     let text = start["text"].as_str().context("invalid start prompt")?;
-    let home = std::env::var_os("HOME").context("HOME is not set");
-    let allowed = home
-        .as_ref()
-        .ok()
-        .and_then(|home| start::allowed_directory(Path::new(directory), Path::new(home)).ok());
-    let deny = if home.is_err() {
-        Some("server")
-    } else if allowed.is_none() {
-        Some(
-            start::allowed_directory(Path::new(directory), Path::new(home.as_ref().unwrap()))
-                .unwrap_err(),
-        )
-    } else {
-        None
-    };
-    if let Some(reason) = deny {
+    let allowed = std::env::var_os("HOME")
+        .ok_or("server")
+        .and_then(|home| start::allowed_directory(Path::new(directory), Path::new(&home)));
+    if let Err(reason) = &allowed {
         ack_start(
             &config.endpoint,
             &credential,
@@ -816,7 +804,7 @@ pub fn start_once(dir: &Path) -> Result<bool> {
         )?;
         return Ok(true);
     }
-    let canonical = allowed.context("start directory")?;
+    let canonical = allowed.map_err(|reason| anyhow::anyhow!("start directory: {reason}"))?;
     match start::claim(&journal.db, operation, &start.to_string())? {
         start::Claim::Uncertain => {
             ack_start(

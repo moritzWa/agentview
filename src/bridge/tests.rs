@@ -714,7 +714,7 @@ fn health_treats_a_long_tool_as_running_and_silence_as_unknown() {
 fn progress_reads_an_open_tool_without_copying_message_text() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("source.sqlite");
-    let db = Connection::open(&path).unwrap();
+    let db = Connection::open(path).unwrap();
     db.execute_batch(
         "CREATE TABLE session_v2(id TEXT, parent_id TEXT);
          CREATE TABLE session_message(id TEXT, session_id TEXT, type TEXT, seq INTEGER, time_created INTEGER, time_updated INTEGER, data TEXT);
@@ -749,13 +749,16 @@ fn a_start_directory_must_be_a_real_folder_under_home() {
         allowed_directory(&ssh, home.path()).unwrap_err(),
         "not_allowed"
     );
-    let outside = tempdir().unwrap();
-    let link = home.path().join("Code/escape");
-    std::os::unix::fs::symlink(outside.path(), &link).unwrap();
-    assert_eq!(
-        allowed_directory(&link, home.path()).unwrap_err(),
-        "not_allowed"
-    );
+    #[cfg(unix)]
+    {
+        let outside = tempdir().unwrap();
+        let link = home.path().join("Code/escape");
+        std::os::unix::fs::symlink(outside.path(), &link).unwrap();
+        assert_eq!(
+            allowed_directory(&link, home.path()).unwrap_err(),
+            "not_allowed"
+        );
+    }
     assert_eq!(
         allowed_directory(std::path::Path::new("relative"), home.path()).unwrap_err(),
         "not_a_directory"
