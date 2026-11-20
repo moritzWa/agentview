@@ -1,0 +1,56 @@
+[
+  {
+    "at": 0.15,
+    "text": "All your coding agents. One terminal. One voice.",
+    "file": "00.mp3",
+    "voice": "JBFqnCBsd6RMkjVDRZzb"
+  },
+  {
+    "at": 3.25,
+    "text": "Which sessions need my attention?",
+    "file": "01.mp3",
+    "voice": "nPczCjzI2devNBz1zQrb"
+  },
+  {
+    "at": 5.25,
+    "text": "Your checkout agent asked whether coupons belong in the cart or at checkout.",
+    "file": "02.mp3",
+    "voice": "JBFqnCBsd6RMkjVDRZzb"
+  },
+  {
+    "at": 10.1,
+    "text": "Tell it checkout.",
+    "file": "03.mp3",
+    "voice": "nPczCjzI2devNBz1zQrb"
+  },
+  {
+    "at": 11.35,
+    "text": "Sent.",
+    "file": "04.mp3",
+    "voice": "JBFqnCBsd6RMkjVDRZzb"
+  },
+  {
+    "at": 12.6,
+    "text": "Take your agents with you.",
+    "file": "05.mp3",
+    "voice": "JBFqnCBsd6RMkjVDRZzb"
+  },
+  {
+    "at": 17.35,
+    "text": "Keep work in view. Everything else keeps running.",
+    "file": "06.mp3",
+    "voice": "JBFqnCBsd6RMkjVDRZzb"
+  },
+  {
+    "at": 20.6,
+    "text": "Schedule the follow-up. Agent bouncer queues the heavy jobs.",
+    "file": "07.mp3",
+    "voice": "JBFqnCBsd6RMkjVDRZzb"
+  },
+  {
+    "at": 26.0,
+    "text": "Open source. Built in Rust.",
+    "file": "08.mp3",
+    "voice": "JBFqnCBsd6RMkjVDRZzb"
+  }
+]

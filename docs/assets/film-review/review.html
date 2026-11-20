@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Agent View · 30-second film review</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f7f8fc;color:#10121b;font:17px/1.5 system-ui,sans-serif}main{max-width:1240px;margin:44px auto;padding:0 28px}header{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:20px}h1{font-size:30px;letter-spacing:-1px;margin:0}small{color:#626879}video{width:100%;display:block;border-radius:16px;background:#fff;box-shadow:0 12px 48px #17274812}section{display:grid;grid-template-columns:1fr 1fr;gap:32px;margin:24px 0}h2{font-size:18px;margin:0 0 8px}p{margin:6px 0;color:#626879}a{color:#1e66f5}button{border:1px solid #d0dcfa;background:#edf3ff;color:#1e66f5;border-radius:8px;padding:10px 14px;cursor:pointer;font:inherit}img{width:100%;border-radius:12px}nav{display:flex;gap:8px;flex-wrap:wrap;margin:16px 0}footer{font-size:14px;color:#626879;margin:24px 0}@media(max-width:700px){section{grid-template-columns:1fr}header{display:block}}
+</style>
+<main>
+<header><h1>All your coding agents. One terminal. One voice.</h1><small>30 seconds · Review draft</small></header>
+<video controls muted playsinline preload="metadata" poster="frame-00.0.png">
+<source src="agentview-30s-review.mp4" type="video/mp4">
+</video>
+<nav aria-label="Film chapters">
+<button data-time="0">Opening</button><button data-time="3">Desktop voice</button><button data-time="12">On the go</button><button data-time="17">Work view</button><button data-time="20.5">Continuation</button><button data-time="25">Bento</button>
+</nav>
+<section><div><h2>Watch on your terms</h2><p>No autoplay. Sound starts muted. Use the player’s volume control to hear the ElevenLabs narration.</p><p><a href="agentview-30s-review.mp4" download>Download the film</a> · <a href="contact-sheet.jpg">Inspect the frames</a></p></div>
+<div><h2>What this draft proves</h2><p>The overview and work-only view are actual Agent View PTY renders with isolated synthetic sessions. Work filtering was exercised in the app. The checkout row moves into Working through a staged fixture update.</p><p>The voice exchange, phone and continuation panels are labeled illustrations. This is not footage of a live call, a real message send, or a resumed native checkout session. No phone create/stop/approval actions are shown.</p></div></section>
+<img src="contact-sheet.jpg" alt="Nine frames showing the opening, voice exchange, phone illustration, work view, queue and final bento">
+<footer>Public website and README demo assets are unchanged. No music or third-party sound effects. Provider artwork comes from the existing site assets.</footer>
+</main>
+<script type="application/json" id="film-captions">[{"at": 0.15, "text": "All your coding agents. One terminal. One voice.", "file": "00.mp3", "voice": "JBFqnCBsd6RMkjVDRZzb", "duration": 2.9257291666666667, "speed": 1, "end": 3.0757291666666666}, {"at": 3.25, "text": "Which sessions need my attention?", "file": "01.mp3", "voice": "nPczCjzI2devNBz1zQrb", "duration": 1.8576041666666667, "speed": 1, "end": 5.1076041666666665}, {"at": 5.25, "text": "Your checkout agent asked whether coupons belong in the cart or at checkout.", "file": "02.mp3", "voice": "JBFqnCBsd6RMkjVDRZzb", "duration": 4.133166666666667, "speed": 1, "end": 9.383166666666668}, {"at": 10.1, "text": "Tell it checkout.", "file": "03.mp3", "voice": "nPczCjzI2devNBz1zQrb", "duration": 1.1148125, "speed": 1.0459441441441446, "end": 11.214812499999999}, {"at": 11.35, "text": "Sent.", "file": "04.mp3", "voice": "JBFqnCBsd6RMkjVDRZzb", "duration": 0.6037291666666667, "speed": 1, "end": 11.953729166666665}, {"at": 12.6, "text": "Take your agents with you.", "file": "05.mp3", "voice": "JBFqnCBsd6RMkjVDRZzb", "duration": 1.4860833333333334, "speed": 1, "end": 14.086083333333333}, {"at": 17.35, "text": "Keep work in view. Everything else keeps running.", "file": "06.mp3", "voice": "JBFqnCBsd6RMkjVDRZzb", "duration": 2.6006458333333335, "speed": 1, "end": 19.950645833333336}, {"at": 20.6, "text": "Schedule the follow-up. Agent bouncer queues the heavy jobs.", "file": "07.mp3", "voice": "JBFqnCBsd6RMkjVDRZzb", "duration": 3.6687708333333333, "speed": 1, "end": 24.268770833333335}, {"at": 26.0, "text": "Open source. Built in Rust.", "file": "08.mp3", "voice": "JBFqnCBsd6RMkjVDRZzb", "duration": 1.9040416666666666, "speed": 1, "end": 27.904041666666668}]</script>
+<script>
+const video=document.querySelector('video');
+const captions=JSON.parse(document.getElementById('film-captions').textContent);
+const track=video.addTextTrack('captions','English','en');
+captions.forEach(cue=>track.addCue(new VTTCue(cue.at,cue.end,cue.text)));
+track.mode='showing';
+document.querySelectorAll('[data-time]').forEach(button=>button.onclick=()=>{video.currentTime=Number(button.dataset.time);});
+</script>
+</html>

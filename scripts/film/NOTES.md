@@ -1,0 +1,179 @@
+# Agent View film
+
+The approved runtime is45 seconds at native 3840 × 2160,30fps. SVG
+typography and graphics are rasterized directly at 4K. Actual terminal-cell
+captures are 4848 pixels wide (3120 tall for busy views, 2028 for compact views),
+with fresh 60-pixel Menlo glyphs, not enlarged images
+from the first draft. The final bento holds for five seconds.
+
+The latest approved edit is software-first: no presentation scene headings,
+recurring editorial top logo or faux window chrome. `snappy45.py` applies
+pitch-preserving FFmpeg atempo1.5 once to every spoken clip, then writes final
+WAVs and aligned word timebases. Waveforms analyze those final WAVs. Native
+ChatGPT video stays at its recorded speed. Separate27–34s scheduling and34–40s
+agent-bouncer queue beats replace the combined explanation. Scheduling here
+means the shown OpenCode integration, not a universal harness capability.
+The native-session path line is cropped in PIL past the last glyph row and shown at that crop’s exact aspect, so the SVG box cannot slice it. Shortcut pills are one glass overlay, opacity 0.32, with the keycaps and label on the same center. Scheduled stays enlarged through its explanation; the resumed state follows only after that hold.
+
+ChatGPT around 18–20s was measured in the source movies, not assumed to be a RAM drop. Both 60fps captures change on only about ten paints per half-minute; the selected window’s median frame delta is zero because the app paints a finished message and then holds. A new capture of that settled chat would not be smoother, so the real read/send excerpt is unchanged and is not retimed.
+
+The exact8 solid-black bottom rows of ChatGPT capture are removed in addition
+to its shadow/green-edge trim; main and bento share those same sources.
+
+## Reproduce
+
+Run from the checkout. Use a current Agent View binary with `view work` support.
+The scripts need macOS Menlo and Arial, `uv`, FFmpeg and FFprobe. Dry voice clips
+and the privately obtained artist stream must already be in the working audio
+folder. New voice takes use `ELEVENLABS_API_KEY` or `ELEVENLABS_OP_ITEM`; secrets
+are held in memory only. Cached clips need no API request. The approved measured
+timeline and aligned takes live in `proposal45/`; `prepare45.py` conforms these
+cached inputs and native recording excerpts without new account interactions.
+
+```sh
+python3 ~/.claude/scripts/heavy-job.py --wait -- uv run --with pillow --with pyte --with resvg-py --with numpy scripts/film/build.py --output "$HOME/Movies/agentview-film-draft"
+```
+
+`render.py --stills` creates 4K checkpoints and a contact sheet without encoding
+video or playing audio. No test plays audio or opens a GUI on the host.
+
+## What is real
+
+- `capture.py` launches Agent View in a headless PTY with isolated HOME and XDG
+  paths. It renders the terminal cells with pyte and Menlo. This is actual TUI
+  output, not hand-drawn app controls. It does not probe private sessions.
+- Work view is toggled using the app's `view work` command. Assertions verify
+  that its title appears and the synthetic personal session disappears.
+- Scheduling and Heavy Jobs are the actual integrated app widgets. A private
+  read-only `agent-bouncer status` stub supplies synthetic jobs; no real queue
+  is modified. Ctrl+Y expands the actual Scheduled section. A fixture update
+  stages its later Working state, with an explicit time-jump caption.
+- The built-in voice exchange and checkout state change are staged. They are
+  not a live call, real send or resumed native session.
+- A fresh Right-arrow/single-Left recording opens a dedicated synthetic native
+  OpenCode session and returns to Agent View. No fake successful open.
+- The ChatGPT desktop recording is actual Work Voice + AgentVoice read/send.
+  Prompts were typed inside active Voice; speech recognition is untested.
+  The initial microphone error was resolved by a temporary VM app TCC grant,
+  restored to its prior absent state after capture. Receiver-side message
+  metadata confirms the actual send. The dedicated tools-denied synthetic
+  session was deleted afterward. No pairing or account-auth settings changed.
+- Native ChatGPT was recaptured in a3000×1270 app window, with larger actual
+  Chromium UI rendering. The raw recording includes34px window shadow.
+  Source content is2996×1270 after shadow and4px left-edge removal, not native4K.
+  `native_hires.py` selects moving video, checks motion near movie28s, and never
+  substitutes screenshots or an editorial freeze. The earlier low-res source stays private.
+- Actual Command K starts the fixture Voice live/Ready indicator. It is captured
+  from the app, but is not a real microphone call. All shortcut overlays share one component.
+- The busy fixture has20 synthetic agents across6 work/personal directories.
+  All/work comparison preserves identical state. Ctrl+S actually changes
+  status/directory grouping, separately from scope. Supported usage account
+  keys are `claude`, `claude2`, `codex`; `claude1` is ignored by the parser.
+- All 18 coding harnesses come from `Provider::CODING_HARNESSES`. AgentVoice's
+  demonstrated read/search/send surface is for OpenCode sessions, not all 18.
+- Vector keycaps depict this user's configured global Cmd+Shift+B binding.
+  It is not advertised as an out-of-the-box app shortcut.
+
+## Music and visual references
+
+The opening uses a dense animated4×4 synthetic coding-terminal grid. Stable
+normalized IDs tie every pane title/provider/state to its captured session row.
+Each pane rectangle and text anchor moves into the exact measured cell bounds;
+matching captured row pixels complete the0.9s handoff, from1.4–2.3s. Arrow-key
+navigation is4–7s; Command K introduces built-in Voice at7–10s, before
+the10–15.5s editorial voice exchange. Native footage omits test
+setup instructions above the actual coupon question. After a genuine return,
+the edit cuts back to the busy20-session fixture instead of lingering on capture
+commands or the sparse dedicated-session setup.
+
+`waveform.py` precomputes RMS and31 FFT bands from each active speaker's dry
+clip at30fps. Cue offsets select the correct speaker; gaps return flat2-pixel
+bars. Music never drives these bars. `preview_waveform.py` writes a frame strip
+and numerical check from the real clips. Tests cover silence, relative level,
+speaker switches, offsets and determinism. This is voiceover visualization,
+not original microphone evidence. Recorded ChatGPT UI is never redrawn.
+
+The spoken intro names the problem and Agent View. Navigation says “Use the
+arrow keys to zoom into or zoom out of the session.” No double-tap claim or
+shortcut changes. Large vector keycaps flash at recorded input-phase boundaries.
+Actual ElevenLabs character timings reveal dialogue words at fixed positions,
+without reflow. YOU is purple, AGENT VIEW blue, both labeled. All spoken clips
+use the requested1.5x pitch-preserving playback, applied once. The final five
+seconds remain a readable music-only hold.
+
+Moritz selected Lorn's “TIMESINK” and reports personal permission from Marcos
+Ortega for a short demo excerpt. The official artist Bandcamp stream supplied
+the working source. `soundtrack.py` extracts only 0:00–0:30, ducks it under
+speech and normalizes the mix. The same30s excerpt loops continuously with
+an equal-power0.8s overlap at29.2s. There is no music gap. No extra part of the
+song is extracted. The separate `audio/music-excerpt.mp3` stem is
+replaceable. Neither the full song nor the separate stem is committed.
+
+The revised music-bearing master remains private pending creative/publication
+review. This user-reported permission is not a general redistribution license.
+
+The bento was studied from actual Apple slides, not generic web cards:
+
+- [WWDC24 macOS, iOS, iPadOS and Apple Intelligence summaries](https://thatvirtualboy.com/wwdc24-bentos)
+- [WWDC25 summaries](https://www.macstories.net/news/wwdc-2025-all-the-small-things-bento-box-version/)
+- [Primary Apple iPadOS26 design reference](https://www.apple.com/newsroom/2025/06/ipados-26-introduces-powerful-new-features-that-push-ipad-even-further/)
+- [Apple event slide collection](https://www.figma.com/community/file/1150817983915754582/all-apple-event-summary-slides-2019-2026)
+
+Unequal aligned tiles, focused screenshot crops and short labels carry the design.
+White/neutral tiles separate from a gray canvas; selective saturated teal/blue
+accents replace barely distinguishable pastels. The canonical
+`docs/assets/logo.svg` is embedded verbatim everywhere: original elongated hexagon,
+gray outlined rings and blue center, never white or re-spaced on a gradient.
+No Apple artwork is used in the film.
+
+## Review and site integration
+
+Moritz approved45 seconds with “45 is fine”. `propose45.py` retains the measured
+script and proof inputs in private `proposal45/`. `followups45.py` measures the
+approved revisions in `followup45/`. The active edit is
+`revision45.py`; it reuses the canonical layout helpers from the earlier edit.
+The inputs include measured narration,16 stable pane/session IDs, exact captured row
+destinations, grid/midpoint/list keyframes, explicit vector keycaps and fixed-line
+subtitle reveals. Voice generation/alignment stays beside the matching takes.
+
+The forced-alignment endpoint refused the key. Separate proposal takes use the
+supported ElevenLabs `with-timestamps` endpoint instead. Actual returned character
+timings drive their subtitles, never old recordings with guessed new timings.
+Human speech is purple and labeled YOU; Agent View is blue and labeled AGENT VIEW.
+Runtime approval is not public publishing approval. The music excerpt stays30s.
+
+`review.html` is the standalone, muted-by-default player. Chapter buttons seek
+without starting playback. No narrator captions or player subtitle tracks.
+Verification
+checks all1350 decoded frames, duration, narration timing and loudness. The active
+movie is `agentview-review.mp4`; the earlier30s movie is retained separately.
+Only human/agent dialogue cards retain word-timed text.
+
+The older checked-in first-draft package is not overwritten. Neither are `site/demo.mp4`, `site/demo.gif`,
+`site/demo-poster.png` and `docs/assets/demo.gif`. None is replaced or deployed.
+After review, the approved master can replace `site/demo.mp4`, with a new poster
+from its first frame. The existing site's muted autoplay player can consume it
+without a backend change. Keep narration opt-in and provide a caption track or
+the review player's controls when sound is offered.
+
+Stage the verified revision privately without touching those public files:
+
+```sh
+python3 scripts/film/package.py --output "$HOME/Movies/agentview-film-draft"
+```
+
+This writes ignored `target/film-review/`. The durable requested player remains
+`~/Movies/agentview-film-draft/review.html`, muted and without autoplay.
+
+Native Voice read/send is now evidenced independently from the staged opening
+exchange. The short movie shows an excerpt, not the full wall-clock tool wait.
+Creative review remains ongoing; microphone speech recognition is not verified.
+
+## Rename to BetterAgentView
+
+The closer and the one-list line were re-recorded; the end card, diagram, plugin
+caption and speaker badge say BetterAgentView. The recorded terminal header is
+swapped with `brand_header.py`, which replaces only the first terminal row of
+each raster with the same row rendered by `betteragentview` 0.3.0. A full
+recapture changes other cells, so it is not used. The 45s cut and timing are
+unchanged. Web copy: 1080p H.264 (`-crf 20`), poster at 5.7s.

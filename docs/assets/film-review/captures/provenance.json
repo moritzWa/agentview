@@ -1,0 +1,12 @@
+{
+  "source_reference": "5fa4b06a034ba72f8845737b7a2c9b381939b10a",
+  "binary": "/Users/m/.local/share/opencode-v2/bin/native/agentview",
+  "binary_sha256": "84a046f63da3cc16922d31155e2c28e86b0717717133267476cd0fe70c22a2fa",
+  "capture": "actual Agent View PTY, rasterized via pyte",
+  "data": "isolated synthetic fixture; no live calls or sends",
+  "checks": [
+    "work-only heading visible",
+    "personal session hidden",
+    "staged checkout row moved from Needs input to Working"
+  ]
+}

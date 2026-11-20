@@ -1,0 +1,223 @@
+#!/usr/bin/env python3
+"""uv run --with pillow --with resvg-py --with numpy scripts/film/test_film.py"""
+
+import tempfile
+import unittest
+from html.parser import HTMLParser
+from itertools import pairwise
+from pathlib import Path
+
+import narrate
+import numpy as np
+import propose45
+import render
+import revision45
+import soundtrack
+import verify
+import visual
+import waveform
+from PIL import ImageStat
+
+
+class FilmTests(unittest.TestCase):
+    def test_approved_runtime_matches_measured_timeline(self):
+        self.assertEqual(render.SECONDS, 45)
+        self.assertEqual(propose45.SCENES[-1][1], 45)
+        for left, right in pairwise(propose45.SCENES):
+            self.assertEqual(left[1], right[0])
+
+    def test_morph_reaches_exact_measured_row_bounds(self):
+        grid = [70, 200, 360, 147]
+        row = [84.45, 366.1, 1431.08, 25.3]
+        self.assertEqual(propose45.morph_box(grid, row, 0), grid)
+        self.assertEqual(propose45.morph_box(grid, row, 1), row)
+        halfway = propose45.morph_box(grid, row, 0.5)
+        self.assertEqual(halfway[1], row[1])
+        self.assertEqual(halfway[3], row[3])
+
+    def test_character_alignment_keeps_word_start_times(self):
+        text = "Right arrow."
+        data = {
+            "alignment": {
+                "characters": list(text),
+                "character_start_times_seconds": [i * 0.1 for i in range(len(text))],
+                "character_end_times_seconds": [
+                    (i + 1) * 0.1 for i in range(len(text))
+                ],
+            }
+        }
+        words = propose45.timed_words(data, text)
+        self.assertEqual([w["text"] for w in words], ["Right", "arrow."])
+        self.assertAlmostEqual(words[1]["start"], 0.6)
+
+    def test_waveform_is_flat_for_silence_and_larger_for_loud_voice(self):
+        rate = 48000
+        t = np.arange(rate) / rate
+        signal = np.sin(2 * np.pi * 440 * t)
+        pcm = np.concatenate(
+            [np.zeros(rate), signal * 0.01, signal * 0.4, np.zeros(rate)]
+        )
+        levels = waveform.envelope(pcm)
+        self.assertEqual(float(levels[:30].max()), 0)
+        self.assertEqual(float(levels[90:].max()), 0)
+        self.assertGreater(float(levels[60:90].max()), float(levels[30:60].max()) * 5)
+        np.testing.assert_array_equal(levels, waveform.envelope(pcm))
+
+    def test_waveform_obeys_speaker_and_absolute_cue_offset(self):
+        tracks = waveform.VoiceTracks(
+            [
+                {"at": 7.0, "speaker": "YOU", "levels": np.ones((30, 31))},
+                {"at": 9.0, "speaker": "AGENT VIEW", "levels": np.full((30, 31), 0.5)},
+            ]
+        )
+        self.assertEqual(tracks.at(6.99, "YOU").max(), 0)
+        self.assertEqual(tracks.at(7.5, "YOU").max(), 1)
+        self.assertEqual(tracks.at(7.5, "AGENT VIEW").max(), 0)
+        self.assertEqual(tracks.at(8.1, "YOU").max(), 0)
+        self.assertEqual(tracks.at(9.5, "AGENT VIEW").max(), 0.5)
+        self.assertEqual(tracks.at(9.5, "YOU").max(), 0)
+
+    def test_logo_embeds_unchanged_canonical_svg(self):
+        self.assertIn(
+            visual.uri(visual.ROOT / "docs/assets/logo.svg"), visual.mark(100, 100, 2)
+        )
+        self.assertNotIn("<circle", visual.mark(100, 100, 2))
+
+    def test_ctrl_s_is_not_labeled_a_configured_global_shortcut(self):
+        film = revision45.Film45.__new__(revision45.Film45)
+        film.crop = lambda *args, **kwargs: ""
+        tall = __import__("PIL").Image.new("RGB", (4848, 3120))
+        film.shots = {"overview": tall, "directories": tall, "work-directories": tall}
+        film.t = 25
+        self.assertNotIn("Configured global shortcut", film.projects(25))
+        self.assertNotIn("Configured global shortcut", film.work_scope(28))
+
+    def test_every_shortcut_pill_sits_in_the_same_place(self):
+        for keys, label in [
+            (["Right"], "Open session"),
+            (["Cmd", "K"], "Start voice"),
+            (["Ctrl", "S"], "Group by project"),
+            (["Cmd", "Shift", "B"], "Work only"),
+        ]:
+            pill = revision45.shortcut_overlay(keys, label)
+            self.assertIn(f'y="{revision45.PILL_Y}"', pill)
+
+    def test_reveal_keeps_fixed_two_line_slots_and_hides_future_words(self):
+        lines = list(visual.VOICE_CHOICE)
+        slots = revision45.word_slots(lines)
+        words = [{"text": slot[0], "start": i * 0.25} for i, slot in enumerate(slots)]
+        early = revision45.reveal(lines, words, 0.1, 0, 0)
+        late = revision45.reveal(lines, words, 10, 0, 0)
+        self.assertIn("Your</text>", early)
+        self.assertNotIn("checkout</text>", early)
+        self.assertIn("checkout</text>", late)
+        self.assertEqual(next(s for s in slots if s[0] == "belong")[2], 39)
+
+    def test_speaker_identity_and_explicit_key_events(self):
+        self.assertNotEqual(
+            revision45.SPEAKER_COLORS["YOU"], revision45.SPEAKER_COLORS["AGENT VIEW"]
+        )
+        self.assertNotIn("Left2", revision45.KEY_EVENTS)
+        self.assertIn("CmdK", revision45.KEY_EVENTS)
+        self.assertIn("<path", revision45.keycap(0, 0, "Right", True))
+        self.assertIn("scale(-1 1)", revision45.keycap(0, 0, "Left"))
+        self.assertIn("Ctrl</text>", revision45.keycap(0, 0, "Ctrl"))
+
+    def test_shared_shortcut_overlay_and_continuous_score(self):
+        for keys in [
+            ["Right"],
+            ["Left"],
+            ["Cmd", "K"],
+            ["Ctrl", "S"],
+            ["Cmd", "Shift", "B"],
+        ]:
+            pill = revision45.shortcut_overlay(keys, "Test")
+            self.assertIn('data-shortcut-overlay="shared"', pill)
+            self.assertIn('data-glass="0.32"', pill)
+            self.assertNotIn('opacity=".72"', pill)
+        revision45.footer_window(__import__("PIL").Image.new("L", (100, 80), 255))
+        marked = __import__("PIL").Image.new("L", (100, 80), 255)
+        marked.putpixel((10, 60), 0)
+        top, bottom = revision45.footer_window(marked)
+        self.assertLess(top, 60)
+        self.assertGreater(bottom, 60)
+        bed = soundtrack.loop_excerpt(
+            np.ones((3000, 2), dtype=np.float32), seconds=45, rate=100
+        )
+        self.assertEqual(bed.shape, (4500, 2))
+        self.assertGreater(float(bed.min()), 0.99)
+        html = __import__("pathlib").Path(__file__).with_name("review.html").read_text()
+        self.assertNotIn("addTextTrack", html)
+        self.assertNotIn("<track", html)
+
+    def test_pitch_preserving_one_and_half_speed_and_headerless_stage(self):
+        pcm = np.sin(2 * np.pi * 220 * np.arange(48000) / 48000) * 0.1
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "tone.wav"
+            soundtrack.write(path, np.stack([pcm, pcm], axis=1))
+            fast = soundtrack.decode(path, tempo=1.5)
+        self.assertAlmostEqual(len(fast) / 48000, 1 / 1.5, delta=0.04)
+        spectrum = np.abs(np.fft.rfft(fast[:, 0]))
+        pitch = np.fft.rfftfreq(len(fast), 1 / 48000)[spectrum.argmax()]
+        self.assertAlmostEqual(pitch, 220, delta=3)
+        film = revision45.Film45.__new__(revision45.Film45)
+        self.assertEqual(film.header("A presentation heading", "subtitle"), "")
+
+    def test_all_eighteen_supported_harnesses_have_artwork(self):
+        self.assertEqual(len(visual.HARNESSES), 18)
+        self.assertEqual(len({name for name, _ in visual.HARNESSES}), 18)
+        for _, asset in visual.HARNESSES:
+            self.assertTrue((visual.ROOT / "site/providers" / asset).is_file())
+
+    def test_edit_is_exactly_forty_five_seconds(self):
+        self.assertEqual(render.FPS * render.SECONDS, 1350)
+        self.assertEqual((render.W, render.H), (3840, 2160))
+
+    def test_easing_is_bounded_and_monotonic(self):
+        values = [render.ease(i / 100) for i in range(-20, 121)]
+        self.assertEqual(values, sorted(values))
+        self.assertEqual((values[0], values[-1]), (0, 1))
+
+    def test_voice_cues_are_ordered(self):
+        cues = [c[0] for c in narrate.LINES]
+        self.assertEqual(cues, sorted(set(cues)))
+        self.assertLess(cues[-1], 30)
+        self.assertEqual(narrate.LINES[3][1], "Tell it checkout.")
+
+    def test_caption_millisecond_rollover(self):
+        self.assertEqual(verify.stamp(59.9999), "00:01:00.000")
+        self.assertEqual(verify.stamp(3.25), "00:00:03.250")
+
+    def test_full_coupon_choice_fits_two_lines(self):
+        self.assertEqual(len(render.VOICE_CHOICE), 2)
+        for line in render.VOICE_CHOICE:
+            self.assertLess(render.font(30, True).getlength(line), 936)
+        self.assertIn("cart or at checkout.", render.VOICE_CHOICE[1])
+
+    def test_brand_assets_render(self):
+        for asset in ["openai.png", "claude.svg", "devin.png", "opencode.svg"]:
+            icon = render.provider(asset, 44)
+            self.assertLessEqual(icon.width, 44)
+            self.assertLessEqual(icon.height, 44)
+            self.assertGreater(ImageStat.Stat(icon).sum[3], 0)
+
+    def test_safe_player_does_not_autoplay(self):
+        html = __import__("pathlib").Path(__file__).with_name("review.html").read_text()
+
+        class Parser(HTMLParser):
+            attributes = None
+
+            def handle_starttag(self, tag, attrs):
+                if tag == "video":
+                    self.attributes = dict(attrs)
+
+        parser = Parser()
+        parser.feed(html)
+        self.assertIn("controls", parser.attributes)
+        self.assertIn("muted", parser.attributes)
+        self.assertNotIn("autoplay", parser.attributes)
+        self.assertNotIn(".play()", html)
+
+
+if __name__ == "__main__":
+    unittest.main()

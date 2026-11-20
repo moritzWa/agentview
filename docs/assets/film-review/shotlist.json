@@ -1,0 +1,49 @@
+{
+  "duration_seconds": 30,
+  "shots": [
+    {
+      "start": 0,
+      "end": 3,
+      "beat": "Four overlapping terminals converge into their matching Agent View rows",
+      "evidence": "Editorial animation with existing provider artwork; destinations use actual captured terminal row positions"
+    },
+    {
+      "start": 3,
+      "end": 12,
+      "beat": "Voice question, checkout decision, Sent",
+      "evidence": "Actual overview render; full two-line illustrated exchange; ElevenLabs voices; actual app moves checkout to Working through a staged fixture update",
+      "missing_capture": "Actual Voice Mode footer, real synthetic-session send, then resumed checkout TUI",
+      "replacement_path": "Muted macOS Space; isolated Agent View HOME/XDG plus a disposable OpenCode server/session. Feed prerecorded user prompts through a virtual mic, capture the app footer and receiver transcript. Keep the current editorial narration only outside the live exchange."
+    },
+    {
+      "start": 12,
+      "end": 17,
+      "beat": "Take your agents with you",
+      "evidence": "Labeled phone illustration; no native ChatGPT UI asserted",
+      "missing_capture": "Actual ChatGPT Voice using AgentVoice read/search/send on a disposable OpenCode session",
+      "replacement_path": "Use existing mobile-voice verification session's proven account/device path. Capture only the dedicated synthetic conversation. If browser-sized footage is used, label it web capture rather than native phone footage. Do not show create, stop or native approval actions."
+    },
+    {
+      "start": 17,
+      "end": 20.5,
+      "beat": "Work-only view hides personal sessions",
+      "evidence": "Actual before/after app renders; view work command exercised and asserted",
+      "limitation": "Global binding caption reflects this user's configured setup, not an intrinsic app shortcut. Background work continuing is not exercised by this fixture."
+    },
+    {
+      "start": 20.5,
+      "end": 25,
+      "beat": "Scheduled continuation and agent-bouncer queue",
+      "evidence": "Actual work-view render plus labeled editorial state panels",
+      "missing_capture": "Actual Scheduled/Background sections and actual heavy-job queue UI",
+      "replacement_path": "Launch isolated non-fixture Agent View against synthetic provider history and private schedule state. Point PATH at a deterministic read-only agent-bouncer status stub to capture the real queue widget, clearly labeled synthetic queue state. Exercise one disposable scheduled wake; capture its background continuation separately and use an honest time-jump caption."
+    },
+    {
+      "start": 25,
+      "end": 30,
+      "beat": "Five-second bento and URL hold",
+      "evidence": "Editorial feature recap; open-source/Rust footer; no additional product controls"
+    }
+  ],
+  "publication": "Review only. Existing website and README assets remain unchanged."
+}

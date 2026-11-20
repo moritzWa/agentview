@@ -1,0 +1,17 @@
+{
+  "duration": 30.0,
+  "frames": 900,
+  "resolution": [
+    1600,
+    900
+  ],
+  "video": "h264",
+  "audio": "aac",
+  "sample_rate": "48000",
+  "integrated_lufs": -16.62,
+  "true_peak_dbtp": -1.44,
+  "decode": "all frames and audio packets passed",
+  "voice_overlap": false,
+  "live_call_recording": false,
+  "public_assets_replaced": false
+}
