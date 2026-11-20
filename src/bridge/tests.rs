@@ -1,7 +1,190 @@
+use super::health::{classify as health_class, progress, Facts};
+use super::start::allowed_directory;
 use super::*;
 use rusqlite::Connection;
 use source::{Capture, Message};
 use tempfile::tempdir;
+
+#[test]
+fn an_unknown_source_event_reconciles_visible_text_instead_of_stalling_sync() {
+    let mut db = fixture();
+    db.execute_batch(
+        "INSERT INTO event VALUES('s',2,'message.part.updated.1','{\"text\":\"PRIVATE_EVENT\"}');
+         INSERT INTO session_message VALUES('msg_b','s','assistant',2,2,2,'{\"content\":[{\"type\":\"text\",\"text\":\"Visible after unknown event\"}]}');
+         UPDATE event_sequence SET seq=2;",
+    )
+    .unwrap();
+    let capture = source::capture(&mut db, "s", Some(1)).unwrap().unwrap();
+    assert!(capture
+        .messages
+        .iter()
+        .any(|m| m.text == "Visible after unknown event"));
+    assert!(!serde_json::to_string(&capture.messages)
+        .unwrap()
+        .contains("PRIVATE_EVENT"));
+}
+
+#[test]
+fn truncated_emoji_escape_does_not_block_projection() {
+    let raw = r#"{"text":"a \ud83d\n b \ude00 c \ud83d\ude00 \\ud83d"}"#;
+    assert!(serde_json::from_str::<Value>(raw).is_err());
+    let value = source::parse_json(raw).unwrap();
+    assert_eq!(value["text"], "a \u{fffd}\n b \u{fffd} c \u{1F600} \\ud83d");
+}
+
+#[test]
+fn nul_and_oversized_text_are_made_to_fit_instead_of_stalling_the_session() {
+    let nul = source::project("m", "user", 1, 1, 1, &json!({"text":"a\u{0}b"}).to_string())
+        .unwrap()
+        .unwrap();
+    assert_eq!(nul.text, "a\u{fffd}b");
+    let huge = "é𝄞x".repeat(400_000);
+    let big = source::project("m", "user", 1, 1, 1, &json!({"text":huge}).to_string())
+        .unwrap()
+        .unwrap();
+    assert!(serde_json::to_vec(&big).unwrap().len() < 850_000);
+    assert!(big.text.ends_with("too large to sync]"));
+    let fine = source::project(
+        "m",
+        "user",
+        1,
+        1,
+        1,
+        &json!({"text":"x".repeat(700_000)}).to_string(),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(fine.text.len(), 700_000);
+}
+
+#[test]
+fn upload_failures_are_classified_by_whether_the_cloud_may_have_committed() {
+    let e = |m: &str| anyhow::anyhow!("{m}");
+    for code in ["400", "409", "413", "422"] {
+        assert_eq!(
+            classify(&e(&format!("bridge HTTP {code}"))),
+            Some(Fault::Definite)
+        );
+    }
+    for code in ["500", "502", "503", "524"] {
+        assert_eq!(
+            classify(&e(&format!("bridge HTTP {code}"))),
+            Some(Fault::Ambiguous)
+        );
+    }
+    assert_eq!(
+        classify(&e("invalid sync acknowledgement")),
+        Some(Fault::Ambiguous)
+    );
+    for pass_level in [
+        "bridge HTTP 401",
+        "bridge HTTP 429",
+        "bridge HTTP 404",
+        "bridge network request failed",
+    ] {
+        assert_eq!(classify(&e(pass_level)), None);
+    }
+    assert_eq!(error_kind("bridge network request failed"), "network");
+    assert_eq!(
+        classify(&e("bridge HTTP 409 cursor_gap")),
+        Some(Fault::Definite)
+    );
+    assert!(needs_replace(&e("bridge HTTP 409 cursor_gap")));
+    assert!(needs_replace(&e(
+        "bridge HTTP 409 baseline_already_committed"
+    )));
+    assert!(!needs_replace(&e("bridge HTTP 409 session_deleted")));
+}
+
+#[test]
+fn retry_backoff_is_short_first_and_capped() {
+    assert_eq!(retry_after(1), 5);
+    assert!(retry_after(2) > retry_after(1) && retry_after(4) > retry_after(3));
+    assert_eq!(retry_after(6), 300);
+    assert_eq!(retry_after(500), 300);
+}
+
+fn queue(journal: &Journal, session: &str, tag: i64) {
+    journal
+        .db
+        .execute(
+            "INSERT INTO pending(body,native) VALUES (?1,1)",
+            [json!({"session_id":session,"tag":tag}).to_string()],
+        )
+        .unwrap();
+}
+
+fn count(journal: &Journal, table: &str) -> i64 {
+    journal
+        .db
+        .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+        .unwrap()
+}
+
+#[test]
+fn discarding_drops_only_that_sessions_batches() {
+    let dir = tempdir().unwrap();
+    let mut journal = Journal::open(&dir.path().join("j.sqlite")).unwrap();
+    for (tag, sid) in [(1, "bad"), (2, "good"), (3, "bad")] {
+        queue(&journal, sid, tag);
+    }
+    journal.discard_pending("bad").unwrap();
+    assert_eq!(journal.pending().unwrap().unwrap()["session_id"], "good");
+    assert_eq!(count(&journal, "pending"), 1);
+}
+
+#[test]
+fn held_batches_keep_their_exact_bytes_and_order_and_unblock_other_sessions() {
+    let dir = tempdir().unwrap();
+    let mut journal = Journal::open(&dir.path().join("j.sqlite")).unwrap();
+    for (tag, sid) in [(1, "a"), (2, "b"), (3, "a"), (4, "b")] {
+        queue(&journal, sid, tag);
+    }
+    let original: Vec<String> = journal
+        .db
+        .prepare("SELECT body FROM pending WHERE json_extract(body,'$.session_id')='a' ORDER BY n")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    journal.hold_pending("a").unwrap();
+    assert!(journal.has_held("a").unwrap() && !journal.has_held("b").unwrap());
+    assert_eq!(journal.held_sessions().unwrap(), vec!["a".to_string()]);
+    assert_eq!(count(&journal, "pending"), 2);
+    while journal.pending().unwrap().is_some() {
+        journal.discard_pending("b").unwrap();
+    }
+    assert_eq!(count(&journal, "pending"), 0);
+    journal.restore_held("a").unwrap();
+    assert!(!journal.has_held("a").unwrap());
+    let restored: Vec<String> = journal
+        .db
+        .prepare("SELECT body FROM pending ORDER BY n")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(
+        restored, original,
+        "a held batch must be retried byte for byte, in order"
+    );
+}
+
+#[test]
+fn held_batches_survive_a_restart() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("j.sqlite");
+    {
+        let mut journal = Journal::open(&path).unwrap();
+        queue(&journal, "s", 1);
+        journal.hold_pending("s").unwrap();
+    }
+    let journal = Journal::open(&path).unwrap();
+    assert!(journal.has_held("s").unwrap());
+    assert_eq!(count(&journal, "pending"), 0);
+}
 
 #[test]
 fn queued_context_allows_new_turns_but_blocks_rewritten_history() {
@@ -36,7 +219,7 @@ fn queued_context_allows_new_turns_but_blocks_rewritten_history() {
 }
 
 #[test]
-fn runtime_projection_reuses_typed_states_without_leaking_paths_or_chat_text() {
+fn runtime_projection_includes_requested_directory_but_never_chat_or_tool_payloads() {
     use crate::domain::{AgentSession, Provider, Runtime, SessionKind, SessionState};
     let mut session = AgentSession {
         id: "opencode:host:ses_x".into(),
@@ -60,7 +243,9 @@ fn runtime_projection_reuses_typed_states_without_leaking_paths_or_chat_text() {
     assert_eq!(status["status"], "needs_you");
     assert_eq!(status["reason"], "approval");
     assert_eq!(status["can_message"], false);
-    assert!(!status.to_string().contains("PRIVATE"));
+    assert_eq!(status["directory"], "PRIVATE_PATH");
+    assert!(!status.to_string().contains("PRIVATE_TOOL_OUTPUT"));
+    assert!(!status.to_string().contains("PRIVATE_TITLE"));
     session.state = SessionState::Working;
     session.raw_state = None;
     assert_eq!(
@@ -170,6 +355,31 @@ fn text_projection_never_serializes_tools_reasoning_or_metadata() {
 }
 
 #[test]
+fn a_newest_tool_only_assistant_message_does_not_displace_real_text_replies() {
+    let mut db = fixture();
+    db.execute_batch("INSERT INTO session_message VALUES
+      ('real_a','s','assistant',2,2,2,'{\"content\":[{\"type\":\"text\",\"text\":\"First actual reply\"}]}'),
+      ('user_b','s','user',3,3,3,'{\"text\":\"Second request\"}'),
+      ('real_b','s','assistant',4,4,4,'{\"content\":[{\"type\":\"text\",\"text\":\"Second actual reply\"},{\"type\":\"tool\",\"state\":{\"output\":\"PRIVATE_TOOL_RESULT\"}}]}'),
+      ('tool_only','s','assistant',5,5,5,'{\"content\":[{\"type\":\"tool\",\"state\":{\"output\":\"PRIVATE_TOOL_RESULT\"}},{\"type\":\"reasoning\",\"text\":\"PRIVATE_REASONING\"}]}');
+      UPDATE event_sequence SET seq=5;").unwrap();
+    let capture = source::capture(&mut db, "s", None).unwrap().unwrap();
+    let replies = capture
+        .messages
+        .iter()
+        .filter(|m| m.role == "assistant")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        replies.iter().map(|m| m.text.as_str()).collect::<Vec<_>>(),
+        vec!["First actual reply", "Second actual reply"]
+    );
+    assert!(!capture.ids.contains("tool_only"));
+    assert!(!serde_json::to_string(&capture.messages)
+        .unwrap()
+        .contains("PRIVATE"));
+}
+
+#[test]
 fn source_captures_consistent_watermark_and_revert_boundary_then_detects_edits() {
     let mut db = fixture();
     let first = source::capture(&mut db, "s", None).unwrap().unwrap();
@@ -187,6 +397,64 @@ fn source_captures_consistent_watermark_and_revert_boundary_then_detects_edits()
     assert_eq!(reconciled.messages[0].text, "Edited");
     db.execute("UPDATE event_sequence SET seq=1", []).unwrap();
     assert!(source::capture(&mut db, "s", Some(2)).is_err());
+}
+
+#[test]
+fn a_replace_uploads_the_whole_projection_and_does_not_move_the_pointer_until_confirmed() {
+    let dir = tempdir().unwrap();
+    let mut db = fixture();
+    let mut journal = Journal::open(&dir.path().join("j.sqlite")).unwrap();
+    journal
+        .stage(
+            "s",
+            source::capture(&mut db, "s", None).unwrap().unwrap(),
+            true,
+        )
+        .unwrap();
+    drain(&mut journal);
+    assert_eq!(journal.checkpoint("s").unwrap().unwrap().cursor, 1);
+    journal
+        .stage_replace(
+            "s",
+            source::capture(&mut db, "s", None).unwrap().unwrap(),
+            true,
+        )
+        .unwrap();
+    let body = journal.pending().unwrap().unwrap();
+    assert_eq!(body["kind"], "replace");
+    assert_eq!(body["from"], 0);
+    assert_eq!(body["delete_ids"].as_array().unwrap().len(), 0);
+    assert!(body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|m| m["text"] == "Visible"));
+    // The old pointer stays until the cloud confirms the replacement.
+    assert_eq!(journal.checkpoint("s").unwrap().unwrap().cursor, 1);
+    assert!(journal.cached("s").unwrap().is_empty());
+    drain(&mut journal);
+    assert_eq!(journal.checkpoint("s").unwrap().unwrap().cursor, 1);
+    assert_eq!(journal.cached("s").unwrap().len(), 1);
+}
+
+#[test]
+fn projection_text_matches_the_cloud_byte_for_byte() {
+    let text = source::projection_text(
+        10,
+        &json!({"title":"T","archived":false,"deleted":false,"visible_before":null}),
+        &[Message {
+            id: "m1".into(),
+            role: "user".into(),
+            order: 1,
+            created_at: 1,
+            updated_at: 1,
+            text: "hi".into(),
+        }],
+    );
+    assert_eq!(
+        text,
+        "cursor=10\narchived=false\ndeleted=false\ntitle=T\nvisible_before=\nm1\t1\tuser\thi"
+    );
 }
 
 #[test]
@@ -407,5 +675,111 @@ fn large_visible_paste_is_not_silently_dropped_or_truncated() {
     assert_eq!(
         journal.pending().unwrap().unwrap()["messages"][0]["text"],
         message.text
+    );
+}
+
+#[test]
+fn health_treats_a_long_tool_as_running_and_silence_as_unknown() {
+    let now = 1_700_000_000_000;
+    let open = Facts {
+        turn_started_at: Some(now - 3_600_000),
+        last_progress_at: Some(now - 3_600_000),
+        in_flight: Some("tool"),
+    };
+    assert_eq!(health_class("working", None, Some(&open), now), "running");
+    assert_eq!(
+        health_class("needs_you", Some("failed"), None, now),
+        "failed"
+    );
+    assert_eq!(health_class("done", None, None, now), "idle");
+    assert_eq!(health_class("working", None, None, now), "unknown");
+    let quiet = Facts {
+        turn_started_at: Some(now - 20 * 60_000),
+        last_progress_at: Some(now - 11 * 60_000),
+        in_flight: None,
+    };
+    assert_eq!(
+        health_class("working", None, Some(&quiet), now),
+        "potentially_stalled"
+    );
+    let recent = Facts {
+        turn_started_at: Some(now - 30_000),
+        last_progress_at: None,
+        in_flight: None,
+    };
+    assert_eq!(health_class("working", None, Some(&recent), now), "running");
+}
+
+#[test]
+fn progress_reads_an_open_tool_without_copying_message_text() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("source.sqlite");
+    let db = Connection::open(&path).unwrap();
+    db.execute_batch(
+        "CREATE TABLE session_v2(id TEXT, parent_id TEXT);
+         CREATE TABLE session_message(id TEXT, session_id TEXT, type TEXT, seq INTEGER, time_created INTEGER, time_updated INTEGER, data TEXT);
+         INSERT INTO session_v2 VALUES('parent', NULL), ('child', 'parent');
+         INSERT INTO session_message VALUES('u','parent','user',1,1700000000000,1700000000000,'{\"text\":\"PRIVATE\"}');
+         INSERT INTO session_message VALUES('a','child','assistant',2,1700000001000,1700000002000,'{\"time\":{},\"content\":[{\"type\":\"tool\",\"name\":\"bash\",\"state\":{\"status\":\"running\"}}]}');",
+    )
+    .unwrap();
+    let found = progress(&db, &["parent".into()], 1_700_000_030_000).unwrap();
+    let row = &found["parent"];
+    assert_eq!(row.health, "running");
+    assert_eq!(row.in_flight, Some("tool"));
+    assert!(!format!("{row:?}").contains("PRIVATE"));
+}
+
+#[test]
+fn a_start_directory_must_be_a_real_folder_under_home() {
+    let home = tempdir().unwrap();
+    let project = home.path().join("Code/agentview");
+    std::fs::create_dir_all(&project).unwrap();
+    assert_eq!(
+        allowed_directory(&project, home.path()).unwrap(),
+        project.canonicalize().unwrap()
+    );
+    assert_eq!(
+        allowed_directory(home.path(), home.path()).unwrap_err(),
+        "not_allowed"
+    );
+    let ssh = home.path().join(".ssh");
+    std::fs::create_dir_all(&ssh).unwrap();
+    assert_eq!(
+        allowed_directory(&ssh, home.path()).unwrap_err(),
+        "not_allowed"
+    );
+    let outside = tempdir().unwrap();
+    let link = home.path().join("Code/escape");
+    std::os::unix::fs::symlink(outside.path(), &link).unwrap();
+    assert_eq!(
+        allowed_directory(&link, home.path()).unwrap_err(),
+        "not_allowed"
+    );
+    assert_eq!(
+        allowed_directory(std::path::Path::new("relative"), home.path()).unwrap_err(),
+        "not_a_directory"
+    );
+}
+
+#[test]
+fn a_start_claim_is_not_launched_twice() {
+    let dir = tempdir().unwrap();
+    let journal = Journal::open(&dir.path().join("j.sqlite")).unwrap();
+    assert_eq!(
+        super::start::claim(&journal.db, "op1", "{}").unwrap(),
+        super::start::Claim::Launch
+    );
+    assert_eq!(
+        super::start::claim(&journal.db, "op1", "{}").unwrap(),
+        super::start::Claim::Uncertain
+    );
+    super::start::record(&journal.db, "op1", "ses_real", true).unwrap();
+    assert_eq!(
+        super::start::claim(&journal.db, "op1", "{}").unwrap(),
+        super::start::Claim::Resume {
+            session_id: "ses_real".into(),
+            prompt_accepted: true
+        }
     );
 }

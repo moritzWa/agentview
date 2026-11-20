@@ -68,6 +68,16 @@ pub fn request(
         .context("missing bridge response status")?;
     let status: u16 = status.parse()?;
     if !(200..300).contains(&status) {
+        // The code is a short token such as cursor_gap. Anything else stays out of the error.
+        let code = serde_json::from_str::<Value>(json).ok().and_then(|v| {
+            v.get("error").and_then(|e| e.as_str()).and_then(|c| {
+                (c.len() <= 80 && c.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_'))
+                    .then(|| c.to_owned())
+            })
+        });
+        if let Some(code) = code {
+            bail!("bridge HTTP {status} {code}");
+        }
         bail!("bridge HTTP {status}");
     }
     serde_json::from_str(json).context("invalid bridge JSON response")

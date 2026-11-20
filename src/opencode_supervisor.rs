@@ -112,6 +112,12 @@ struct OwnedSession {
 
 pub const MANAGED_RAW_STATE: &str = "managed_server";
 
+/// The session OpenCode created, and whether it accepted the initial prompt.
+pub struct LaunchReport {
+    pub session: ManagedOpenCodeSession,
+    pub prompt_accepted: bool,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ManagedOpenCodeSession {
     pub id: String,
@@ -385,6 +391,24 @@ impl OpenCodeSupervisor {
         cwd: &Path,
         model: Option<&str>,
     ) -> Result<ManagedOpenCodeSession> {
+        let report = self.launch_reporting(prompt, cwd, model)?;
+        if !report.prompt_accepted {
+            bail!(
+                "OpenCode created owned session {}, but rejected its initial prompt",
+                report.session.id
+            );
+        }
+        Ok(report.session)
+    }
+
+    /// Creates the session, then tries the initial prompt. A rejected prompt still
+    /// returns the id. The caller must not claim the agent started.
+    pub fn launch_reporting(
+        &self,
+        prompt: &str,
+        cwd: &Path,
+        model: Option<&str>,
+    ) -> Result<LaunchReport> {
         let prompt = prompt.trim();
         if prompt.is_empty() {
             bail!("the OpenCode launch prompt cannot be empty");
@@ -435,12 +459,15 @@ impl OpenCodeSupervisor {
         // does prove which exact session this server created.
         save_record(&self.record_path, &record)?;
         let path = with_directory_query(&format!("/session/{id}/prompt_async"), cwd);
-        if let Err(error) = self.request_empty(&record, "POST", &path, Some(&prompt_body)) {
-            return Err(error).context(format!(
-                "OpenCode created owned session {id}, but rejected its initial prompt"
-            ));
-        }
-        self.session_snapshot(&record, record.sessions.get(&id).expect("inserted session"))
+        let prompt_accepted = self
+            .request_empty(&record, "POST", &path, Some(&prompt_body))
+            .is_ok();
+        let session =
+            self.session_snapshot(&record, record.sessions.get(&id).expect("inserted session"))?;
+        Ok(LaunchReport {
+            session,
+            prompt_accepted,
+        })
     }
 
     /// [`Self::list`], unless it answered less than `max_age` ago. For the

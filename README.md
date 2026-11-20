@@ -7,8 +7,10 @@ See which one needs you. Jump in, jump back out. Works with 18 coding
 harnesses and plain shell jobs.
 
 [![Tests](https://img.shields.io/badge/tests-verified-506CF7.svg)](docs/testing.md)
-[![Release](https://img.shields.io/badge/release-v0.2.0-506CF7.svg)](https://github.com/moritzWa/agentview/releases/latest)
+[![Release](https://img.shields.io/github/v/release/moritzWa/agentview?color=506CF7&label=release)](https://github.com/moritzWa/agentview/releases/latest)
 [![License](https://img.shields.io/badge/license-MIT-506CF7.svg)](LICENSE)
+
+<a href="https://agent-view.app/film.mp4"><img src="docs/assets/film-thumbnail.jpg" alt="Play the 45-second Agent View film" width="800"></a>
 
 <img src="docs/assets/demo.gif" alt="agentview demo in light mode: usage limits in the header, OpenCode sub-sessions indented under the session that started them, searching 500 past sessions by message text with Ctrl+G, and picking a model grouped by provider" width="800">
 
@@ -118,9 +120,12 @@ own interface.
   browser agentview starts for the call, for OpenCode sessions. See
   [Voice Mode](docs/voice.md).
 - **`Ctrl+X` twice** stops and hides or deletes a session, no dialog.
-- **Mobile OpenCode bridge:** opt-in text-only history search and queued replies
+- **`Ctrl+Z` undoes a hide** and brings the session back (in Ghostty, map `Cmd+Z` to it).
+- **ChatGPT mobile voice:** opt-in text-only OpenCode history search and queued replies
   through a private ChatGPT MCP server. Runs without the dashboard.
   [Setup and privacy](docs/mobile-bridge.md).
+- **Artifact previews:** explicitly approved output files open through ChatGPT's
+  file viewer, without switching between embedded preview modes.
 
 ### Refresh time by harness
 
@@ -167,7 +172,7 @@ previous chat or overview. Other apps and browser windows stay unchanged.
 | Move through sessions | `↑` / `↓` |
 | Jump between folders | `Cmd+↑` / `↓` in kitty, or in Ghostty with `keybind = cmd+up=unbind` and `keybind = cmd+down=unbind` |
 | Open the selected session | `Enter` or `→` |
-| Return to agentview | `Shift+←`, or `←` twice at an empty prompt (once in Claude Code and OpenCode) |
+| Return to agentview | `Shift+←`, or `←` twice at an empty prompt (once in Claude Code and OpenCode). In an OpenCode prompt with a draft, Shift+←/→ selects text; [map a key to `F13`](docs/cli.md#a-dedicated-key-to-return-to-the-dashboard) to return from anywhere |
 | Bring back a past session | `Ctrl+G` or `/hidden` |
 | Rename / filter | `Ctrl+R` / `Ctrl+F` |
 | New line in a task | `Shift+Enter`, `Ctrl+J`, or `\` then `Enter` |

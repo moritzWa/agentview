@@ -118,9 +118,12 @@ pub fn terminal_title(app: &App) -> String {
 
 fn render_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let title = format!(
-        "agentview v{}{}",
+        "agentview v{}{}{}",
         env!("CARGO_PKG_VERSION"),
-        if app.work_only { " · Work only" } else { "" }
+        if app.work_only { " · Work only" } else { "" },
+        crate::update_check::newer_version()
+            .map(|version| format!(" · v{version} available, run av update"))
+            .unwrap_or_default()
     );
 
     let lines = if area.height <= 2 {
@@ -399,9 +402,6 @@ fn render_session_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
             sanitize_inline(&group.label),
             suffix.unwrap_or_default()
         ))];
-        if group.key == crate::app::SCHEDULED_GROUP_KEY {
-            spans.push(Span::styled("  ctrl+y", Style::default().fg(palette().dim)));
-        }
         if let Some(verb) = is_selected.then(|| app.pending_removal_verb()).flatten() {
             spans.push(Span::styled(
                 format!("  ctrl+x again to {verb}"),
@@ -1440,7 +1440,13 @@ fn render_usage(frame: &mut Frame<'_>, app: &App, area: Rect) {
         .enumerate()
     {
         frame.render_widget(
-            Paragraph::new(text).style(Style::default().bg(palette().bg).fg(palette().dim)),
+            Paragraph::new(text).style(Style::default().bg(palette().bg).fg(
+                if app.usage[row].login_command.is_some() {
+                    palette().attention
+                } else {
+                    palette().dim
+                },
+            )),
             Rect {
                 x: area.x + indent,
                 y: area.y + 1 + row as u16,
@@ -1530,6 +1536,9 @@ fn usage_header_rows(usages: &[crate::usage::Usage], now: u64, width: usize) -> 
             .take(3)
             .zip(cells)
             .map(|(usage, cells)| {
+                if let Some(warning) = usage.login_warning() {
+                    return warning;
+                }
                 let columns = cells
                     .into_iter()
                     .zip(&widths)
@@ -1607,6 +1616,13 @@ fn render_usage_popup(frame: &mut Frame<'_>, app: &App, area: Rect) {
     for (position, usage) in app.usage.iter().enumerate() {
         if position > 0 {
             lines.push(Line::default());
+        }
+        if let Some(warning) = usage.login_warning() {
+            lines.push(Line::styled(
+                warning,
+                Style::default().fg(palette().attention),
+            ));
+            continue;
         }
         for (index, window) in usage.windows.iter().enumerate() {
             let percent_style = Style::default().fg(if window.percent >= 90.0 {
@@ -2300,18 +2316,14 @@ fn render_hidden_picker(frame: &mut Frame<'_>, app: &App, area: Rect) {
         popup_width,
         popup_height,
     );
-    let mut lines = vec![Line::from(Span::styled(
-        if app.hidden_filter.is_empty() {
-            "type a name, folder, ID, or words from the chat".into()
-        } else {
-            sanitize_inline(&app.hidden_filter)
-        },
-        if app.hidden_filter.is_empty() {
-            Style::default().fg(palette().dim)
-        } else {
-            Style::default().fg(palette().fg)
-        },
-    ))];
+    let mut lines = vec![Line::from(if app.hidden_filter.is_empty() {
+        vec![Span::styled(
+            "type a name, folder, ID, or words from the chat",
+            Style::default().fg(palette().dim),
+        )]
+    } else {
+        filter_spans(app)
+    })];
     if choices.is_empty() {
         lines.push(Line::from(Span::styled(
             if app.restorable_loading {
@@ -2417,6 +2429,7 @@ fn render_hidden_picker(frame: &mut Frame<'_>, app: &App, area: Rect) {
             .style(Style::default().bg(palette().bg).fg(palette().fg)),
         popup,
     );
+    set_filter_cursor(frame, app, popup, 2);
 }
 
 /// A picker row's matching message text, indented under its name, dim with
@@ -2474,20 +2487,18 @@ fn render_directory_picker(frame: &mut Frame<'_>, app: &App, area: Rect) {
     } else {
         (app.directory_selection / visible_rows) * visible_rows
     };
-    let mut lines = vec![Line::from(vec![
-        Span::styled(" search  ", Style::default().fg(palette().dim)),
-        if app.directory_filter.is_empty() {
-            Span::styled(
-                "type part of a folder name, or a path like ~/Code/app (new folders are created)",
-                Style::default().fg(palette().dim),
-            )
-        } else {
-            Span::styled(
-                sanitize_inline(&app.directory_filter),
-                Style::default().fg(palette().fg),
-            )
-        },
-    ])];
+    let mut lines = vec![Line::from(vec![Span::styled(
+        " search  ",
+        Style::default().fg(palette().dim),
+    )])];
+    lines[0].spans.extend(if app.directory_filter.is_empty() {
+        vec![Span::styled(
+            "type part of a folder name, or a path like ~/Code/app (new folders are created)",
+            Style::default().fg(palette().dim),
+        )]
+    } else {
+        filter_spans(app)
+    });
     if choices.is_empty() {
         lines.push(Line::from(Span::styled(
             "  No folders match",
@@ -2554,6 +2565,7 @@ fn render_directory_picker(frame: &mut Frame<'_>, app: &App, area: Rect) {
             .style(Style::default().bg(palette().bg).fg(palette().fg)),
         popup,
     );
+    set_filter_cursor(frame, app, popup, 1 + display_width(" search  "));
 }
 
 /// Extra rows the headings and separators add to one page of choices, or 0 when the
@@ -2638,21 +2650,18 @@ fn render_model_picker(frame: &mut Frame<'_>, app: &App, area: Rect) {
         popup_width,
         popup_height,
     );
-    let mut lines = vec![Line::from(vec![
-        Span::styled(" filter  ", Style::default().fg(palette().dim)),
-        Span::styled(
-            if app.model_filter.is_empty() {
-                "type to search".into()
-            } else {
-                sanitize_inline(&app.model_filter)
-            },
-            if app.model_filter.is_empty() {
-                Style::default().fg(palette().dim)
-            } else {
-                Style::default().fg(palette().fg)
-            },
-        ),
-    ])];
+    let mut lines = vec![Line::from(vec![Span::styled(
+        " filter  ",
+        Style::default().fg(palette().dim),
+    )])];
+    lines[0].spans.extend(if app.model_filter.is_empty() {
+        vec![Span::styled(
+            "type to search",
+            Style::default().fg(palette().dim),
+        )]
+    } else {
+        filter_spans(app)
+    });
     if choices.is_empty() {
         if app.models_loading {
             lines.push(Line::from(Span::styled(
@@ -2821,13 +2830,34 @@ fn render_model_picker(frame: &mut Frame<'_>, app: &App, area: Rect) {
             .style(Style::default().bg(palette().bg).fg(palette().fg)),
         popup,
     );
-    let filter_prefix = " filter  ";
+    set_filter_cursor(frame, app, popup, 1 + display_width(" filter  "));
+}
+
+/// The open search field's text, with its selection highlighted.
+fn filter_spans(app: &App) -> Vec<Span<'static>> {
+    let text = app.picker_filter_text();
+    let plain = Style::default().fg(palette().fg);
+    let Some(range) = app.input_selection() else {
+        return vec![Span::styled(sanitize_inline(text), plain)];
+    };
+    vec![
+        Span::styled(sanitize_inline(&text[..range.start]), plain),
+        Span::styled(
+            sanitize_inline(&text[range.clone()]),
+            Style::default()
+                .fg(palette().selected_fg)
+                .bg(palette().selected_bg),
+        ),
+        Span::styled(sanitize_inline(&text[range.end..]), plain),
+    ]
+}
+
+/// Put the terminal cursor in the search field on the popup's first row,
+/// `offset` columns from the popup's left edge.
+fn set_filter_cursor(frame: &mut Frame<'_>, app: &App, popup: Rect, offset: usize) {
+    let before = sanitize_inline(&app.picker_filter_text()[..app.input_cursor()]);
     frame.set_cursor(
-        (popup.x
-            + 1
-            + display_width(filter_prefix) as u16
-            + display_width(&app.model_filter) as u16)
-            .min(popup.right().saturating_sub(2)),
+        (popup.x + (offset + display_width(&before)) as u16).min(popup.right().saturating_sub(2)),
         popup.y + 1,
     );
 }
@@ -3592,7 +3622,7 @@ mod tests {
                 let buffer = terminal.backend().buffer();
                 let rendered = buffer_text(buffer);
                 let lines = rendered.lines().collect::<Vec<_>>();
-                assert!(lines[0].starts_with("Scheduled  ctrl+y"), "{rendered}");
+                assert!(lines[0].starts_with("Scheduled"), "{rendered}");
                 assert!(lines[1].starts_with("  /work/alpha"), "{rendered}");
                 assert!(lines[2].starts_with("   • first reminder"), "{rendered}");
                 assert!(lines[3].trim().is_empty(), "{rendered}");
@@ -3616,7 +3646,7 @@ mod tests {
                 .draw(|frame| render_session_list(frame, &app, frame.size()))
                 .unwrap();
             let rendered = buffer_text(terminal.backend().buffer());
-            assert!(rendered.contains("Scheduled 2  ctrl+y"), "{rendered}");
+            assert!(rendered.contains("Scheduled 2"), "{rendered}");
             assert!(!rendered.contains("/work/alpha"), "{rendered}");
         }
     }
@@ -4312,6 +4342,7 @@ mod tests {
     fn header_keeps_both_providers_visible_when_claude_is_exhausted() {
         let usage = |provider, percent| crate::usage::Usage {
             provider,
+            login_command: None,
             windows: vec![crate::usage::Window {
                 label: "5h",
                 percent,
@@ -4352,6 +4383,7 @@ mod tests {
             .into_iter()
             .map(|provider| crate::usage::Usage {
                 provider,
+                login_command: None,
                 windows: vec![
                     crate::usage::Window {
                         label: "5h",
@@ -4404,10 +4436,12 @@ mod tests {
         app.usage = vec![
             crate::usage::Usage {
                 provider: "claude",
+                login_command: None,
                 windows: vec![window("5h", 0.0), window("week", 100.0)],
             },
             crate::usage::Usage {
                 provider: "codex",
+                login_command: None,
                 windows: vec![window("week", 18.0)],
             },
         ];
@@ -4448,6 +4482,7 @@ mod tests {
         let usages = [
             crate::usage::Usage {
                 provider: "claude",
+                login_command: None,
                 windows: vec![
                     window("5h", 3.0, 4 * 3600 + 1260),
                     window("week", 5.0, 6 * 86_400 + 15 * 3600),
@@ -4455,6 +4490,7 @@ mod tests {
             },
             crate::usage::Usage {
                 provider: "codex",
+                login_command: None,
                 // 20% eleven hours in, counted as a day's use, runs out in 4 more days.
                 windows: vec![window("week", 20.0, 6 * 86_400 + 13 * 3600)],
             },
@@ -4485,14 +4521,17 @@ mod tests {
         let usages = [
             crate::usage::Usage {
                 provider: "claude",
+                login_command: None,
                 windows: vec![window.clone()],
             },
             crate::usage::Usage {
                 provider: "claude2",
+                login_command: None,
                 windows: vec![window.clone()],
             },
             crate::usage::Usage {
                 provider: "codex",
+                login_command: None,
                 windows: vec![window],
             },
         ];
@@ -4502,10 +4541,51 @@ mod tests {
     }
 
     #[test]
+    fn expired_login_stays_visible_in_header_and_popup_until_usage_recovers() {
+        let mut app = App::new(SessionSnapshot::default());
+        app.usage = vec![
+            crate::usage::Usage {
+                provider: "claude",
+                windows: vec![],
+                login_command: Some("claude auth login".into()),
+            },
+            crate::usage::Usage::parse_codex(&serde_json::json!({
+                "rate_limit": {"primary_window": {"used_percent": 12}}
+            }))
+            .unwrap(),
+        ];
+        for width in [50, 80, 120] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
+            terminal.draw(|frame| render(frame, &app)).unwrap();
+            let text = buffer_text(terminal.backend().buffer());
+            assert!(
+                text.contains("claude expired: run claude auth login"),
+                "{text}"
+            );
+            assert!(text.contains("codex"), "{text}");
+        }
+        app.overlay = Overlay::Usage;
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        assert!(buffer_text(terminal.backend().buffer())
+            .contains("claude expired: run claude auth login"));
+        app.usage[0] = crate::usage::Usage::parse_claude(&serde_json::json!({
+            "seven_day": {"utilization": 25}
+        }))
+        .unwrap();
+        app.overlay = Overlay::None;
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(!text.contains("expired"), "{text}");
+        assert!(text.contains("25% used"), "{text}");
+    }
+
+    #[test]
     fn usage_header_labels_missing_reset_as_unknown() {
         let rows = usage_header_rows(
             &[crate::usage::Usage {
                 provider: "claude",
+                login_command: None,
                 windows: vec![crate::usage::Window {
                     label: "5h",
                     percent: 0.0,
@@ -4530,6 +4610,7 @@ mod tests {
         let mut app = App::new(SessionSnapshot::default());
         app.usage = vec![crate::usage::Usage {
             provider: "claude",
+            login_command: None,
             windows: vec![
                 window("5h", 60.0, 2 * 3600 + 900),
                 window("week", 4.0, 4 * 86_400 + 1800),
@@ -4608,6 +4689,26 @@ mod tests {
         assert_eq!(terminal.get_cursor().unwrap(), (5, 21));
         assert_eq!(terminal.backend().buffer().get(2, 21).symbol(), "a");
         assert_eq!(terminal.backend().buffer().get(4, 21).symbol(), "c");
+    }
+
+    #[test]
+    fn folder_search_shows_its_cursor_and_selection() {
+        let mut app = App::new(SessionSnapshot::default());
+        app.open_directory_picker();
+        for character in "one two".chars() {
+            app.push_input(character);
+        }
+        app.extend_input_selection(crate::app::CursorMovement::WordLeft);
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+
+        let (cursor_x, cursor_y) = terminal.get_cursor().unwrap();
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer.get(cursor_x, cursor_y).symbol(), "t");
+        assert_eq!(buffer.get(cursor_x, cursor_y).bg, palette().selected_bg);
+        assert_ne!(buffer.get(cursor_x - 1, cursor_y).bg, palette().selected_bg);
     }
 
     #[test]

@@ -6,10 +6,10 @@ use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 use std::time::UNIX_EPOCH;
 
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 
 use super::digest::Info;
-use super::tools::{HistoryHit, Turn, VoiceHost};
+use super::tools::{HistoryHit, HistoryQuery, Turn, VoiceHost};
 use crate::adapters::DiscoveryRequest;
 use crate::control::{ControlHub, RestorableSession};
 use crate::domain::{AgentSession, Capability, Provider, Runtime, SessionKind, SessionState};
@@ -152,6 +152,62 @@ impl DashboardHost {
     /// owned session is read on each refresh. The supervisor still decides
     /// whether the reply goes through, for example not while OpenCode waits on
     /// a question or permission prompt.
+    /// The messages of one session that match `words`, best or newest first.
+    fn search_one_session(
+        &self,
+        id: &str,
+        words: &[String],
+        request: &HistoryQuery,
+    ) -> Result<(Vec<HistoryHit>, Option<String>)> {
+        let indices = self.control.history_search_indices().unwrap_or_default();
+        let mut note = None;
+        if indices.is_empty() || indices.iter().any(|index| !index.is_ready()) {
+            note = Some(
+                "the index of conversations is still being built, so matching messages may be missing"
+                    .to_owned(),
+            );
+        }
+        let messages = indices
+            .iter()
+            .find_map(|index| {
+                index
+                    .matching_messages(id, words, request.recent, request.limit)
+                    .ok()
+                    .filter(|found| !found.is_empty())
+            })
+            .unwrap_or_default();
+        let (all, _) = self.control.restorable_sessions();
+        let (title, cwd, updated_ms) = match all.into_iter().find(|session| session.id == id) {
+            Some(session) => (session.name, session.cwd, session.updated_at_ms),
+            None => {
+                let info = self
+                    .infos()
+                    .into_iter()
+                    .find(|info| info.id == id)
+                    .ok_or_else(|| anyhow!("that session is not in the history"))?;
+                (info.title, info.cwd, info.updated_ms)
+            }
+        };
+        if messages.is_empty() && note.is_none() {
+            note = Some(
+                "no message in that session matches those words; try other words, or read_session for the latest messages"
+                    .to_owned(),
+            );
+        }
+        Ok((
+            vec![HistoryHit {
+                id: id.to_owned(),
+                title,
+                cwd,
+                updated_ms,
+                snippet: String::new(),
+                message: messages.first().cloned(),
+                messages,
+            }],
+            note,
+        ))
+    }
+
     fn messageable(&self, id: &str) -> Result<AgentSession> {
         let mut session = self.controllable(id)?;
         if session.capabilities.contains(&Capability::Reply)
@@ -284,19 +340,20 @@ impl VoiceHost for DashboardHost {
             .map(|turn| Turn {
                 you: turn.you,
                 it: turn.it,
+                replies: turn.replies,
             })
             .collect())
     }
 
-    fn search_history(
-        &self,
-        query: &str,
-        limit: usize,
-    ) -> Result<(Vec<HistoryHit>, Option<String>)> {
-        let words = search_words(query);
+    fn search_history(&self, request: &HistoryQuery) -> Result<(Vec<HistoryHit>, Option<String>)> {
+        let words = search_words(&request.query);
         if words.is_empty() {
             bail!("query needs words to look for");
         }
+        if let Some(id) = &request.session {
+            return self.search_one_session(id, &words, request);
+        }
+        let limit = request.limit;
         let (all, errors) = self.control.restorable_sessions();
         let sessions: Vec<RestorableSession> = all
             .into_iter()
@@ -384,7 +441,12 @@ impl VoiceHost for DashboardHost {
                 .unwrap_or_default();
             scored.push((words_hit, score, session, snippet));
         }
-        scored.sort_by(|a, b| (b.0, b.1, b.2.updated_at_ms).cmp(&(a.0, a.1, a.2.updated_at_ms)));
+        if request.recent {
+            scored.sort_by_key(|hit| std::cmp::Reverse(hit.2.updated_at_ms));
+        } else {
+            scored
+                .sort_by(|a, b| (b.0, b.1, b.2.updated_at_ms).cmp(&(a.0, a.1, a.2.updated_at_ms)));
+        }
         scored.truncate(limit);
         let mut cache = self.found.lock().unwrap();
         let hits = scored
@@ -410,6 +472,7 @@ impl VoiceHost for DashboardHost {
                     updated_ms: session.updated_at_ms,
                     snippet,
                     message,
+                    messages: Vec::new(),
                 }
             })
             .collect();

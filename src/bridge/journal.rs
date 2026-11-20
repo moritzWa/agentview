@@ -37,7 +37,9 @@ impl Journal {
           CREATE TABLE IF NOT EXISTS checkpoint(session_id TEXT PRIMARY KEY,cursor INTEGER NOT NULL,observed INTEGER NOT NULL,native INTEGER NOT NULL,state TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS cache(session_id TEXT NOT NULL,message_id TEXT NOT NULL,hash TEXT NOT NULL,PRIMARY KEY(session_id,message_id));
           CREATE TABLE IF NOT EXISTS pending(n INTEGER PRIMARY KEY AUTOINCREMENT,body TEXT NOT NULL,native INTEGER NOT NULL);
-          CREATE TABLE IF NOT EXISTS delivery(operation_id TEXT PRIMARY KEY,body TEXT NOT NULL,accepted INTEGER NOT NULL DEFAULT 0);")?;
+          CREATE TABLE IF NOT EXISTS held(n INTEGER PRIMARY KEY,session_id TEXT NOT NULL,body TEXT NOT NULL,native INTEGER NOT NULL);
+          CREATE TABLE IF NOT EXISTS delivery(operation_id TEXT PRIMARY KEY,body TEXT NOT NULL,accepted INTEGER NOT NULL DEFAULT 0);
+          CREATE TABLE IF NOT EXISTS start_op(operation_id TEXT PRIMARY KEY,body TEXT NOT NULL,session_id TEXT,prompt_accepted INTEGER);")?;
         Ok(Self { db })
     }
     pub fn checkpoint(&self, id: &str) -> Result<Option<Checkpoint>> {
@@ -156,6 +158,147 @@ impl Journal {
         }
         tx.commit()?;
         Ok(true)
+    }
+    /// Full current projection, uploaded beside the copy people can already read.
+    /// The local pointer moves only when the cloud confirms the last chunk.
+    pub fn stage_replace(&mut self, id: &str, capture: Capture, native: bool) -> Result<bool> {
+        if self.pending()?.is_some() {
+            bail!("drain pending history before staging");
+        }
+        let old = self.checkpoint(id)?;
+        if old.as_ref().is_some_and(|p| p.native != native) {
+            bail!("source format changed; re-pair required");
+        }
+        let upload = random_id()?;
+        let mut chunks: Vec<Vec<Message>> = vec![Vec::new()];
+        let mut bytes = 0;
+        for message in capture.messages {
+            let size = serde_json::to_vec(&message)?.len();
+            if size > 850_000 {
+                bail!("single message exceeds upload byte limit");
+            }
+            if !chunks.last().unwrap().is_empty()
+                && (bytes + size > 850_000 || chunks.last().unwrap().len() >= 400)
+            {
+                chunks.push(Vec::new());
+                bytes = 0;
+            }
+            bytes += size;
+            chunks.last_mut().unwrap().push(message);
+        }
+        let total = chunks.len();
+        let tx = self.db.transaction()?;
+        // Rebuilt from the chunks as they are confirmed, so a half-finished replace
+        // cannot leave the cache claiming messages the new copy does not have.
+        tx.execute("DELETE FROM cache WHERE session_id=?1", [id])?;
+        for (chunk, messages) in chunks.into_iter().enumerate() {
+            let body = json!({"version":1,"batch_id":random_id()?,"session_id":id,"kind":"replace","from":0,"through":capture.through,
+                "upload_id":upload,"chunk":chunk,"complete":chunk+1==total,"session":capture.state,"messages":messages,"delete_ids":[]});
+            tx.execute(
+                "INSERT INTO pending(body,native) VALUES (?1,?2)",
+                rusqlite::params![body.to_string(), native],
+            )?;
+        }
+        tx.commit()?;
+        Ok(true)
+    }
+    pub fn checkpoints(&self) -> Result<Vec<(String, i64)>> {
+        let mut q = self
+            .db
+            .prepare("SELECT session_id, cursor FROM checkpoint ORDER BY session_id")?;
+        let rows = q
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+    /// Drops batches the cloud permanently refused. The checkpoint is untouched,
+    /// so nothing is marked as synced; the session is retried later.
+    pub fn discard_pending(&mut self, session_id: &str) -> Result<()> {
+        let mut q = self.db.prepare("SELECT n,body FROM pending ORDER BY n")?;
+        let rows = q
+            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(q);
+        for (n, body) in rows {
+            let matches = serde_json::from_str::<Value>(&body)
+                .map(|v| v["session_id"] == session_id)
+                .unwrap_or(true);
+            if matches {
+                self.db.execute("DELETE FROM pending WHERE n=?1", [n])?;
+            }
+        }
+        Ok(())
+    }
+    /// Sets aside batches whose outcome is unknown (the cloud may have committed
+    /// them before failing). They are retried verbatim, never rebuilt, because a
+    /// rebuilt batch would start from a cursor the cloud has already passed.
+    pub fn hold_pending(&mut self, session_id: &str) -> Result<()> {
+        let tx = self.db.transaction()?;
+        let mut q = tx.prepare("SELECT n,body,native FROM pending ORDER BY n")?;
+        let rows = q
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, bool>(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(q);
+        for (n, body, native) in rows {
+            let mine = serde_json::from_str::<Value>(&body)
+                .map(|v| v["session_id"] == session_id)
+                .unwrap_or(false);
+            if mine {
+                tx.execute(
+                    "INSERT OR REPLACE INTO held(n,session_id,body,native) VALUES (?1,?2,?3,?4)",
+                    rusqlite::params![n, session_id, body, native],
+                )?;
+                tx.execute("DELETE FROM pending WHERE n=?1", [n])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+    pub fn has_held(&self, session_id: &str) -> Result<bool> {
+        Ok(self.db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM held WHERE session_id=?1)",
+            [session_id],
+            |r| r.get(0),
+        )?)
+    }
+    pub fn held_sessions(&self) -> Result<Vec<String>> {
+        let mut q = self
+            .db
+            .prepare("SELECT DISTINCT session_id FROM held ORDER BY session_id")?;
+        let rows = q
+            .query_map([], |r| r.get(0))?
+            .collect::<rusqlite::Result<Vec<String>>>()?;
+        Ok(rows)
+    }
+    /// Puts a session's held batches back at the end of the upload queue, in order.
+    pub fn restore_held(&mut self, session_id: &str) -> Result<()> {
+        let tx = self.db.transaction()?;
+        let mut q = tx.prepare("SELECT n,body,native FROM held WHERE session_id=?1 ORDER BY n")?;
+        let rows = q
+            .query_map([session_id], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, bool>(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(q);
+        for (n, body, native) in rows {
+            tx.execute(
+                "INSERT INTO pending(body,native) VALUES (?1,?2)",
+                rusqlite::params![body, native],
+            )?;
+            tx.execute("DELETE FROM held WHERE n=?1", [n])?;
+        }
+        tx.commit()?;
+        Ok(())
     }
     pub fn ack(&mut self, receipt: &Value) -> Result<()> {
         let tx = self.db.transaction()?;

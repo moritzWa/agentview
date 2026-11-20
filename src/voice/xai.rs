@@ -265,6 +265,21 @@ mod tests {
     }
 
     #[test]
+    fn the_grok_prompt_requires_silence_for_unfinished_thoughts() {
+        let update = session_update(&Settings::default(), "Sessions: none.");
+        let instructions = update["session"]["instructions"].as_str().unwrap();
+        assert!(
+            instructions.contains("Speak only when you have something substantive to contribute.")
+        );
+        assert!(instructions.contains(
+            "When the developer pauses, trails off, or leaves a sentence unfinished, stay silent"
+        ));
+        assert!(instructions.contains(
+            "NEVER say \"sounds like you're mid-thought\", \"go ahead\", or similar filler acknowledgments."
+        ));
+    }
+
+    #[test]
     fn speed_is_kept_inside_what_grok_accepts() {
         assert_eq!(
             speed_update(3.0)["session"]["audio"]["output"]["speed"],

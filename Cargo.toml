@@ -1,6 +1,6 @@
 [package]
 name = "agentview"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.75"
 description = "Open terminal dashboard for supervising multiple coding-agent CLIs"
@@ -25,6 +25,7 @@ ratatui = "=0.26.3"
 serde = { version = "=1.0.203", features = ["derive"] }
 serde_json = "=1.0.117"
 sha2 = "=0.10.8"
+md-5 = "=0.10.6"
 rusqlite = { version = "=0.31.0", features = ["bundled", "hooks"] }
 tungstenite = { version = "=0.21.0", default-features = false, features = ["handshake"] }
 # Keep the transitive URL parser compatible with the project's Rust 1.75 MSRV.

@@ -34,6 +34,8 @@ use crate::process::{CancellableProcessRunner, CommandRequest, CommandRunner};
 // `child` is when the newest unfinished turn of a subagent session began,
 // leaving out the memory plugin's housekeeping sessions (`opencode-memory ...`).
 pub(super) const GLOBAL_SESSION_ROWS: &str = "SELECT json_object('id', s.id, 'title', s.title, 'created', s.time_created, 'updated', s.time_updated, 'projectId', s.project_id, 'directory', s.directory, 'userCreated', (SELECT m.time_created FROM message m WHERE m.session_id = s.id AND json_extract(m.data, '$.role') = 'user' AND COALESCE(json_extract(m.data, '$.synthetic'), 0) = 0 ORDER BY m.time_created DESC, m.id DESC LIMIT 1), 'last', json((SELECT json_object('role', json_extract(m.data, '$.role'), 'created', m.time_created, 'completed', json_extract(m.data, '$.time.completed'), 'midTurn', json_extract(m.data, '$.midTurn'), 'question', EXISTS (SELECT 1 FROM part p WHERE p.message_id = m.id AND json_extract(p.data, '$.tool') = 'question' AND json_extract(p.data, '$.state.status') IN ('pending', 'running'))) FROM message m WHERE m.session_id = s.id ORDER BY m.time_created DESC, m.id DESC LIMIT 1)), 'child', (SELECT MAX(m.time_created) FROM session c JOIN message m ON m.id = (SELECT m2.id FROM message m2 WHERE m2.session_id = c.id ORDER BY m2.time_created DESC, m2.id DESC LIMIT 1) WHERE c.parent_id = s.id AND COALESCE(c.title, '') NOT LIKE 'opencode-memory %' AND (json_extract(m.data, '$.role') = 'user' OR json_extract(m.data, '$.time.completed') IS NULL))) AS record FROM session s WHERE s.parent_id IS NULL";
+/// The tail of [`GLOBAL_SESSION_ROWS`] that names its rows.
+const GLOBAL_SESSION_ROOTS: &str = "FROM session s WHERE s.parent_id IS NULL";
 const MODEL_DISCOVERY_TIMEOUT_SECS: u64 = 30;
 const MAX_MODEL_CATALOG_BYTES: usize = 4 * 1024 * 1024;
 const LAUNCH_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(8);
@@ -588,10 +590,21 @@ impl ProviderController for OpenCodeController {
         };
         let exit = crate::native_session::run(command, &session.id)?;
         if matches!(exit, crate::native_session::NativeSessionExit::Backgrounded) {
-            self.pause_speech_in(&session.cwd);
+            self.pause_speech_in_background(&session.cwd);
         }
         native_outcome(exit, &session.provider_session_id, &session.name)
     }
+}
+
+fn pause_speech_via(supervisor: &OpenCodeSupervisor, cwd: &Path) {
+    if supervisor.is_v2().unwrap_or(true) {
+        if let Some((_, reach)) = supervisor.known_client_reach() {
+            let (_, client) = shared_client_for(reach, cwd);
+            let _ = supervisor.run_targeted_tui_command(&client, "speech.pause");
+        }
+        return;
+    }
+    let _ = supervisor.run_tui_command(cwd, "speech.pause");
 }
 
 /// `cwd`, or once the directory is gone (a removed worktree) the checkout that
@@ -928,7 +941,7 @@ impl OpenCodeController {
             }
         };
         if matches!(exit, crate::native_session::NativeSessionExit::Backgrounded) {
-            self.pause_speech_in(&session.cwd);
+            self.pause_speech_in_background(&session.cwd);
         } else if let Ok(mut clients) = shared_clients().lock() {
             clients.remove(key);
         }
@@ -1140,15 +1153,29 @@ impl OpenCodeController {
     /// the dashboard. Pausing keeps its place for when the session is reopened.
     fn pause_speech_in(&self, cwd: &Path) {
         if let Some(supervisor) = self.supervisor.as_ref() {
-            if supervisor.is_v2().unwrap_or(true) {
-                if let Some((_, reach)) = supervisor.known_client_reach() {
-                    let (_, client) = shared_client_for(reach, cwd);
-                    let _ = supervisor.run_targeted_tui_command(&client, "speech.pause");
-                }
-                return;
-            }
-            let _ = supervisor.run_tui_command(cwd, "speech.pause");
+            pause_speech_via(supervisor, cwd);
         }
+    }
+
+    /// The same, off the caller's thread. Leaving a TUI must not wait for the
+    /// server's health checks and the command's round trip before the
+    /// dashboard is back on screen.
+    fn pause_speech_in_background(&self, cwd: &Path) {
+        let Some(supervisor) = self.supervisor.clone() else {
+            return;
+        };
+        let cwd = cwd.to_path_buf();
+        let _ = std::thread::Builder::new()
+            .name("opencode-pause-speech".into())
+            .spawn(move || {
+                let started = std::time::Instant::now();
+                pause_speech_via(&supervisor, &cwd);
+                crate::perf!(
+                    "pause-speech",
+                    "took={}",
+                    crate::perf_log::ms(started.elapsed())
+                );
+            });
     }
 
     fn owned_session(&self, session: &AgentSession) -> Result<Option<ManagedOpenCodeSession>> {
@@ -2195,12 +2222,21 @@ fn session_query(scope: &Scope) -> String {
     }
 }
 
-fn global_session_query(limit: usize, oldest_first: bool) -> String {
-    format!(
-        "{GLOBAL_SESSION_ROWS} ORDER BY s.time_updated {} LIMIT {}",
-        if oldest_first { "ASC" } else { "DESC" },
-        limit.max(1)
-    )
+pub(super) fn global_session_query(limit: usize, oldest_first: bool) -> String {
+    let direction = if oldest_first { "ASC" } else { "DESC" };
+    let limit = limit.max(1);
+    // Without an index on time_updated, SQLite sorts every row of the plain
+    // query with its record already built, so each refresh paid the correlated
+    // message lookups for all root sessions (0.4 to 1.9 s on a 3,000-session
+    // store) to keep 250. Choosing the window first builds only those rows.
+    match GLOBAL_SESSION_ROWS.strip_suffix(GLOBAL_SESSION_ROOTS) {
+        Some(columns) => format!(
+            "{columns}FROM (SELECT * FROM session WHERE parent_id IS NULL ORDER BY time_updated {direction} LIMIT {limit}) s ORDER BY s.time_updated {direction}"
+        ),
+        None => format!(
+            "{GLOBAL_SESSION_ROWS} ORDER BY s.time_updated {direction} LIMIT {limit}"
+        ),
+    }
 }
 
 /// A quoted SQL list of the IDs that are plain OpenCode identifiers. Anything

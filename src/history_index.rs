@@ -472,30 +472,62 @@ impl HistoryIndex {
         session: &str,
         words: &[String],
     ) -> Result<Option<MessageMatch>> {
-        if self.provider.is_some() || !self.path.exists() {
-            return Ok(None);
+        Ok(self
+            .matching_messages(session, words, false, 1)?
+            .into_iter()
+            .next())
+    }
+
+    /// Up to `limit` distinct matching messages of one session, each with its
+    /// adjacent messages. Best first, or newest first when `recent`. A message
+    /// holding every word comes before one holding only some.
+    pub fn matching_messages(
+        &self,
+        session: &str,
+        words: &[String],
+        recent: bool,
+        limit: usize,
+    ) -> Result<Vec<MessageMatch>> {
+        if self.provider.is_some() || !self.path.exists() || limit == 0 {
+            return Ok(Vec::new());
         }
-        let query = words
+        let quoted: Vec<String> = words
             .iter()
             .filter(|word| word.chars().count() >= 3)
             .map(|word| format!("\"{}\"", word.replace('"', "\"\"")))
-            .collect::<Vec<_>>()
-            .join(" OR ");
-        if query.is_empty() {
-            return Ok(None);
+            .collect();
+        if quoted.is_empty() {
+            return Ok(Vec::new());
         }
+        let any = quoted.join(" OR ");
+        let all = quoted.join(" AND ");
         let mut db = read_only(&self.path)?;
         db.busy_timeout(Duration::from_millis(50))?;
         let tx = db.transaction()?;
         let root = session.strip_prefix("opencode:host:").unwrap_or(session);
-        let found = tx
-            .query_row(
-                "SELECT d.id,d.source,d.message_id,d.role,d.created_ms,d.text
+        let order = if recent {
+            "d.created_ms DESC, d.id DESC"
+        } else {
+            "CASE WHEN instr(lower(d.text),?3)>0 THEN 0 ELSE 1 END,
+             bm25(messages_fts),d.created_ms DESC,d.id DESC"
+        };
+        let sql = format!(
+            "SELECT d.id,d.source,d.message_id,d.role,d.created_ms,d.text
              FROM messages_fts JOIN documents d ON d.id=messages_fts.rowid
              WHERE messages_fts MATCH ?1 AND d.root=?2 AND d.message_id IS NOT NULL
-             ORDER BY CASE WHEN instr(lower(d.text),?3)>0 THEN 0 ELSE 1 END,
-                      bm25(messages_fts),d.created_ms DESC,d.id DESC LIMIT 1",
-                params![query, root, words.join(" ")],
+             ORDER BY {order} LIMIT ?4"
+        );
+        type Row = (i64, String, String, String, Option<u64>, String);
+        let phrase = words.join(" ");
+        let mut rows: Vec<Row> = Vec::new();
+        // Messages with every word first; the looser match only fills the rest.
+        for (pass, query) in [&all, &any].into_iter().enumerate() {
+            if rows.len() >= limit || (pass == 1 && quoted.len() == 1) {
+                break;
+            }
+            let mut statement = tx.prepare(&sql)?;
+            let found = statement.query_map(
+                params![query, root, phrase, (limit * 4 + 8) as i64],
                 |row| {
                     Ok((
                         row.get::<_, i64>(0)?,
@@ -506,12 +538,20 @@ impl HistoryIndex {
                         row.get::<_, String>(5)?,
                     ))
                 },
-            )
-            .optional()?;
-        let Some((anchor, source, message, role, created_at_ms, text)) = found else {
-            return Ok(None);
-        };
-        let around = |before: bool| -> Result<Vec<MessageExcerpt>> {
+            )?;
+            for row in found {
+                let row = row?;
+                if rows.iter().all(|seen| seen.2 != row.2) {
+                    rows.push(row);
+                }
+            }
+        }
+        rows.truncate(limit);
+        let around = |source: &str,
+                      message: &str,
+                      anchor: i64,
+                      before: bool|
+         -> Result<Vec<MessageExcerpt>> {
             let (operator, order) = if before { ("<", "DESC") } else { (">", "ASC") };
             let sql = format!(
                 "SELECT message_id,role,created_ms FROM documents
@@ -541,18 +581,21 @@ impl HistoryIndex {
                 text: parts.join("\n").chars().take(600).collect(),
             }])
         };
-        let result = MessageMatch {
-            source_session_id: source.clone(),
-            before: around(true)?,
-            matched: MessageExcerpt {
-                id: message.clone(),
-                role,
-                created_at_ms,
-                text: match_excerpt(&text, words),
-            },
-            after: around(false)?,
-        };
-        Ok(Some(result))
+        rows.into_iter()
+            .map(|(anchor, source, message, role, created_at_ms, text)| {
+                Ok(MessageMatch {
+                    before: around(&source, &message, anchor, true)?,
+                    matched: MessageExcerpt {
+                        id: message.clone(),
+                        role,
+                        created_at_ms,
+                        text: match_excerpt(&text, words),
+                    },
+                    after: around(&source, &message, anchor, false)?,
+                    source_session_id: source,
+                })
+            })
+            .collect()
     }
 
     /// `false` means another instance refreshed recently (or owns the writer).
@@ -1088,6 +1131,64 @@ pub(crate) mod tests {
             .matching_message("opencode:host:fork_v2", &["latent working memory".into()])
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn one_sessions_messages_come_back_newest_first_or_best_first() {
+        let (_dir, index) = v2_fixture(false, false);
+        let source = Connection::open(&index.source).unwrap();
+        for (id, seq, time, role, text) in [
+            ("p1", 10, 50, "assistant", "Pricing is flat for now."),
+            ("p2", 11, 55, "user", "Show the pricing tiers."),
+            ("p3", 12, 60, "assistant", "Pricing again, nothing else."),
+            ("p4", 13, 70, "assistant", "Unrelated closing note."),
+        ] {
+            let data = if role == "user" {
+                serde_json::json!({"text": text})
+            } else {
+                serde_json::json!({"content":[{"type":"text","text":text}]})
+            };
+            source
+                .execute(
+                    "INSERT INTO session_message VALUES(?1,'ses_v2',?2,?3,?4,?4,?5)",
+                    rusqlite::params![id, role, seq, time, data.to_string()],
+                )
+                .unwrap();
+        }
+        assert!(refresh(&index));
+        let session = "opencode:host:ses_v2";
+        let ids = |found: Vec<MessageMatch>| {
+            found
+                .into_iter()
+                .map(|found| found.matched.id)
+                .collect::<Vec<_>>()
+        };
+        let recent = index
+            .matching_messages(session, &["pricing".into()], true, 3)
+            .unwrap();
+        assert_eq!(ids(recent), ["p3", "p2", "p1"]);
+        let limited = index
+            .matching_messages(session, &["pricing".into()], true, 1)
+            .unwrap();
+        assert_eq!(ids(limited), ["p3"]);
+        // The message holding both words outranks newer ones holding one.
+        let best = index
+            .matching_messages(session, &["pricing".into(), "tiers".into()], false, 2)
+            .unwrap();
+        assert_eq!(best[0].matched.id, "p2");
+        assert_eq!(best.len(), 2, "looser matches fill the remaining room");
+        let newest_with_both = index
+            .matching_messages(session, &["pricing".into(), "tiers".into()], true, 1)
+            .unwrap();
+        assert_eq!(ids(newest_with_both), ["p2"]);
+        assert!(index
+            .matching_messages(session, &["pricing".into()], true, 0)
+            .unwrap()
+            .is_empty());
+        assert!(index
+            .matching_messages("opencode:host:fork_v2", &["pricing".into()], true, 3)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

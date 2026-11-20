@@ -16,6 +16,31 @@ pub struct Message {
     pub text: String,
 }
 
+/// The bytes both sides hash. Field order is fixed so a Rust hash equals a JS hash.
+pub fn projection_text(cursor: i64, state: &Value, messages: &[Message]) -> String {
+    let visible = state
+        .get("visible_before")
+        .and_then(|v| v.as_i64())
+        .map(|n| n.to_string())
+        .unwrap_or_default();
+    let mut lines = vec![
+        format!("cursor={cursor}"),
+        format!("archived={}", state["archived"].as_bool().unwrap_or(false)),
+        format!("deleted={}", state["deleted"].as_bool().unwrap_or(false)),
+        format!("title={}", state["title"].as_str().unwrap_or("")),
+        format!("visible_before={visible}"),
+    ];
+    let mut ordered = messages.to_vec();
+    ordered.sort_by(|a, b| a.order.cmp(&b.order).then(a.id.cmp(&b.id)));
+    for message in ordered {
+        lines.push(format!(
+            "{}\t{}\t{}\t{}",
+            message.id, message.order, message.role, message.text
+        ));
+    }
+    lines.join("\n")
+}
+
 pub struct Capture {
     pub through: i64,
     pub state: Value,
@@ -49,7 +74,7 @@ fn check_schema(db: &Connection) -> Result<()> {
 }
 
 pub fn sessions(db: &Connection) -> Result<Vec<String>> {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(60);
     db.progress_handler(10_000, Some(move || Instant::now() > deadline));
     let mut s = db.prepare("SELECT id FROM session_v2 ORDER BY id")?;
     let mut ids = s
@@ -129,9 +154,14 @@ pub fn capture(db: &mut Connection, id: &str, after: Option<i64>) -> Result<Opti
                     reconcile = true;
                 }
                 expected = seq + 1;
-                validate_event(&kind)?;
-                if let Some(mid) = row.get::<_, Option<String>>(2)? {
-                    dirty.insert(mid);
+                // A new OpenCode event name must not freeze this session forever.
+                // Reproject the current messages instead of trusting this event.
+                if validate_event(&kind).is_ok() {
+                    if let Some(mid) = row.get::<_, Option<String>>(2)? {
+                        dirty.insert(mid);
+                    }
+                } else {
+                    reconcile = true;
                 }
             }
             // V2 persists sequence watermarks even when event-body persistence
@@ -155,7 +185,9 @@ pub fn capture(db: &mut Connection, id: &str, after: Option<i64>) -> Result<Opti
             let row=tx.query_row("SELECT id,type,seq,time_created,time_updated,data FROM session_message WHERE id=?1 AND session_id=?2",rusqlite::params![mid,id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?,r.get::<_,String>(5)?))).optional()?;
             if let Some((mid, kind, order, created, updated, raw)) = row {
                 if kind == "assistant" {
-                    let value: Value = serde_json::from_str(&raw)?;
+                    let value: Value = parse_json(&raw).with_context(|| {
+                        format!("invalid assistant message {mid} in session {id}")
+                    })?;
                     if !value["content"].is_array() && !has_table(&tx, "session_part")? {
                         bail!("unknown assistant content schema");
                     }
@@ -236,7 +268,7 @@ pub fn capture(db: &mut Connection, id: &str, after: Option<i64>) -> Result<Opti
     tx.commit()?;
     Ok(Some(Capture {
         through,
-        state: json!({"title":title,"archived":archived.is_some(),"visible_before":visible_before,"deleted":false}),
+        state: json!({"title":fit_title(title),"archived":archived.is_some(),"visible_before":visible_before,"deleted":false}),
         messages,
         ids,
         cwd,
@@ -252,13 +284,67 @@ fn split_text(db: &Connection, id: &str) -> Result<String> {
     })? {
         let (kind, raw) = row?;
         if kind == "text" {
-            let p: Value = serde_json::from_str(&raw)?;
+            let p: Value =
+                parse_json(&raw).with_context(|| format!("invalid text part in message {id}"))?;
             parts.push(p["text"].as_str().context("invalid split text")?.to_owned());
         } else if !matches!(kind.as_str(), "tool" | "reasoning") {
             bail!("unknown source part type");
         }
     }
     Ok(parts.join("\n"))
+}
+
+/// OpenCode can store text cut in the middle of an emoji, leaving a lone UTF-16
+/// surrogate escape that serde_json rejects. One such message must not block
+/// syncing every later session, so retry with those escapes replaced by U+FFFD.
+pub fn parse_json(raw: &str) -> Result<Value> {
+    match serde_json::from_str(raw) {
+        Ok(value) => Ok(value),
+        Err(first) => serde_json::from_str(&replace_lone_surrogates(raw)).map_err(|_| first.into()),
+    }
+}
+
+fn replace_lone_surrogates(raw: &str) -> String {
+    fn unit(chars: &[char], at: usize) -> Option<u32> {
+        if chars.get(at) != Some(&'\\') || chars.get(at + 1) != Some(&'u') {
+            return None;
+        }
+        let hex: String = chars.get(at + 2..at + 6)?.iter().collect();
+        u32::from_str_radix(&hex, 16).ok()
+    }
+    let chars: Vec<char> = raw.chars().collect();
+    let mut out = String::with_capacity(raw.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] != '\\' {
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        }
+        match unit(&chars, i) {
+            Some(0xD800..=0xDBFF) => {
+                if matches!(unit(&chars, i + 6), Some(0xDC00..=0xDFFF)) {
+                    out.extend(&chars[i..i + 12]);
+                    i += 12;
+                } else {
+                    out.push_str("\\ufffd");
+                    i += 6;
+                }
+            }
+            Some(0xDC00..=0xDFFF) => {
+                out.push_str("\\ufffd");
+                i += 6;
+            }
+            _ => {
+                out.push('\\');
+                if let Some(next) = chars.get(i + 1) {
+                    out.push(*next);
+                }
+                i += 2;
+            }
+        }
+    }
+    out
 }
 
 pub fn project(
@@ -272,7 +358,7 @@ pub fn project(
     if !matches!(kind, "user" | "assistant") {
         return Ok(None);
     }
-    let value: Value = serde_json::from_str(raw).context("invalid source message")?;
+    let value: Value = parse_json(raw).context("invalid source message")?;
     let text = if kind == "user" {
         value["text"]
             .as_str()
@@ -302,8 +388,47 @@ pub fn project(
         order,
         created_at: created,
         updated_at: updated,
-        text,
+        text: fit_text(text),
     }))
+}
+
+const TEXT_LIMIT: usize = 800_000;
+const TRUNCATED: &str = "\n[Agent View omitted the rest of this message: too large to sync]";
+
+/// The cloud rejects NUL characters and oversized text. A single such message
+/// must not stall its session forever, so make it fit and say so visibly.
+fn fit_text(text: String) -> String {
+    let mut text = if text.contains('\0') {
+        text.replace('\0', "\u{fffd}")
+    } else {
+        text
+    };
+    if serde_json::to_vec(&text).map_or(0, |v| v.len()) <= TEXT_LIMIT {
+        return text;
+    }
+    while serde_json::to_vec(&text).map_or(0, |v| v.len()) > TEXT_LIMIT - TRUNCATED.len() {
+        let mut end = text.len() * 9 / 10;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+    }
+    text.push_str(TRUNCATED);
+    text
+}
+
+fn fit_title(title: String) -> String {
+    let title = title.replace('\0', "\u{fffd}");
+    let mut units = 0;
+    let mut end = title.len();
+    for (index, ch) in title.char_indices() {
+        units += ch.len_utf16();
+        if units > 1000 {
+            end = index;
+            break;
+        }
+    }
+    title[..end].to_owned()
 }
 
 fn validate_event(kind: &str) -> Result<()> {

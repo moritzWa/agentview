@@ -137,7 +137,11 @@ impl FixtureDemo {
                         })
                     })
                     .collect::<Vec<_>>();
-                (!windows.is_empty()).then_some(crate::usage::Usage { provider, windows })
+                (!windows.is_empty()).then_some(crate::usage::Usage {
+                    provider,
+                    windows,
+                    login_command: None,
+                })
             })
             .collect::<Vec<_>>();
         usage.sort_by(|left, right| left.provider.cmp(right.provider));

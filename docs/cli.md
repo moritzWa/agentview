@@ -548,7 +548,7 @@ label.
 | Group heading | `enter` | Collapse or expand the group. |
 | Session row | `enter` or `→` | Suspend the dashboard and open the provider's full native interface. The physical screen is cleared before the provider draws. |
 | Provider-native interface | `←` / `→` twice at a cursor boundary | The first arrow is forwarded. If the cursor does not move, a 1.6-second bottom-line hint appears; repeat the same arrow to retain the frontend and return to agentview. In Claude Code, `←` at an empty prompt (where Claude shows "← for agents") returns at once and never opens Claude's agents view; OpenCode also returns on one `←`. |
-| Provider-native interface | `shift+←` / `shift+→` | Return immediately from anywhere. Plain arrows otherwise remain available for line editing. `enter` or `→` on the same dashboard row reattaches and restores its terminal screen. |
+| Provider-native interface | `F13`, `shift+←` / `shift+→` | Return immediately from anywhere. In an OpenCode session whose prompt has a draft, Shift+arrow selects text instead and only F13 returns. A plain arrow that only collapses a selection never returns. Plain arrows otherwise remain available for line editing. `enter` or `→` on the same dashboard row reattaches and restores its terminal screen. |
 | Inline Peek | `←` | Return to the session list without opening the native provider interface. |
 | Session row | `space` | Open the inline Peek panel and inspect transcript/request details when capability is advertised. |
 | Inspect peek | type, `enter` | Send an owned provider reply/steer or the current structured answer. |
@@ -602,6 +602,41 @@ show an authority notice for an observe-only, mismatched, expired, or otherwise
 unsupported target. Approval `y` is never offered for a file change lacking a
 correlated diff, expanded permissions, or unknown request form. See the
 [control model](control-model.md) for the exact boundary.
+
+### A dedicated key to return to the dashboard
+
+`Shift+←` / `→` selects text in an OpenCode prompt that has a draft, and `←` only
+returns at an empty prompt, so none of them is a reliable way back. Map any key
+to **F13** and it returns from any provider's native interface at any time. The
+draft, selection and cursor stay where they were. agentview reads F13 in both the
+legacy form (`CSI 25 ~`) and the kitty keyboard form (`CSI 57376 u`) that some
+terminals switch to while a provider is in front.
+
+With [Karabiner-Elements](https://karabiner-elements.pqrs.org/) on macOS, this
+rule turns Cmd+H into F13 inside Ghostty only, where it would otherwise hide the
+app. Add it as a rule in `karabiner.json`, or in a file under
+`~/.config/karabiner/assets/complex_modifications/` as in the
+[work-only browsing setup](work-view.md#global-shortcut-on-macos):
+
+```json
+{
+  "description": "Ghostty: Cmd+H returns to agentview (F13)",
+  "manipulators": [
+    {
+      "type": "basic",
+      "conditions": [
+        {"type": "frontmost_application_if", "bundle_identifiers": ["^com\\.mitchellh\\.ghostty$"]}
+      ],
+      "from": {"key_code": "h", "modifiers": {"mandatory": ["command"]}},
+      "to": [{"key_code": "f13"}]
+    }
+  ]
+}
+```
+
+Karabiner names physical keys, so on a non-QWERTY layout use the key that types
+the letter you want. Pick a combination you don't use in your terminal. Any other
+tool that can send F13 works the same way.
 
 ### Session migration
 
@@ -709,7 +744,9 @@ On the dashboard, `/defer` uses the selected session's existing wake;
 works, for example `/defer 2026-12-01T10:00 Check the reply`. `/keep` brings the
 selected session back without cancelling its wakes. Both commands currently
 require a host OpenCode session and the local helper. `Ctrl+Y` or `/scheduled`
-expands the deferred section in either view.
+expands the deferred section in either view. Set `AGENTVIEW_DISABLE_CTRL_Y=1`
+to turn the `Ctrl+Y` key off and keep `/scheduled`. Switching views keeps
+Paused and Scheduled as they were.
 Scheduled stays at the top directly below Paused. Shell-exit notifications
 still count as session activity, but do not count as new messages from you and
 cannot clear a defer. Reminder and plain rows share the same column widths.

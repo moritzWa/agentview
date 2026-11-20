@@ -4,8 +4,29 @@ The opt-in bridge copies visible conversation text to a private MCP server.
 ChatGPT can search the copy while the Mac is offline. An explicit send enters a
 separate queue. OpenCode receives it when the connector reconnects.
 
-Deploy [voizecode/bridge](https://github.com/moritzWa/voizecode/tree/main/bridge)
-and configure owner login before pairing.
+The cloud implementation lives in [bridge](../bridge/README.md). Operators can
+[deploy it and configure owner login](../bridge/SETUP.md) before pairing. Existing
+paired installations need no changes after the repository move.
+
+## Connect ChatGPT mobile voice
+
+In ChatGPT's app/connector settings, add the private server's `/mcp` URL with
+OAuth. The existing deployment is
+`https://agentvoice-private.moritzw.workers.dev/mcp`. Sign in with the configured
+Google owner and approve the requested read/send scopes. ChatGPT must allow
+custom MCP apps for your account. Connect on the web if the mobile app does not
+offer setup, then use the connected **AgentVoice** app in ChatGPT on your phone.
+
+ChatGPT mobile Live voice can search history and send approved instructions to
+existing sessions. It cannot create sessions, stop agents, or answer native
+permission/question prompts through this bridge. Check `message_status` for
+delivery and completion; a queued receipt is not proof of execution.
+
+This is **separate from [built-in Voice Mode](voice.md)**, which runs OpenAI/Grok
+audio in Agent View. ChatGPT mobile voice uses ChatGPT's audio and MCP connection.
+It needs neither Agent View's voice API keys nor an open dashboard.
+
+## Pair the Mac
 
 ```console
 agentview --opencode-bin ~/.local/bin/opencode-dev bridge pair
@@ -33,6 +54,8 @@ All dates and sessions are copied, including archived history and native forks.
 Only user text and assistant text are allowed. Tool output, reasoning, files and
 native provider payloads are excluded. Edits, removals and revert boundaries
 replace the remote view after sync. Chunked changes stay hidden until committed.
+Session metadata also includes the working directory and its folder label, as
+requested for project grouping. No file contents or filesystem listings are sent.
 
 The backend can read copied text. ChatGPT/OpenAI can read retrieved text. HTTPS
 and encrypted disks do not hide it from those services. A local revert cannot
@@ -40,14 +63,30 @@ recall content already retrieved by ChatGPT.
 
 ## Freshness and queued work
 
-Idle sync runs every 15 minutes so Neon can suspend. Mobile requests notify the
-connector to check more often for five minutes. Reads report the last cloud sync
-and successful source check. Offline reads are snapshots.
+Idle history sync runs every 15 minutes so Neon can suspend. Five seconds is
+only the loop tick while a phone request has asked for a faster check, for about
+five minutes. It is not the idle interval. A failed scan backs off 30 seconds
+and does not stamp history as fresh. One bad session does not block the others.
+Reads report the last cloud sync and successful source check. Offline reads are
+snapshots. `mac_presence` separates the connector heartbeat from history
+freshness. A queued message is not proof the Mac is online. Silence is unknown
+internet, not a claimed outage, because sleep looks the same.
 
 `list_sessions(status="needs_you")` reads the same native states as the dashboard,
 including questions and approvals. It excludes hidden and paused rows. Status
 snapshots contain IDs and typed states, not tool output or conversation text.
 Offline results are last-known, not proof that a session is still working.
+The default list is a small human-recent overview, not a page of old completed
+sessions. `status="active"` returns working/waiting sessions and recent replies
+whose need for input has not been assessed. Rows include the last two visible
+messages per role, in source order. Long messages preserve their
+first and last 20%, subject to the shared text budget, with an explicit middle-
+omitted marker. Tool-only assistant messages cannot displace actual text replies.
+Whole-set counts, directory metadata and those excerpts
+let the phone answer and ask a pending decision without opening each history.
+The connector reuses the dashboard's status overlays and saved turn judgements.
+Missing judgements are explicit; a finished turn alone does not mean no reply is
+needed. This adds no summary-model calls and no tool-output sync.
 `read_session` defaults to the latest messages. Its `before` and `after` values
 are message offsets. The sync `cursor` is not a message offset.
 

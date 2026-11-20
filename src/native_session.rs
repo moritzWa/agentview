@@ -8,7 +8,7 @@
 //! Shift+Left and Shift+Right are immediate equivalents. In OpenCode, a Ctrl+X
 //! that no other key follows returns too and asks the dashboard to treat it as
 //! its own Ctrl+X on that row; a quick follow-up key keeps it OpenCode's
-//! leader. The
+//! leader (with `AGENTVIEW_OPENCODE_LEADER=off` it returns at once). The
 //! provider process keeps running on its own pseudo-terminal, and a drain
 //! thread holds the screen it produces. Selecting the same row attaches that
 //! live screen again.
@@ -40,6 +40,18 @@ const ARROW_RETURN_WINDOW: Duration = Duration::from_millis(1600);
 /// before it counts as the dashboard's removal key.
 const LEADER_HOLD: Duration = Duration::from_millis(350);
 const CTRL_X: u8 = 0x18;
+
+/// `AGENTVIEW_OPENCODE_LEADER=off` says OpenCode's Ctrl+X leader sequences are
+/// not used, so a Ctrl+X is the removal key without the wait for a second key.
+fn opencode_leader_off() -> bool {
+    static OFF: OnceLock<bool> = OnceLock::new();
+    *OFF.get_or_init(|| {
+        std::env::var("AGENTVIEW_OPENCODE_LEADER").is_ok_and(|value| value == "off")
+    })
+}
+/// What Cmd+Z sends. It undoes a hide on the dashboard, so the provider's own
+/// view must not receive it and suspend itself.
+const CTRL_Z: u8 = 0x1a;
 const CTRL_K: u8 = 0x0b;
 const CTRL_BACKSLASH: u8 = 0x1c;
 const CTRL_RIGHT_BRACKET: u8 = 0x1d;
@@ -262,7 +274,68 @@ static REMOVAL_REQUESTED: std::sync::atomic::AtomicBool = std::sync::atomic::Ato
 /// Whether the last foreground session returned through the removal key,
 /// clearing the request so it applies once.
 pub fn take_removal_request() -> bool {
-    REMOVAL_REQUESTED.swap(false, std::sync::atomic::Ordering::SeqCst)
+    let requested = REMOVAL_REQUESTED.swap(false, std::sync::atomic::Ordering::SeqCst);
+    if requested {
+        if let Ok(mut trace) = REMOVAL_TRACE.lock() {
+            if let Some(trace) = trace.as_mut() {
+                trace.consumed_at = Some(Instant::now());
+            }
+        }
+    }
+    requested
+}
+
+/// Where the time between the removal key and the dashboard's redraw goes,
+/// written to the perf log once the redraw has happened.
+struct RemovalTrace {
+    key_at: Instant,
+    detach_at: Option<Instant>,
+    consumed_at: Option<Instant>,
+}
+
+static REMOVAL_TRACE: Mutex<Option<RemovalTrace>> = Mutex::new(None);
+
+fn trace_removal_key(key_at: Instant) {
+    if let Ok(mut trace) = REMOVAL_TRACE.lock() {
+        *trace = Some(RemovalTrace {
+            key_at,
+            detach_at: None,
+            consumed_at: None,
+        });
+    }
+}
+
+#[cfg(unix)]
+fn trace_removal_detach() {
+    if let Ok(mut trace) = REMOVAL_TRACE.lock() {
+        if let Some(trace) = trace.as_mut() {
+            trace.detach_at = Some(Instant::now());
+        }
+    }
+}
+
+/// Called after every dashboard draw: the first one after a removal key has
+/// been turned into the confirmation row logs how long each step took.
+pub fn note_dashboard_drawn() {
+    let Ok(mut slot) = REMOVAL_TRACE.lock() else {
+        return;
+    };
+    let Some(consumed_at) = slot.as_ref().and_then(|trace| trace.consumed_at) else {
+        return;
+    };
+    let trace = slot.take().expect("checked above");
+    let now = Instant::now();
+    let since = |later: Instant, earlier: Option<Instant>| {
+        crate::perf_log::ms(earlier.map_or(Duration::ZERO, |earlier| later.duration_since(earlier)))
+    };
+    crate::perf!(
+        "removal-key",
+        "hold={} leave={} draw={} total={}",
+        since(trace.detach_at.unwrap_or(trace.key_at), Some(trace.key_at)),
+        since(consumed_at, trace.detach_at),
+        since(now, Some(consumed_at)),
+        since(now, Some(trace.key_at)),
+    );
 }
 
 /// Run or reattach one provider-native client. Non-TTY callers retain the
@@ -1055,7 +1128,13 @@ fn bridge_session(
                 revents: 0,
             },
         ];
-        let polled = unsafe { libc::poll(descriptors.as_mut_ptr(), descriptors.len() as _, 25) };
+        // Wake exactly when a held Ctrl+X or a lone Escape comes due instead of
+        // at the next 25 ms tick, which would add up to that much to the wait.
+        let poll_ms = parser
+            .next_deadline()
+            .map_or(25, |wait| (wait.as_millis() as libc::c_int + 1).min(25));
+        let polled =
+            unsafe { libc::poll(descriptors.as_mut_ptr(), descriptors.len() as _, poll_ms) };
         if polled < 0 {
             let error = std::io::Error::last_os_error();
             if error.kind() != std::io::ErrorKind::Interrupted {
@@ -1160,9 +1239,29 @@ fn bridge_session(
                                     cursor,
                                     direction == ArrowDirection::Left
                                         && cursor.1 <= EMPTY_PROMPT_MAX_COLUMN,
+                                    &screen,
                                 );
                             }
                             InputAction::Detach => {
+                                detach = true;
+                                break;
+                            }
+                            InputAction::Remove => {
+                                REMOVAL_REQUESTED.store(true, std::sync::atomic::Ordering::SeqCst);
+                                trace_removal_detach();
+                                detach = true;
+                                break;
+                            }
+                            InputAction::ShiftArrow(bytes) => {
+                                // Shift+arrow selects text once the OpenCode prompt has a draft;
+                                // with nothing to select it still returns immediately.
+                                if session_key.starts_with("opencode:")
+                                    && prompt_draft(&screen).is_some()
+                                {
+                                    return_gesture.clear(&mut stdout, &screen)?;
+                                    pending_input.write_all(bytes)?;
+                                    continue;
+                                }
                                 detach = true;
                                 break;
                             }
@@ -1209,6 +1308,7 @@ fn bridge_session(
         }
         if !detach && parser.take_expired_leader() {
             REMOVAL_REQUESTED.store(true, std::sync::atomic::Ordering::SeqCst);
+            trace_removal_detach();
             detach = true;
         }
         if let Some(hook) = VOICE_HOOK.get() {
@@ -1349,7 +1449,10 @@ fn forward_ready_initial_input(
 
 #[cfg(unix)]
 fn restore_dashboard_terminal_modes(stdout: &mut impl Write) -> Result<()> {
-    stdout.write_all(b"\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[<u\x1b[?25h")?;
+    // A shown provider's own pushes are forwarded live, on top of the one resume push, so a
+    // single pop can leave a mode behind. Pop everything: the dashboard pushes its own after.
+    stdout
+        .write_all(b"\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[<99u\x1b[?25h")?;
     stdout.flush()?;
     Ok(())
 }
@@ -2126,7 +2229,10 @@ impl ArrowDirection {
 enum InputAction {
     Forward(Vec<u8>),
     Arrow(ArrowDirection, &'static [u8]),
+    ShiftArrow(&'static [u8]),
     Detach,
+    /// The removal key, with no OpenCode leader sequence to wait for.
+    Remove,
     Redraw,
     Voice,
 }
@@ -2137,7 +2243,11 @@ const LEFT: &[u8] = b"\x1b[D";
 const RIGHT: &[u8] = b"\x1b[C";
 const APPLICATION_LEFT: &[u8] = b"\x1bOD";
 const APPLICATION_RIGHT: &[u8] = b"\x1bOC";
-const RECOGNIZED_ARROWS: [&[u8]; 6] = [
+/// F13 as a terminal sends it. Karabiner maps Cmd+H to F13 inside Ghostty, so there is
+/// a way back to agentview that never collides with selecting or moving in the prompt.
+const BACK_KEY: &[u8] = b"\x1b[25~";
+const RECOGNIZED_ARROWS: [&[u8]; 7] = [
+    BACK_KEY,
     SHIFT_LEFT,
     SHIFT_RIGHT,
     LEFT,
@@ -2151,6 +2261,8 @@ struct DetachParser {
     pending: Vec<u8>,
     pending_since: Option<Instant>,
     holds_leader: bool,
+    /// Ctrl+X is the removal key at once: no leader sequence follows it.
+    leader_off: bool,
     held_leader_since: Option<Instant>,
     redraws: bool,
     /// Voice Mode is available: Cmd+K, Ctrl+] and, where the provider leaves
@@ -2221,10 +2333,61 @@ fn cmd_k(input: &[u8], ctrl_too: bool) -> CmdK {
     }
 }
 
+/// F13 in the kitty keyboard encoding (`CSI 57376 u`, optionally `; modifiers : event`),
+/// which Ghostty uses once a provider has switched that protocol on. A release is dropped.
+enum BackKey {
+    Press(usize),
+    Release(usize),
+    Partial,
+    No,
+}
+
+fn back_key(input: &[u8]) -> BackKey {
+    const HEAD: &[u8] = b"\x1b[57376";
+    const LONGEST: usize = 24;
+    if input.len() < HEAD.len() {
+        return if HEAD.starts_with(input) {
+            BackKey::Partial
+        } else {
+            BackKey::No
+        };
+    }
+    if !input.starts_with(HEAD) {
+        return BackKey::No;
+    }
+    let rest = &input[HEAD.len()..];
+    // More digits would be another key code.
+    if rest.first().is_some_and(u8::is_ascii_digit) {
+        return BackKey::No;
+    }
+    let is_param = |byte: &u8| matches!(byte, b':' | b';' | b'0'..=b'9');
+    let Some(end) = rest.iter().position(|byte| *byte == b'u') else {
+        return if rest.iter().all(is_param) && rest.len() < LONGEST {
+            BackKey::Partial
+        } else {
+            BackKey::No
+        };
+    };
+    if !rest[..end].iter().all(is_param) {
+        return BackKey::No;
+    }
+    let length = HEAD.len() + end + 1;
+    let event = std::str::from_utf8(&rest[..end])
+        .ok()
+        .and_then(|params| params.split(';').nth(1))
+        .and_then(|modifiers| modifiers.split(':').nth(1));
+    if event == Some("3") {
+        BackKey::Release(length)
+    } else {
+        BackKey::Press(length)
+    }
+}
+
 impl DetachParser {
     fn for_session(session_key: &str) -> Self {
         Self {
             holds_leader: session_key.starts_with("opencode:"),
+            leader_off: opencode_leader_off(),
             redraws: redraws_on_ctrl_k(session_key),
             voice: VOICE_HOOK.get().is_some(),
             ..Self::default()
@@ -2244,10 +2407,17 @@ impl DetachParser {
         let mut index = 0;
         while index < bytes.len() {
             let remaining = &bytes[index..];
-            let recognized = if remaining.starts_with(SHIFT_LEFT)
-                || remaining.starts_with(SHIFT_RIGHT)
-            {
-                Some((InputAction::Detach, SHIFT_LEFT.len()))
+            let recognized = if remaining.starts_with(SHIFT_LEFT) {
+                Some((InputAction::ShiftArrow(SHIFT_LEFT), SHIFT_LEFT.len()))
+            } else if remaining.starts_with(SHIFT_RIGHT) {
+                Some((InputAction::ShiftArrow(SHIFT_RIGHT), SHIFT_RIGHT.len()))
+            } else if remaining.starts_with(BACK_KEY) {
+                Some((InputAction::Detach, BACK_KEY.len()))
+            } else if let BackKey::Press(length) = back_key(remaining) {
+                Some((InputAction::Detach, length))
+            } else if let BackKey::Release(length) = back_key(remaining) {
+                index += length;
+                continue;
             } else if remaining.starts_with(LEFT) {
                 Some((InputAction::Arrow(ArrowDirection::Left, LEFT), LEFT.len()))
             } else if remaining.starts_with(APPLICATION_LEFT) {
@@ -2304,14 +2474,30 @@ impl DetachParser {
                 && (RECOGNIZED_ARROWS
                     .iter()
                     .any(|sequence| sequence.starts_with(remaining))
+                    || matches!(back_key(remaining), BackKey::Partial)
                     || (self.voice && matches!(cmd_k(remaining, self.redraws), CmdK::Partial)))
             {
                 self.pending.extend_from_slice(&bytes[index..]);
                 self.pending_since = Some(Instant::now());
                 break;
             }
+            if remaining[0] == CTRL_Z {
+                index += 1;
+                continue;
+            }
+            if self.holds_leader && self.leader_off && remaining[0] == CTRL_X {
+                trace_removal_key(Instant::now());
+                if !forward.is_empty() {
+                    actions.push(InputAction::Forward(std::mem::take(&mut forward)));
+                }
+                actions.push(InputAction::Remove);
+                index += 1;
+                continue;
+            }
             if self.holds_leader && remaining == [CTRL_X] {
-                self.held_leader_since = Some(Instant::now());
+                let now = Instant::now();
+                self.held_leader_since = Some(now);
+                trace_removal_key(now);
                 break;
             }
             forward.push(bytes[index]);
@@ -2335,6 +2521,21 @@ impl DetachParser {
         Some(std::mem::take(&mut self.pending))
     }
 
+    /// How long until a held key must be acted on, if one is held.
+    fn next_deadline(&self) -> Option<Duration> {
+        let leader = self
+            .held_leader_since
+            .map(|since| LEADER_HOLD.saturating_sub(since.elapsed()));
+        let escape = (!self.pending.is_empty())
+            .then_some(self.pending_since)
+            .flatten()
+            .map(|since| ESCAPE_FLUSH_DELAY.saturating_sub(since.elapsed()));
+        match (leader, escape) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
     fn take_expired_leader(&mut self) -> bool {
         if self
             .held_leader_since
@@ -2352,7 +2553,18 @@ struct ArrowProbe {
     direction: ArrowDirection,
     cursor: (u16, u16),
     allow_cursor_change: bool,
+    /// The cursor's row, colours included, before the arrow. An arrow that
+    /// collapses a selection leaves the cursor where it was but repaints this.
+    row: Option<Vec<u8>>,
     started: Instant,
+}
+
+fn cursor_row(screen: &vt100::Parser, row: u16) -> Option<Vec<u8>> {
+    let (_, cols) = screen.screen().size();
+    screen
+        .screen()
+        .rows_formatted(0, cols)
+        .nth(usize::from(row))
 }
 
 #[derive(Debug)]
@@ -2407,11 +2619,13 @@ impl ReturnGesture {
         direction: ArrowDirection,
         cursor: (u16, u16),
         allow_cursor_change: bool,
+        screen: &vt100::Parser,
     ) {
         self.probe = Some(ArrowProbe {
             direction,
             cursor,
             allow_cursor_change,
+            row: cursor_row(screen, cursor.0),
             started: Instant::now(),
         });
         self.armed = None;
@@ -2448,7 +2662,10 @@ impl ReturnGesture {
             return Ok(false);
         }
         if let Some(probe) = self.probe.as_ref() {
-            if !probe.allow_cursor_change && screen.screen().cursor_position() != probe.cursor {
+            if !probe.allow_cursor_change
+                && (screen.screen().cursor_position() != probe.cursor
+                    || cursor_row(screen, probe.cursor.0) != probe.row)
+            {
                 self.clear(output, screen)?;
                 return Ok(false);
             }
@@ -3223,10 +3440,46 @@ mod tests {
         assert_eq!(
             second,
             vec![
-                InputAction::Detach,
+                InputAction::ShiftArrow(SHIFT_LEFT),
                 InputAction::Forward(b"ignored".to_vec())
             ]
         );
+    }
+
+    #[test]
+    fn the_back_key_returns_from_any_session_and_survives_a_split_read() {
+        for session in ["opencode:ses_1", "claude:worker"] {
+            let mut parser = DetachParser::for_session(session);
+            assert_eq!(
+                parser.push(b"ab\x1b[25~cd"),
+                vec![
+                    InputAction::Forward(b"ab".to_vec()),
+                    InputAction::Detach,
+                    InputAction::Forward(b"cd".to_vec()),
+                ]
+            );
+            let mut parser = DetachParser::for_session(session);
+            assert_eq!(parser.push(b"\x1b[2"), vec![]);
+            assert_eq!(parser.push(b"5~"), vec![InputAction::Detach]);
+            // Ghostty sends F13 like this once a provider has enabled the kitty protocol.
+            let mut parser = DetachParser::for_session(session);
+            assert_eq!(
+                parser.push(b"x\x1b[57376uy"),
+                vec![
+                    InputAction::Forward(b"x".to_vec()),
+                    InputAction::Detach,
+                    InputAction::Forward(b"y".to_vec()),
+                ]
+            );
+            assert_eq!(parser.push(b"\x1b[57376;1u"), vec![InputAction::Detach]);
+            assert_eq!(parser.push(b"\x1b[57376;1:3u"), vec![]);
+            assert_eq!(parser.push(b"\x1b[573"), vec![]);
+            assert_eq!(parser.push(b"76u"), vec![InputAction::Detach]);
+            assert_eq!(
+                parser.push(b"\x1b[573761u"),
+                vec![InputAction::Forward(b"\x1b[573761u".to_vec())]
+            );
+        }
     }
 
     #[test]
@@ -3241,7 +3494,7 @@ mod tests {
                 InputAction::Arrow(ArrowDirection::Left, APPLICATION_LEFT),
                 InputAction::Arrow(ArrowDirection::Right, RIGHT),
                 InputAction::Arrow(ArrowDirection::Right, APPLICATION_RIGHT),
-                InputAction::Detach,
+                InputAction::ShiftArrow(SHIFT_RIGHT),
             ]
         );
     }
@@ -3258,6 +3511,44 @@ mod tests {
         assert!(parser.take_expired_leader());
         assert!(!parser.take_expired_leader());
         assert_eq!(parser.push(b"a"), vec![InputAction::Forward(b"a".to_vec())]);
+    }
+
+    #[test]
+    fn with_the_leader_off_ctrl_x_removes_at_once() {
+        let mut parser = DetachParser::for_session("opencode:ses_1");
+        parser.leader_off = true;
+        assert_eq!(parser.push(b"\x18"), vec![InputAction::Remove]);
+        assert_eq!(parser.next_deadline(), None);
+        assert_eq!(
+            parser.push(b"hi\x18n"),
+            vec![
+                InputAction::Forward(b"hi".to_vec()),
+                InputAction::Remove,
+                InputAction::Forward(b"n".to_vec()),
+            ]
+        );
+        let mut other = DetachParser::for_session("claude:ses_1");
+        other.leader_off = true;
+        assert_eq!(
+            other.push(b"\x18"),
+            vec![InputAction::Forward(b"\x18".to_vec())]
+        );
+    }
+
+    #[test]
+    fn held_keys_report_how_long_until_they_come_due() {
+        let mut parser = DetachParser::for_session("opencode:ses_1");
+        assert_eq!(parser.next_deadline(), None);
+        parser.push(b"\x18");
+        let due = parser.next_deadline().expect("the leader is held");
+        assert!(due <= LEADER_HOLD && due > LEADER_HOLD - Duration::from_millis(100));
+        parser.held_leader_since = Some(Instant::now() - LEADER_HOLD);
+        assert_eq!(parser.next_deadline(), Some(Duration::ZERO));
+        parser.push(b"n");
+        assert_eq!(parser.next_deadline(), None);
+        parser.push(b"\x1b");
+        let due = parser.next_deadline().expect("the escape is held");
+        assert!(due <= ESCAPE_FLUSH_DELAY);
     }
 
     #[test]
@@ -3290,6 +3581,15 @@ mod tests {
         assert_eq!(
             parser.push(b"\x0b"),
             vec![InputAction::Forward(b"\x0b".to_vec())]
+        );
+    }
+
+    #[test]
+    fn ctrl_z_never_reaches_the_provider() {
+        let mut parser = DetachParser::for_session("claude:worker");
+        assert_eq!(
+            parser.push(b"a\x1ab"),
+            vec![InputAction::Forward(b"ab".to_vec())]
         );
     }
 
@@ -3792,7 +4092,7 @@ mod tests {
         assert!(cursor.1 <= EMPTY_PROMPT_MAX_COLUMN);
 
         let mut gesture = ReturnGesture::default();
-        gesture.begin_probe(ArrowDirection::Left, cursor, true);
+        gesture.begin_probe(ArrowDirection::Left, cursor, true, &screen);
         screen.process(b"\x1b[2J\x1b[6;20Hprovider subview\x1b[?25l");
         std::thread::sleep(ARROW_SETTLE_DELAY + Duration::from_millis(10));
         let mut output = Vec::new();
@@ -3808,6 +4108,7 @@ mod tests {
             ArrowDirection::Left,
             screen.screen().cursor_position(),
             false,
+            screen,
         );
         screen.process(moved);
         std::thread::sleep(ARROW_SETTLE_DELAY + Duration::from_millis(10));
@@ -3830,6 +4131,26 @@ mod tests {
             &mut screen,
             b"\x1b[21;28H"
         ));
+    }
+
+    #[test]
+    fn opencode_left_that_only_collapses_a_selection_stays_in_the_session() {
+        let mut screen = vt100::Parser::new(40, 120, 0);
+        // Backward selection: the cursor sits at the left edge of the highlight, so
+        // Left collapses it without moving the cursor.
+        screen.process(b"\x1b[21;3Hacct \x1b[48;5;147mthead?\x1b[0m\x1b[21;8H\x1b[?25h");
+        assert!(!settled_left(
+            "opencode:host:abc",
+            &mut screen,
+            b"\x1b[21;3Hacct thead?\x1b[21;8H"
+        ));
+    }
+
+    #[test]
+    fn opencode_left_that_changes_nothing_still_returns() {
+        let mut screen = vt100::Parser::new(40, 120, 0);
+        screen.process(b"\x1b[21;3Hacct thead?\x1b[21;8H\x1b[?25h");
+        assert!(settled_left("opencode:host:abc", &mut screen, b""));
     }
 
     #[test]

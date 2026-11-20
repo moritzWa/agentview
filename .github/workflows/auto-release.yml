@@ -1,0 +1,63 @@
+name: auto-release
+
+# Every push to main that changes the app gets the next patch version, so the
+# public installer and `av update` always serve current main. Docs, site and
+# test-only pushes do not release.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "install.sh"
+      - "install.ps1"
+      - "scripts/package-release.*"
+  workflow_dispatch:
+
+# Pushes that land while one release is being cut wait; only the newest
+# waiting push releases, so a burst of merges produces one version.
+concurrency:
+  group: auto-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@1.75.0
+      - name: Check it compiles before releasing
+        run: cargo check --locked
+      - name: Pick the next version
+        id: next
+        run: |
+          crate="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
+          IFS=. read -r major minor _ <<<"$crate"
+          latest="$(git tag --list "v${major}.${minor}.*" --sort=-v:refname | head -n 1)"
+          if [ -z "$latest" ]; then
+            next="${major}.${minor}.0"
+          else
+            patch="${latest##*.}"
+            next="${major}.${minor}.$((patch + 1))"
+          fi
+          if git tag --points-at HEAD | grep -q '^v'; then
+            echo "HEAD is already released"; echo "tag=" >>"$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "tag=v${next}" >>"$GITHUB_OUTPUT"
+      - name: Tag and start the release build
+        if: steps.next.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.next.outputs.tag }}
+        run: |
+          git tag "$TAG" "$GITHUB_SHA"
+          git push origin "$TAG"
+          gh workflow run release.yml --ref main -f tag="$TAG"
+          echo "Started release $TAG"

@@ -333,7 +333,12 @@ fn has_table(db: &Connection, name: &str) -> Result<bool> {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SessionTurn {
     pub you: String,
+    /// The last assistant message of the exchange.
     pub it: String,
+    /// Every assistant message of the exchange, oldest first, `it` last. A
+    /// detailed answer can be followed by a short status message, such as the
+    /// reply to a background-shell notification.
+    pub replies: Vec<String>,
 }
 
 /// The last `turns` exchanges of a session, oldest first, read straight from
@@ -436,7 +441,7 @@ fn turns_from_rows(rows: &[TextRow]) -> Vec<SessionTurn> {
         match row.role.as_str() {
             "user" => turns.push(SessionTurn {
                 you: text.to_owned(),
-                it: String::new(),
+                ..SessionTurn::default()
             }),
             "assistant" => {
                 // A bounded read (or imported history) may start after the
@@ -446,6 +451,7 @@ fn turns_from_rows(rows: &[TextRow]) -> Vec<SessionTurn> {
                 }
                 if let Some(turn) = turns.last_mut() {
                     turn.it = text.to_owned();
+                    turn.replies.push(text.to_owned());
                 }
             }
             _ => {}
@@ -1356,11 +1362,13 @@ mod tests {
             vec![
                 SessionTurn {
                     you: "first ask".into(),
-                    it: "first result".into()
+                    it: "first result".into(),
+                    replies: vec!["narration one".into(), "first result".into()],
                 },
                 SessionTurn {
                     you: "go".into(),
-                    it: "part A\npart B".into()
+                    it: "part A\npart B".into(),
+                    replies: vec!["part A\npart B".into()],
                 },
             ]
         );
@@ -1398,6 +1406,7 @@ mod tests {
             &SessionTurn {
                 you: "restore the good/bad ideas wording".into(),
                 it: "Updated to: Jensen Huang line".into(),
+                replies: vec!["Updated to: Jensen Huang line".into()],
             }
         );
         let (rows, _) = text_rows(&reader, "s", 1).unwrap();
@@ -1406,6 +1415,7 @@ mod tests {
             vec![SessionTurn {
                 you: String::new(),
                 it: "Updated to: Jensen Huang line".into(),
+                replies: vec!["Updated to: Jensen Huang line".into()],
             }],
             "even a window without the original question must expose the latest reply"
         );
@@ -1433,8 +1443,47 @@ mod tests {
             turns_from_rows(&rows),
             vec![SessionTurn {
                 you: "ask".into(),
-                it: "result".into()
+                it: "result".into(),
+                replies: vec!["result".into()],
             }]
+        );
+    }
+
+    /// The Instagram ad session: a detailed answer, then a shell notification
+    /// (stored as a synthetic message) and a short reply to it. Both belong to
+    /// the exchange, in order.
+    #[test]
+    fn a_detailed_answer_survives_a_short_reply_to_a_later_notification() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE session_v2(id TEXT PRIMARY KEY);
+            CREATE TABLE session_message(id TEXT, session_id TEXT, type TEXT, seq INTEGER, time_created INTEGER, time_updated INTEGER, data TEXT);
+            INSERT INTO session_v2 VALUES ('s');
+            INSERT INTO session_message VALUES
+              ('u', 's', 'user', 1, 1, 1, '{"text":"can we reward all six boxes?"}'),
+              ('a1', 's', 'assistant', 2, 2, 2, '{"content":[{"type":"text","text":"Next I am checking whether Meta can reward matches."}]}'),
+              ('a2', 's', 'assistant', 3, 3, 3, '{"content":[{"type":"text","text":"Done. Meta cannot reward people who match more boxes."}]}'),
+              ('sy', 's', 'synthetic', 4, 4, 4, '{"text":"<shell state=\"completed\">"}'),
+              ('a3', 's', 'assistant', 5, 5, 5, '{"content":[{"type":"text","text":"That notification is just the browser closing."}]}'),
+              ('i', 's', 'idle', 6, 6, 6, '{}');
+            "#,
+        )
+        .unwrap();
+        let (rows, _) = text_rows(&conn, "s", 100).unwrap();
+        let turns = turns_from_rows(&rows);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(
+            turns[0].it,
+            "That notification is just the browser closing."
+        );
+        assert_eq!(
+            turns[0].replies,
+            vec![
+                "Next I am checking whether Meta can reward matches.",
+                "Done. Meta cannot reward people who match more boxes.",
+                "That notification is just the browser closing.",
+            ]
         );
     }
 
@@ -1660,6 +1709,40 @@ mod tests {
                     .to_owned()
             })
             .collect())
+    }
+
+    fn record_ids(runner: &DirectDbRunner, sql: &str) -> Vec<String> {
+        let out = runner.run(&db_request(sql)).unwrap();
+        out.stdout_text()
+            .unwrap()
+            .lines()
+            .skip(1)
+            .map(|line| {
+                serde_json::from_str::<serde_json::Value>(line).unwrap()["id"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn choosing_the_window_first_lists_the_same_sessions_as_sorting_every_row() {
+        let (_dir, runner) = large_mixed_store(false);
+        for (limit, oldest_first) in [(10, false), (1000, true)] {
+            let plain = format!(
+                "{} ORDER BY s.time_updated {} LIMIT {limit}",
+                super::super::opencode::GLOBAL_SESSION_ROWS,
+                if oldest_first { "ASC" } else { "DESC" },
+            );
+            let windowed = super::super::opencode::global_session_query(limit, oldest_first);
+            assert_ne!(plain, windowed);
+            assert_eq!(
+                record_ids(&runner, &windowed),
+                record_ids(&runner, &plain),
+                "limit {limit} oldest_first {oldest_first}"
+            );
+        }
     }
 
     #[test]

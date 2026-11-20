@@ -1,0 +1,156 @@
+/** Durable wake metadata only, never chat text. Idle polls do not connect to Neon. */
+function runtimeBucket(id){let hash=0;for(let i=0;i<id.length;i++)hash=(hash*31+id.charCodeAt(i))>>>0;return hash%64;}
+export class WakeGate {
+  constructor(state) { this.state=state;this.waiters=new Set(); }
+  async fetch(request) {
+    const p=await request.json(),path=new URL(request.url).pathname,s=this.state.storage;
+    if(path==='/enroll') { await s.put(`token:${p.token_hash}`,p);await s.put(`pending:${p.device_id}|${p.database_epoch}`,true);return Response.json({ok:true}); }
+    if(path==='/revoke') { await s.delete(`token:${p.token_hash}`);for(const wake of this.waiters)wake();return Response.json({ok:true}); }
+    if(path==='/signal') {
+      const generation=await s.transaction(async tx=>{const n=(await tx.get(`generation:${p.source}`)??0)+1;await tx.put({[`generation:${p.source}`]:n,[`pending:${p.source}`]:true});return n;});
+      for(const wake of this.waiters)wake();
+      return Response.json({generation});
+    }
+    if(path==='/clear') {
+      await s.transaction(async tx=>{if((await tx.get(`generation:${p.source}`)??0)===p.generation)await tx.put(`pending:${p.source}`,false);});
+      return Response.json({ok:true});
+    }
+    if(path==='/rate') {
+      const minute=Math.floor(Date.now()/60_000),key=`rate:${p.key}`;
+      const allowed=await s.transaction(async tx=>{const old=await tx.get(key),n=old?.minute===minute?old.n+1:1;await tx.put(key,{minute,n});return n<=30;});
+      return Response.json({allowed});
+    }
+    if(path==='/activity') {
+      const now=Date.now();await s.put(`active_until:${p.source}`,now+5*60_000);
+      for(const wake of this.waiters)wake();
+      const seen=await s.get(`last_seen:${p.source}`)??0;
+      const historyAge=p.history_ms??5000,runtimeAge=p.runtime_ms??20_000,checks=p.kind==='both'?[['checked',historyAge],['runtime_checked',runtimeAge]]:[[p.kind==='runtime'?'runtime_checked':'checked',p.kind==='runtime'?runtimeAge:historyAge]];
+      const fresh=async()=>{for(const [key,age] of checks)if((await s.get(`${key}:${p.source}`)??0)<now-age)return false;return true;};
+      if(p.wait && seen>now-60_000 && !await fresh()) {
+        const deadline=Date.now()+Math.min(8000,p.max_wait??8000);
+        while(Date.now()<deadline && !await fresh()) {
+          await new Promise(resolve=>{let timer;const wake=()=>{clearTimeout(timer);this.waiters.delete(wake);resolve();};this.waiters.add(wake);timer=setTimeout(wake,Math.max(1,deadline-Date.now()));});
+        }
+      }
+      const checkedAt=await s.get(`checked:${p.source}`)??null,macSeen=seen>now-60_000,result={source_checked_at:checkedAt,mac_seen_recently:macSeen};
+      if(p.kind!=='runtime') {
+        // Say it outright when the page may lack the newest messages, so a caller
+        // retries instead of presenting a stale tail as the latest.
+        const history_fresh=checkedAt!==null&&checkedAt>=now-historyAge;
+        const behind=await s.get(`behind:${p.source}`)??0,behindSince=await s.get(`behind_since:${p.source}`)??null;
+        result.sessions_behind=behind;
+        result.behind_for_ms=behind&&behindSince?Math.max(0,now-behindSince):null;
+        result.history_fresh=history_fresh;
+        result.history_age_ms=checkedAt===null?null:Math.max(0,Date.now()-checkedAt);
+        if(!history_fresh)result.history_note=macSeen
+          ?'The Mac is syncing: this may be missing the newest messages. Repeat the same call in about 5 seconds before relying on the latest messages.'
+          :'The Mac has not been seen recently: history is only as current as source_checked_at.';
+        if(!history_fresh&&macSeen)result.retry_after_ms=5000;
+        if(behind)result.history_note=[result.history_note,`${behind} session${behind===1?' has':'s have'} not reached the cloud.`].filter(Boolean).join(' ');
+      }
+      return Response.json(result);
+    }
+    if(path==='/presence-read') {
+      const source=p.source;
+      return Response.json({
+        last_seen:await s.get(`last_seen:${source}`)??null,
+        checked:await s.get(`checked:${source}`)??null,
+        sync_attempted:await s.get(`sync_attempted:${source}`)??null,
+        sync_skipped:await s.get(`sync_skipped:${source}`)??0,
+        behind:await s.get(`behind:${source}`)??0,
+        behind_since:await s.get(`behind_since:${source}`)??null,
+        runtime_checked:await s.get(`runtime_checked:${source}`)??null,
+      });
+    }
+    if(path==='/changes') {
+      // What became "needs you" or finished since the last call. Only busy sessions are kept, so the marker stays small.
+      const source=p.source,keys=Array.from({length:64},(_,i)=>`runtime:${source}:${i}`);
+      const meta=await s.get(`runtime_meta:${source}`)??{available:false,partial:false};
+      if(!meta.available||meta.partial)return Response.json({available:false,baseline:false,changes:[]});
+      const stored=await s.get(keys),statuses=keys.flatMap(k=>JSON.parse(stored.get(k)??'[]')).filter(x=>x.top_level!==false);
+      return Response.json(await s.transaction(async tx=>{
+        const old=await tx.get(`seen:${source}`),baseline=old===undefined,before=baseline?{}:JSON.parse(old),current={},changes=[];
+        const ids=new Set(statuses.map(x=>x.session_id));
+        if(meta.truncated)for(const [id,mark] of Object.entries(before))if(!ids.has(id))current[id]=mark;
+        for(const x of statuses) {
+          const mark=`${x.status}:${x.reason??''}`,prior=before[x.session_id];
+          if(x.status==='needs_you'||x.status==='working')current[x.session_id]=mark;
+          if(x.status==='needs_you'&&prior!==mark)changes.push({session_id:x.session_id,change:'needs_you',reason:x.reason??null,directory:x.directory??null});
+          else if(x.status==='done'&&prior)changes.push({session_id:x.session_id,change:'finished',reason:null,directory:x.directory??null});
+        }
+        await tx.put(`seen:${source}`,JSON.stringify(current));
+        return {available:true,baseline,changes,checked_at:meta.checked_at??null};
+      }));
+    }
+    if(path==='/runtime-read') {
+      const keys=Array.from({length:64},(_,i)=>`runtime:${p.source}:${i}`),stored=await s.get(keys);
+      const meta=await s.get(`runtime_meta:${p.source}`)??{available:false,partial:false,checked_at:null};
+      return Response.json({...meta,statuses:keys.flatMap(k=>JSON.parse(stored.get(k)??'[]'))});
+    }
+    if(path==='/receipt-signal') {
+      const key=`receipts:${p.source}`,recent=await s.get(key)??[];
+      await s.put(key,[...recent.filter(r=>r!==p.operation_id),p.operation_id].slice(-32));
+      for(const wake of this.waiters)wake();return Response.json({ok:true});
+    }
+    if(path==='/receipt-wait') {
+      const deadline=Date.now()+8000,key=`receipts:${p.source}`;
+      while(Date.now()<deadline && !(await s.get(key)??[]).includes(p.operation_id)) {
+        await new Promise(resolve=>{let timer;const wake=()=>{clearTimeout(timer);this.waiters.delete(wake);resolve();};this.waiters.add(wake);timer=setTimeout(wake,Math.max(1,deadline-Date.now()));});
+      }
+      return Response.json({signalled:(await s.get(key)??[]).includes(p.operation_id)});
+    }
+    const credential=await s.get(`token:${p.token_hash}`);
+    if(!credential || credential.expires_at<=Date.now())return Response.json({error:'unauthorized'},{status:401});
+    const source=`${credential.device_id}|${credential.database_epoch}`;
+    if(path==='/runtime-write') {
+      const {statuses,...meta}=p.snapshot,now=Date.now(),buckets=Array.from({length:64},()=>[]);
+      for(const status of statuses)buckets[runtimeBucket(status.session_id)].push(status);
+      const keys=buckets.map((_,i)=>`runtime:${source}:${i}`),old=await s.get(keys);
+      const changed={[`runtime_meta:${source}`]:{...meta,checked_at:now},[`runtime_checked:${source}`]:now,[`last_seen:${source}`]:now};
+      for(let i=0;i<buckets.length;i++) {
+        const value=JSON.stringify(buckets[i].sort((a,b)=>a.session_id.localeCompare(b.session_id)));
+        if(value!==(old.get(keys[i])??'[]'))changed[keys[i]]=value;
+      }
+      await s.put(changed);
+      for(const wake of this.waiters)wake();
+      return Response.json({ok:true});
+    }
+    if(path==='/checked') {
+      const now=Date.now(),complete=p.complete!==false,skipped=Number.isInteger(p.skipped)&&p.skipped>=0?p.skipped:0;
+      const behind=Number.isInteger(p.behind)&&p.behind>=0&&p.behind<=100_000?p.behind:0;
+      const since=Number.isFinite(p.behind_since)&&p.behind_since>0?p.behind_since:null;
+      const put={[`last_seen:${source}`]:now,[`sync_attempted:${source}`]:now,[`sync_skipped:${source}`]:skipped,
+        [`behind:${source}`]:behind,[`behind_since:${source}`]:behind?(since??await s.get(`behind_since:${source}`)??now):null};
+      if(complete)put[`checked:${source}`]=now;
+      await s.put(put);for(const wake of this.waiters)wake();
+      return Response.json({ok:true,complete});
+    }
+    if(path==='/poll') {
+      await s.put(`last_seen:${source}`,Date.now());
+      if(!(await s.get(`pending:${source}`))) {
+        await new Promise(resolve=>{
+          let timer;
+          const wake=()=>{clearTimeout(timer);this.waiters.delete(wake);resolve();};
+          this.waiters.add(wake);timer=setTimeout(wake,20_000);
+        });
+      }
+      if(!(await s.get(`token:${p.token_hash}`)))return Response.json({error:'unauthorized'},{status:401});
+    }
+    return Response.json({principal:credential,pending:await s.get(`pending:${source}`)??false,generation:await s.get(`generation:${source}`)??0,last_seen:await s.get(`last_seen:${source}`)??null,active_until:await s.get(`active_until:${source}`)??0});
+  }
+}
+
+export function gateClient(namespace,key) {
+  const stub=namespace.get(namespace.idFromName(key));
+  const call=async(path,p)=>{
+    const response=await stub.fetch(`https://internal${path}`,{method:'POST',body:JSON.stringify(p)});
+    const body=await response.json();if(!response.ok)throw Object.assign(new Error('unauthorized'),{status:response.status});return body;
+  };
+  return {enroll:p=>call('/enroll',p),revoke:token_hash=>call('/revoke',{token_hash}),signal:source=>call('/signal',{source}),
+    clear:(source,generation)=>call('/clear',{source,generation}),poll:token_hash=>call('/poll',{token_hash}),
+    inspect:token_hash=>call('/inspect',{token_hash}),checked:(token_hash,meta={})=>call('/checked',{token_hash,...meta}),
+    presence:source=>call('/presence-read',{source}),changes:source=>call('/changes',{source}),
+    activity:(source,wait=false,kind='history',opts={})=>call('/activity',{source,wait,kind,...opts}),
+    runtime:source=>call('/runtime-read',{source}),setRuntime:(token_hash,snapshot)=>call('/runtime-write',{token_hash,snapshot}),
+    signalReceipt:(source,operation_id)=>call('/receipt-signal',{source,operation_id}),waitReceipt:(source,operation_id)=>call('/receipt-wait',{source,operation_id}),rate:key=>call('/rate',{key})};
+}

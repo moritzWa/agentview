@@ -23,7 +23,7 @@ use crate::adapters::{DiscoveryEngine, DiscoveryRequest};
 use crate::aliases::SessionAliases;
 use crate::app::{
     hidden_picker_rows_for_height, App, AppAction, ComposerMode, CursorMovement, Overlay,
-    SESSION_PAGE_SIZE,
+    SelectionKey, SESSION_PAGE_SIZE,
 };
 use crate::control::{ControlHub, ControlOutcome, LaunchPresentation, RestorableSession};
 use crate::domain::{AgentSession, Capability, Provider, SessionSnapshot, SessionState};
@@ -106,6 +106,9 @@ struct PendingLaunch {
     provider_session_id: String,
     known_session_ids: BTreeSet<String>,
     deadline: Instant,
+    /// Where the cursor was when the task was sent. A session that shows up
+    /// seconds later takes the cursor only if the user has not moved it.
+    selection_at_launch: Option<Option<SelectionKey>>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -132,6 +135,7 @@ struct LaunchWorkerResult {
     model: Option<String>,
     prompt: String,
     known_session_ids: BTreeSet<String>,
+    selection_at_launch: Option<SelectionKey>,
     result: Result<ControlOutcome, String>,
 }
 
@@ -143,6 +147,7 @@ struct LaunchJob {
     prompt: String,
     cwd: Option<PathBuf>,
     known_session_ids: BTreeSet<String>,
+    selection_at_launch: Option<SelectionKey>,
 }
 
 #[derive(Debug)]
@@ -411,6 +416,10 @@ pub fn run_dashboard(
     if let Some(view_mode) = last_view.view_mode() {
         app.set_view_mode(view_mode);
     }
+    // Until the saved row is found (or the user moves), the cursor is the
+    // default first row, which must not overwrite the saved one.
+    let mut restore_selection = last_view.session_id();
+    let mut saved_selection = restore_selection.clone();
     app.work_roots = crate::work_view::WorkRoots::load_default()?;
     let work_store = crate::work_view::WorkViewStore::load_default()?;
     let work_enabled = work_store.read()?;
@@ -463,6 +472,7 @@ pub fn run_dashboard(
     let mut pending_launch: Option<PendingLaunch> = None;
     let mut pending_launch_retry_at: Option<Instant> = None;
     let mut pending_reveal: Option<PendingReveal> = None;
+    let mut hide_history: Vec<Vec<String>> = Vec::new();
     let mut latest_launch_sequence = 0u64;
     let mut launching_provider: Option<Provider> = None;
     let mut latest_migration_sequence = 0u64;
@@ -563,6 +573,11 @@ pub fn run_dashboard(
                         crate::perf_log::ms(dashboard_started.elapsed())
                     );
                     app.replace_snapshot(snapshot);
+                    if let Some(id) = restore_selection.as_deref() {
+                        if app.select_and_reveal_session(id) || complete {
+                            restore_selection = None;
+                        }
+                    }
                     if let Some(session_id) = resolve_pending_reveal(
                         &mut app,
                         &mut pending_reveal,
@@ -673,6 +688,9 @@ pub fn run_dashboard(
                                             provider: completed.provider,
                                             provider_session_id,
                                             known_session_ids: completed.known_session_ids,
+                                            selection_at_launch: Some(
+                                                completed.selection_at_launch,
+                                            ),
                                             deadline: Instant::now() + LAUNCH_DISCOVERY_TIMEOUT,
                                         }
                                     });
@@ -749,6 +767,7 @@ pub fn run_dashboard(
                                             provider: completed.request.target,
                                             provider_session_id: outcome.session_id,
                                             known_session_ids: BTreeSet::new(),
+                                            selection_at_launch: None,
                                             deadline: Instant::now() + LAUNCH_DISCOVERY_TIMEOUT,
                                         });
                                         pending_launch_retry_at = None;
@@ -1059,10 +1078,20 @@ pub fn run_dashboard(
                 needs_draw = true;
             }
         }
+        if restore_selection.is_none() {
+            if let Some(session) = app.selected_session() {
+                if saved_selection.as_deref() != Some(session.id.as_str()) {
+                    saved_selection = Some(session.id.clone());
+                    // Best effort: a failed save only loses the resume point.
+                    let _ = last_view.save_session(&session.id);
+                }
+            }
+        }
         if needs_draw {
             watchdog::set_phase(watchdog::Phase::Draw);
             terminal.terminal.draw(|frame| ui::render(frame, &app))?;
             terminal.set_title(&ui::terminal_title(&app));
+            crate::native_session::note_dashboard_drawn();
             needs_draw = false;
             if !first_draw_logged {
                 first_draw_logged = true;
@@ -1117,6 +1146,7 @@ pub fn run_dashboard(
                         needs_draw = true;
                     }
                     Event::Key(key) => {
+                        restore_selection = None;
                         let view_before = app.view_mode;
                         let mut action = handle_key_with_reveal(&mut app, key, &mut pending_reveal);
                         if app.view_mode != view_before {
@@ -1308,6 +1338,31 @@ pub fn run_dashboard(
                                 });
                                 ActionEffect::default()
                             }
+                            AppAction::UndoHide => {
+                                match undo_last_hide(&hidden_sessions, &mut hide_history) {
+                                    Ok(Some(ids)) => {
+                                        app.set_notice(format!(
+                                            "restored {} session{}",
+                                            ids.len(),
+                                            if ids.len() == 1 { "" } else { "s" }
+                                        ));
+                                        if let Some(session_id) = ids.last().cloned() {
+                                            pending_reveal = Some(PendingReveal {
+                                                session_id,
+                                                deadline: Instant::now() + REVEAL_DISCOVERY_TIMEOUT,
+                                            });
+                                        }
+                                    }
+                                    Ok(None) => app.set_notice("nothing to undo"),
+                                    Err(error) => {
+                                        app.set_notice(format!("failed to undo hide: {error:#}"))
+                                    }
+                                }
+                                ActionEffect {
+                                    refresh: true,
+                                    ..ActionEffect::default()
+                                }
+                            }
                             AppAction::Restore { session, hidden } => {
                                 let unhidden = if hidden {
                                     hidden_sessions.unhide(&session.id).map(|_| ())
@@ -1490,6 +1545,7 @@ pub fn run_dashboard(
                                                 prompt,
                                                 cwd,
                                                 known_session_ids,
+                                                selection_at_launch: app.selection.clone(),
                                             },
                                             launch_tx.clone(),
                                         );
@@ -1526,20 +1582,32 @@ pub fn run_dashboard(
                                 provider: intent.provider,
                                 provider_session_id: intent.provider_session_id,
                                 known_session_ids: intent.known_session_ids,
+                                selection_at_launch: None,
                                 deadline: Instant::now() + LAUNCH_DISCOVERY_TIMEOUT,
                             });
                             pending_launch_retry_at = None;
                         }
                         if !effect.hide_session_ids.is_empty() {
+                            let newly_hidden = effect
+                                .hide_session_ids
+                                .iter()
+                                .filter(|id| !hidden_sessions.contains(id))
+                                .cloned()
+                                .collect::<Vec<_>>();
                             match hide_sessions_from_app(
                                 &mut app,
                                 &hidden_sessions,
                                 &effect.hide_session_ids,
                             ) {
-                                Ok(count) => app.set_notice(format!(
-                                    "hid {count} session{} locally; provider history was retained · ctrl+g to restore",
-                                    if count == 1 { "" } else { "s" }
-                                )),
+                                Ok(count) => {
+                                    if !newly_hidden.is_empty() {
+                                        hide_history.push(newly_hidden);
+                                    }
+                                    app.set_notice(format!(
+                                        "hid {count} session{} locally; provider history was retained · cmd+z to undo · ctrl+g to restore",
+                                        if count == 1 { "" } else { "s" }
+                                    ))
+                                }
                                 Err(error) => {
                                     app.set_notice(format!("failed to hide session: {error:#}"))
                                 }
@@ -1587,6 +1655,7 @@ pub fn run_dashboard(
                         }
                     }
                     Event::Mouse(mouse) => {
+                        restore_selection = None;
                         // The only clicks asked for: the speed buttons in the call's footer line.
                         let last_row = terminal
                             .terminal
@@ -1973,6 +2042,7 @@ fn schedule_launch_job(
             model: job.model,
             prompt: job.prompt,
             known_session_ids: job.known_session_ids,
+            selection_at_launch: job.selection_at_launch,
             result,
         });
     });
@@ -2117,6 +2187,18 @@ fn select_pending_launch(app: &mut App, pending: Option<&PendingLaunch>) -> Opti
         newly_discovered.next().is_none().then_some(candidate)
     })?;
     let session_id = session.id.clone();
+    // The row can take seconds to show up. By then the user has often gone on
+    // to another row, and moving the cursor under them would send their next
+    // Enter, or the open already waiting on a preview, to the new session.
+    let moved = pending
+        .selection_at_launch
+        .as_ref()
+        .is_some_and(|at_launch| *at_launch != app.selection);
+    if moved {
+        crate::perf!("launch-found", "session={session_id} selection=kept");
+        return Some(session_id);
+    }
+    crate::perf!("launch-found", "session={session_id} selection=moved");
     app.select_and_reveal_session(&session_id)
         .then_some(session_id)
 }
@@ -2160,6 +2242,24 @@ fn remove_moved_source(
             request.name
         ),
     }
+}
+
+/// Reveal the sessions of the most recent hide again. Returns their IDs, or
+/// None when this dashboard has nothing left to undo.
+fn undo_last_hide(
+    hidden_sessions: &HiddenSessions,
+    history: &mut Vec<Vec<String>>,
+) -> Result<Option<Vec<String>>> {
+    let Some(ids) = history.pop() else {
+        return Ok(None);
+    };
+    for (index, id) in ids.iter().enumerate() {
+        if let Err(error) = hidden_sessions.unhide(id) {
+            history.push(ids[index..].to_vec());
+            return Err(error);
+        }
+    }
+    Ok(Some(ids))
 }
 
 fn hide_sessions_from_app(
@@ -2408,7 +2508,10 @@ fn handle_key(app: &mut App, key: KeyEvent) -> AppAction {
                 app.toggle_view();
                 AppAction::None
             }
-            KeyCode::Char('y') if app.overlay == Overlay::None => {
+            KeyCode::Char('y')
+                if app.overlay == Overlay::None
+                    && std::env::var_os("AGENTVIEW_DISABLE_CTRL_Y").is_none() =>
+            {
                 app.toggle_scheduled();
                 AppAction::None
             }
@@ -2443,6 +2546,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> AppAction {
                 AppAction::BrowseHidden
             }
             KeyCode::Char('g') if app.overlay == Overlay::HiddenPicker => app.close_hidden_picker(),
+            KeyCode::Char('z') if app.overlay == Overlay::None => AppAction::UndoHide,
             KeyCode::Char('o')
                 if matches!(
                     app.overlay,
@@ -2528,6 +2632,12 @@ fn handle_key(app: &mut App, key: KeyEvent) -> AppAction {
     {
         return app.toggle_pause();
     }
+    if key.modifiers.contains(KeyModifiers::SUPER)
+        && key.code == KeyCode::Char('z')
+        && app.overlay == Overlay::None
+    {
+        return AppAction::UndoHide;
+    }
     if key.modifiers.contains(KeyModifiers::SUPER) && key.code == KeyCode::Char('p') {
         match app.overlay {
             Overlay::None | Overlay::Composer(ComposerMode::NewSession) => {
@@ -2608,8 +2718,10 @@ fn handle_key(app: &mut App, key: KeyEvent) -> AppAction {
             KeyCode::Char('f') if by_word => Some(CursorMovement::WordRight),
             KeyCode::Left => Some(CursorMovement::Left),
             KeyCode::Right => Some(CursorMovement::Right),
-            KeyCode::Up => Some(CursorMovement::Up),
-            KeyCode::Down => Some(CursorMovement::Down),
+            // A search field is one line, and the picker needs Up/Down to
+            // move its selection.
+            KeyCode::Up if !app.picker_filter_active() => Some(CursorMovement::Up),
+            KeyCode::Down if !app.picker_filter_active() => Some(CursorMovement::Down),
             KeyCode::Home => Some(CursorMovement::LineStart),
             KeyCode::End => Some(CursorMovement::LineEnd),
             _ => None,
@@ -3193,6 +3305,7 @@ fn handle_action_legacy<T: DashboardTerminal, C: DashboardControl>(
         | AppAction::ScheduleVisibility { .. }
         | AppAction::SetSortKeys { .. }
         | AppAction::BrowseHidden
+        | AppAction::UndoHide
         | AppAction::ToggleVoice
         | AppAction::SaveVoiceKey { .. }
         | AppAction::VoiceProvider(_)
@@ -3670,6 +3783,17 @@ impl Drop for TerminalSession {
             crossterm::cursor::Show
         );
         let _ = self.terminal.show_cursor();
+        // Leave the main screen's keyboard mode empty too: a provider shown earlier may have left
+        // its own push there. The key that quit agentview is often released a moment later, and
+        // the terminal still reports it in the kitty encoding until it has handled the pop. The
+        // shell would print that report (";1:3u"), so wait it out and drop what is queued.
+        #[cfg(unix)]
+        if self.keyboard_enhancement {
+            let _ = io::Write::write_all(self.terminal.backend_mut(), b"\x1b[<99u");
+            let _ = io::Write::flush(self.terminal.backend_mut());
+            thread::sleep(Duration::from_millis(50));
+            unsafe { libc::tcflush(libc::STDIN_FILENO, libc::TCIFLUSH) };
+        }
     }
 }
 
@@ -4118,6 +4242,58 @@ mod tests {
     }
 
     #[test]
+    fn picker_search_fields_edit_like_the_composer() {
+        let word_select = KeyModifiers::ALT | KeyModifiers::SHIFT;
+        let mut app = app();
+        handle_key(&mut app, control_key('o'));
+        assert_eq!(app.overlay, Overlay::DirectoryPicker);
+        for character in "foo bar".chars() {
+            handle_key(&mut app, key(KeyCode::Char(character)));
+        }
+        handle_key(&mut app, modified_key(KeyCode::Left, KeyModifiers::ALT));
+        handle_key(&mut app, key(KeyCode::Char('X')));
+        assert_eq!(app.directory_filter, "foo Xbar");
+        handle_key(&mut app, key(KeyCode::Left));
+        handle_key(&mut app, key(KeyCode::Delete));
+        assert_eq!(app.directory_filter, "foo bar");
+        handle_key(&mut app, control_key('e'));
+        handle_key(&mut app, modified_key(KeyCode::Left, word_select));
+        assert_eq!(app.input_selection(), Some(4..7));
+        handle_key(&mut app, key(KeyCode::Char('z')));
+        assert_eq!(app.directory_filter, "foo z");
+        handle_key(&mut app, control_key('a'));
+        handle_key(&mut app, key(KeyCode::Char('>')));
+        assert_eq!(app.directory_filter, ">foo z");
+        handle_key(&mut app, key(KeyCode::Right));
+        handle_key(
+            &mut app,
+            modified_key(KeyCode::Backspace, KeyModifiers::ALT),
+        );
+        assert_eq!(app.directory_filter, "oo z");
+        assert!(app.input.is_empty());
+
+        handle_key(&mut app, key(KeyCode::Esc));
+        app.open_hidden_picker(vec![crate::hidden::HiddenSessionRecord {
+            id: "cursor:host:abc".into(),
+            provider: Some(Provider::Cursor),
+            name: Some("Agent Comparison".into()),
+            hidden_at_ms: 1,
+        }]);
+        handle_key(&mut app, key(KeyCode::Char('a')));
+        handle_key(&mut app, key(KeyCode::Char('c')));
+        handle_key(&mut app, key(KeyCode::Left));
+        handle_key(&mut app, key(KeyCode::Char('b')));
+        assert_eq!(app.hidden_filter, "abc");
+        handle_key(&mut app, modified_key(KeyCode::Left, KeyModifiers::SUPER));
+        handle_key(&mut app, key(KeyCode::Down));
+        assert_eq!(
+            app.input_cursor(),
+            0,
+            "Down moves the selection, not the cursor"
+        );
+    }
+
+    #[test]
     fn super_v_asks_for_the_clipboard_image_instead_of_typing_v() {
         let mut app = app();
         app.start_new_session(None);
@@ -4288,6 +4464,7 @@ mod tests {
         let mut app = app();
         app.usage = vec![crate::usage::Usage {
             provider: "claude",
+            login_command: None,
             windows: vec![crate::usage::Window {
                 label: "week",
                 percent: 4.0,
@@ -5732,6 +5909,7 @@ mod tests {
                 prompt: "build".into(),
                 cwd: None,
                 known_session_ids: BTreeSet::from(["pi:host:old".into()]),
+                selection_at_launch: None,
             },
             sender,
             || {
@@ -5784,6 +5962,7 @@ mod tests {
             provider_session_id: "same".into(),
             known_session_ids: BTreeSet::new(),
             deadline: Instant::now() + Duration::from_secs(1),
+            selection_at_launch: None,
         };
 
         assert!(select_pending_launch(&mut app, Some(&pending)).is_some());
@@ -5817,6 +5996,7 @@ mod tests {
             provider_session_id: "provisional".into(),
             known_session_ids: BTreeSet::from(["muse:host:old".into()]),
             deadline: Instant::now() + Duration::from_secs(1),
+            selection_at_launch: None,
         };
 
         assert_eq!(
@@ -5837,6 +6017,48 @@ mod tests {
     }
 
     #[test]
+    fn a_launched_row_does_not_take_the_cursor_after_the_user_moved_it() {
+        let mut app = app();
+        let mut launched = app.snapshot.sessions[0].clone();
+        launched.id = "pi:host:new".into();
+        launched.provider_session_id = "new".into();
+        launched.provider = Provider::Pi;
+        let mut sessions = app.snapshot.sessions.clone();
+        sessions.push(launched);
+        app.replace_snapshot(SessionSnapshot {
+            sessions,
+            warnings: Vec::new(),
+        });
+        let at_launch = Some(SelectionKey::Session("elsewhere".into()));
+        let pending = PendingLaunch {
+            provider: Provider::Pi,
+            provider_session_id: "new".into(),
+            known_session_ids: BTreeSet::new(),
+            deadline: Instant::now() + Duration::from_secs(1),
+            selection_at_launch: Some(at_launch),
+        };
+        let moved_to = Some(SelectionKey::Session(app.snapshot.sessions[0].id.clone()));
+        app.selection = moved_to.clone();
+
+        assert_eq!(
+            select_pending_launch(&mut app, Some(&pending)).as_deref(),
+            Some("pi:host:new"),
+            "the launch is resolved"
+        );
+        assert_eq!(
+            app.selection, moved_to,
+            "the cursor stays where the user put it"
+        );
+
+        app.selection = Some(SelectionKey::Session("elsewhere".into()));
+        select_pending_launch(&mut app, Some(&pending));
+        assert_eq!(
+            app.selection,
+            Some(SelectionKey::Session("pi:host:new".into()))
+        );
+    }
+
+    #[test]
     fn pending_launch_refresh_temporarily_queries_hidden_result_classes() {
         let request = DiscoveryRequest::default();
         let pending = PendingLaunch {
@@ -5844,6 +6066,7 @@ mod tests {
             provider_session_id: "exact".into(),
             known_session_ids: BTreeSet::new(),
             deadline: Instant::now() + Duration::from_secs(1),
+            selection_at_launch: None,
         };
 
         let regular = discovery_request_for_pending_launch(&request, None);
@@ -5917,6 +6140,49 @@ mod tests {
         assert!(HiddenSessions::load(directory.path().join("hidden.json"))
             .unwrap()
             .contains("worker"));
+    }
+
+    #[test]
+    fn undo_hide_reveals_the_last_hide_and_then_has_nothing_left() {
+        let directory = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+        }
+        let hidden = HiddenSessions::load(directory.path().join("hidden.json")).unwrap();
+        let mut app = app();
+        hide_sessions_from_app(&mut app, &hidden, &["worker".into()]).unwrap();
+        let mut history = vec![vec!["worker".to_string()]];
+
+        assert_eq!(
+            undo_last_hide(&hidden, &mut history).unwrap(),
+            Some(vec!["worker".to_string()])
+        );
+        assert!(!hidden.contains("worker"));
+        assert_eq!(undo_last_hide(&hidden, &mut history).unwrap(), None);
+    }
+
+    #[test]
+    fn cmd_z_and_ctrl_z_undo_a_hide_only_on_the_list() {
+        let mut dashboard = app();
+        assert_eq!(
+            handle_key(&mut dashboard, control_key('z')),
+            AppAction::UndoHide
+        );
+        assert_eq!(
+            handle_key(
+                &mut dashboard,
+                modified_key(KeyCode::Char('z'), KeyModifiers::SUPER)
+            ),
+            AppAction::UndoHide
+        );
+        dashboard.start_filter();
+        assert_eq!(
+            handle_key(&mut dashboard, control_key('z')),
+            AppAction::None
+        );
     }
 
     #[test]
