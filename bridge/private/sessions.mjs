@@ -1,6 +1,6 @@
 import {digest,SyncError} from '../sync/projection.mjs';
 import {contextMessage} from './excerpt.mjs';
-import {attentionReason,buildDigest,matchesQuery,SOON_MS} from './attention.mjs';
+import {attentionReason,buildDigest,matchesQuery,SOON_MS,FOLLOW_MS} from './attention.mjs';
 import {liveHealth} from './health.mjs';
 
 const scope=p=>[p.owner_id,p.device_id,p.database_epoch];
@@ -73,8 +73,10 @@ export async function listSessions({db,gate,principal},{status='all',view='recen
   let attention=null;
   if(!query&&['all','active','needs_you'].includes(status)){
    const now=Date.now(),recentDone=all.filter(s=>s.status==='done'&&s.mirrored&&now-humanTime(s)<=SOON_MS).sort(byHuman).slice(0,30);
-   const rows=[...all.filter(s=>s.status==='needs_you'),...recentDone],tails=await attentionTails(tx,principal,rows.map(s=>s.session_id));
-   attention=buildDigest({rows,tails,now,counts,statusFresh:status_fresh,freshness,statusObservedAt:runtime.checked_at,timing:{freshness_wait:waited,db_and_digest:Date.now()-started-waited}});
+   const followDone=all.filter(s=>s.status==='done'&&s.mirrored&&now-humanTime(s)<=FOLLOW_MS).sort(byHuman).slice(0,40);
+    const rows=[...all.filter(s=>s.status==='needs_you'),...recentDone];
+    const tails=await attentionTails(tx,principal,[...new Set([...rows,...followDone].map(s=>s.session_id))]);
+   attention=buildDigest({rows,followRows:followDone,tails,now,counts,statusFresh:status_fresh,freshness,statusObservedAt:runtime.checked_at,timing:{freshness_wait:waited,db_and_digest:Date.now()-started-waited}});
   }
   return {...(attention?{digest:attention}:{}),sessions,source:sourceInfo,counts,counts_complete:!runtime.partial&&!runtime.truncated,active_counts_complete:!runtime.partial,counts_scope:runtime.truncated?'available runtime snapshot (truncated)':'all visible top-level paired sessions, before query/filter/pagination',selection:view,status_filter:status,
    total_matching:candidates.length,inventory_matching:totalMatching,shown:sessions.length,remaining_in_selection:Math.max(0,candidates.length-start-sessions.length),

@@ -6,7 +6,7 @@ import {privateMcp,SERVER_INSTRUCTIONS} from '../private/mcp.mjs';
 import {SyncStore} from '../sync/store.mjs';
 import {Outbox} from '../private/outbox.mjs';
 import {digest} from '../sync/projection.mjs';
-import {finalAsk,matchesQuery,ageText,buildDigest} from '../private/attention.mjs';
+import {finalAsk,followUp,matchesQuery,ageText,buildDigest} from '../private/attention.mjs';
 
 // Synthetic data only: nothing here is read from real sessions.
 let db,store,outbox,reader,writer;
@@ -160,6 +160,57 @@ test('server instructions put mode rules in the first 512 characters, and the ne
  const tools=(await method('tools/list')).result.tools,byName=Object.fromEntries(tools.map(t=>[t.name,t]));
  assert(byName.session_brief.annotations.readOnlyHint);assert.equal(byName.send_session_message.annotations.readOnlyHint,false);
  assert(byName.list_sessions.description.includes('digest.say'));assert(byName.read_session.description.includes('session_brief'));
+});
+
+test('a finished turn with a stated next step is a follow-up, and a closed one is not',()=>{
+  const life=followUp('Scored 58/60 company pages. The remaining two need a source.');
+  assert.equal(life.signal,'incomplete');assert.equal(life.done,58);assert.equal(life.total,60);assert.match(life.action,/remaining 2/);
+  const plan=followUp('The planning step is in. Next: wire the scoring harness and pick the diagram set.');
+  assert.equal(plan.signal,'next_step');assert.match(plan.reason,/wire the scoring harness/);
+  const proposed=followUp('I wrote the implementation. It is awaiting your go-ahead.');
+  assert.equal(proposed.signal,'decision');assert.equal(proposed.action,'Say whether to proceed.');
+  for(const text of ['Fixed the typo and pushed. Nothing else needed.','All done.','Merged and published. Want me to keep going on the follow-ups?','See page 1/12 for the table.','Results are published. Should I also write a summary?'])
+    assert.equal(followUp(text),null,text);
+  assert.equal(followUp('Next: draft the plan. '+'Then I finished it. '.repeat(30)+'All done.'),null);
+});
+
+test('follow-ups are named apart from blockers, newest incomplete work first, and a waiting session is not listed twice',()=>{
+  const now=1_700_000_000_000;
+  const row=(id,title,age)=>({session_id:id,title,status:'done',attention_assessed:true,updated_at:now-age});
+  const tails=new Map([
+    ['life',{text:'Life science search is at 58/60. Next is the harder benchmark.',assistant_last:true}],
+    ['diagram',{text:'Planning step ended. Next: pick the diagram set.',assistant_last:true}],
+    ['closed',{text:'Fixed the typo and pushed. Nothing else needed.',assistant_last:true}],
+    ['asked',{text:'Please label ten diagrams so I can score it.',assistant_last:true}],
+    ['waiting',{text:'Scored 10/12. Still open.',assistant_last:true}],
+    ['owner',{text:'Next: do the rest.',assistant_last:false}],
+  ]);
+  const d=buildDigest({now,counts:{},statusFresh:true,freshness:{mac_seen_recently:true},
+    rows:[row('asked','Asked',1000),{session_id:'waiting',title:'Waiting',status:'needs_you',reason:'reply',updated_at:now}],
+    followRows:[row('life','Life Science Search Benchmark',3*86400_000),row('diagram','Diagram Benchmark Planning',3600_000),row('closed','Docs typo fix',1000),row('asked','Asked',1000),row('owner','Owner spoke',1000),{session_id:'waiting',title:'Waiting',status:'needs_you',updated_at:now}],
+    tails});
+  assert.deepEqual(d.may_also_need_you,[{session_id:'asked',title:'Asked'}]);
+  assert.deepEqual(d.follow_ups.map(f=>f.session_id),['life','diagram']);
+  assert.equal(d.follow_ups[0].signal,'incomplete');assert.match(d.follow_ups[0].action,/remaining 2/);
+  assert.equal(d.follow_ups[0].confirmed,false);
+  assert(d.say.includes('Life Science Search Benchmark (58 of 60)'));
+  assert(d.say.includes('may need a follow-up'));
+  assert(!d.say.includes('blocked'));
+  assert(!JSON.stringify(d.follow_ups).includes('Docs typo'));
+  assert(!d.follow_ups.some(f=>f.session_id==='waiting'||f.session_id==='asked'||f.session_id==='owner'));
+  assert(d.follow_up_note.includes('not a session waiting'));
+});
+
+test('a done session from this week appears in the overview follow-ups',async()=>{
+  await seed('life-science','Life Science Search Benchmark',[turn(1,'user','Score the company pages.'),turn(2,'assistant','Life science search is at 58/60. Next is the harder benchmark.')]);
+  const threeDays=Date.now()-3*86400_000;
+  runtime={available:true,partial:false,checked_at:Date.now(),statuses:[status('life-science',{status:'done',updated_at:threeDays,last_user_ms:threeDays,last_user_message_id:'msg_1'})]};
+  const d=(await rpc('list_sessions',{status:'active'})).digest;
+  assert.equal(d.confirmed,0);
+  assert.equal(d.follow_ups[0].session_id,'life-science');
+  assert.equal(d.follow_ups[0].signal,'incomplete');
+  assert.match(d.say,/Life Science Search Benchmark \(58 of 60\)/);
+  assert.match(d.say,/may need a follow-up/);
 });
 
 test('finalAsk, matchesQuery and ageText',()=>{
