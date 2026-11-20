@@ -35,7 +35,7 @@ TAKES = [
     ),
     (
         "intro-onelist.mp3",
-        "Agent View puts every agent in one list, sorted by what needs you.",
+        "Better Agent View puts every agent in one list, sorted by what needs you.",
         4.1,
         6.9,
     ),
@@ -96,7 +96,7 @@ TAKES = [
     ),
     (
         "close-opensource.mp3",
-        "Agent View. Open source at agent hyphen view dot app.",
+        "Better Agent View. Open source at better agent view dot com.",
         40.3,
         44.6,
     ),

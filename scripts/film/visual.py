@@ -551,11 +551,11 @@ class Film:
         out += (
             rect(615, 290, 535, 330, 28, "white")
             + mark(882, 395, 1.85)
-            + txt(882, 520, "Agent View", 62, INK, True, "middle")
+            + txt(882, 520, "BetterAgentView", 56, INK, True, "middle")
             + txt(
                 882,
                 572,
-                "Open source · Built in Rust · agent-view.app",
+                "Open source · Built in Rust · betteragentview.com",
                 20,
                 BLUE,
                 anchor="middle",
@@ -601,7 +601,7 @@ class Film:
         out += txt(
             800,
             885,
-            "agent-view.app  ·  github.com/moritzWa/agentview",
+            "betteragentview.com  ·  github.com/moritzWa/betteragentview",
             22,
             BLUE,
             anchor="middle",

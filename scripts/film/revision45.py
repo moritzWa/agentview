@@ -615,10 +615,12 @@ class Film45(Film):
         )
         who = cue["speaker"]
         color = SPEAKER_COLORS[who]
+        # Cue key stays "AGENT VIEW" so existing timing files still match.
+        label = "BETTER AGENT VIEW" if who == "AGENT VIEW" else who
         out = self.locked("voice-live")
         x, y, w, h = 300, 575, 1000, 170
         out += rect(x, y, w, h, 25, "white", "#d3def8") + txt(
-            x + 33, y + 33, who, 15, color, True
+            x + 33, y + 33, label, 15, color, True
         )
         out += self.waves(x + 770, y + 29, t, 170, 36, color, speaker=who)
         lines = list(VOICE_CHOICE) if cue["file"] == "answer.mp3" else [cue["text"]]
@@ -645,7 +647,7 @@ class Film45(Film):
         out = f'<g transform="translate(800 450) scale({push}) translate(-800 -450)">'
         out += txt(800, 250, "ChatGPT MCP", 44, INK, True, "middle")
         out += txt(
-            800, 292, "Connect Agent View to ChatGPT", 24, MUTED, anchor="middle"
+            800, 292, "Connect BetterAgentView to ChatGPT", 24, MUTED, anchor="middle"
         )
         out += rect(x - 24, y - 24, w + 48, h + 48, 28, "#fcfcfc", "#e1e3e8")
         return out + image(card, x, y, w, h) + "</g>"
@@ -683,7 +685,7 @@ class Film45(Film):
         boxes = [
             (110, "ChatGPT voice", "your phone", BLUE),
             (600, "AgentVoice MCP", "cloud · keeps a chat copy", teal),
-            (1090, "Agent View", "your Mac", BLUE if online >= 0.5 else grey),
+            (1090, "BetterAgentView", "your Mac", BLUE if online >= 0.5 else grey),
         ]
         bw, bh, by = 400, 250, 300
         for x, title, sub, color in boxes:

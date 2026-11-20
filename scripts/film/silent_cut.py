@@ -18,7 +18,7 @@ LABELS = [
     (26.3, 29.0, "Work only, one global shortcut"),
     (29.0, 34.6, "Agents schedule follow-ups"),
     (34.6, 40, "Heavy jobs queued"),
-    (40, 45, "agent-view.app"),
+    (40, 45, "betteragentview.com"),
 ]
 
 
