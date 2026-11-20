@@ -16,12 +16,12 @@ const Session = z.object({
 }).strict();
 export const Batch = z.object({
   version: z.literal(1), batch_id: id, session_id: id,
-  kind: z.enum(['baseline', 'delta']), from: counter, through: counter,
+  kind: z.enum(['baseline', 'delta', 'replace']), from: counter, through: counter,
   upload_id: id.optional(), chunk: counter.optional(), complete: z.boolean().optional(),
   session: Session, messages: z.array(Message).max(500), delete_ids: z.array(id).max(500),
 }).strict().superRefine((b, ctx) => {
   const fail = () => ctx.addIssue({ code: 'custom', message: 'invalid_batch' });
-  if (b.kind === 'baseline') {
+  if (b.kind === 'baseline' || b.kind === 'replace') {
     if (!b.upload_id || b.chunk === undefined || b.complete === undefined || b.from !== 0 || b.delete_ids.length) fail();
   } else {
     if (b.through <= b.from) fail();
@@ -70,6 +70,21 @@ export function parseBatch(value) {
   // Never include zod's errors/input in an HTTP response or log.
   if (!parsed.success) throw new SyncError('invalid_batch', 400);
   return parsed.data;
+}
+
+/** Same bytes on the Mac and in the Worker. A verify mismatch means the copies differ. */
+export function projectionText(cursor, state, messages) {
+  const head = [
+    `cursor=${cursor}`,
+    `archived=${Boolean(state?.archived)}`,
+    `deleted=${Boolean(state?.deleted)}`,
+    `title=${state?.title ?? ''}`,
+    `visible_before=${state?.visible_before ?? ''}`,
+  ];
+  const body = [...messages]
+    .sort((a, b) => a.order - b.order || String(a.id).localeCompare(String(b.id)))
+    .map(m => `${m.id}\t${m.order}\t${m.role}\t${m.text}`);
+  return [...head, ...body].join('\n');
 }
 
 export function canonical(value) {

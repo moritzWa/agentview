@@ -59,7 +59,7 @@ export async function privateMcp(request,{db,store,principal,outbox,gate}) {
       next_action:replies.length?'read_session_after_reply_after':'check_message_status',
       note:completion_confirmed?'A native completed state and synced reply are correlated to this input.':'Admission is confirmed, but task completion is not. Do not reuse a reply from before this input.'};
   };
-  register('mac_presence','Read-only Mac presence. bridge is online, offline, or unknown from the connector heartbeat, not from queued-message acceptance. internet is reachable only when that heartbeat is recent; otherwise unknown, because sleep and a dead daemon look the same as a network loss. history_sync is fresh, stale, partial, or unknown from the last complete history sync. Idle sync is 15 minutes. Five seconds is only the active-phone tick. Does not send, queue, or read chat.',{},async()=>{
+  register('mac_presence','Read-only Mac presence. bridge is online, offline, or unknown from the connector heartbeat, not from queued-message acceptance. internet is reachable only when that heartbeat is recent; otherwise unknown, because sleep and a dead daemon look the same as a network loss. history_sync is fresh, stale, partial, or unknown from the last complete history sync. Idle sync is 15 minutes. Five seconds is only the active-phone tick. If sessions_behind is not zero, say how many sessions have not reached the cloud and for how long. Does not send, queue, or read chat.',{},async()=>{
     const stamps=await gate.presence(`${principal.device_id}|${principal.database_epoch}`);
     return macPresence(Date.now(),stamps);
   });

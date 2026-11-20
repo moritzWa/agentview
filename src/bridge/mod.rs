@@ -244,12 +244,27 @@ enum Fault {
     Ambiguous,
 }
 
+fn http_status(message: &str) -> Option<u16> {
+    message
+        .strip_prefix("bridge HTTP ")?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
+}
+
+/// A refused delta or baseline means the pointers disagree. A full replace heals it.
+fn needs_replace(error: &anyhow::Error) -> bool {
+    let text = error.to_string();
+    text.contains("cursor_gap") || text.contains("baseline_already_committed")
+}
+
 fn classify(error: &anyhow::Error) -> Option<Fault> {
     let message = error.to_string();
-    if let Some(code) = message.strip_prefix("bridge HTTP ") {
-        return match code.parse::<u16>() {
-            Ok(400 | 409 | 413 | 422) => Some(Fault::Definite),
-            Ok(500..=599) => Some(Fault::Ambiguous),
+    if let Some(status) = http_status(&message) {
+        return match status {
+            400 | 409 | 413 | 422 => Some(Fault::Definite),
+            500..=599 => Some(Fault::Ambiguous),
             _ => None,
         };
     }
@@ -304,6 +319,29 @@ fn flush_isolating(journal: &mut Journal, config: &Config, token: &str) -> Resul
     Ok((count, faults))
 }
 
+/// Uploads the whole current projection beside the copy the cloud already serves.
+/// Reads keep returning the old copy until the last chunk is confirmed.
+fn replace_session(
+    db: &mut rusqlite::Connection,
+    journal: &mut Journal,
+    config: &Config,
+    credential: &str,
+    id: &str,
+) -> std::result::Result<usize, (&'static str, anyhow::Error)> {
+    let native = source::native(db, id).map_err(|e| ("source", e))?;
+    let Some(capture) = source::capture(db, id, None).map_err(|e| ("capture", e))? else {
+        return Ok(0);
+    };
+    journal
+        .stage_replace(id, capture, native)
+        .map_err(|e| ("stage", e))?;
+    let (n, faults) = flush_isolating(journal, config, credential).map_err(|e| ("transport", e))?;
+    if let Some((_, stage, error)) = faults.into_iter().next() {
+        return Err((stage, error));
+    }
+    Ok(n)
+}
+
 fn sync_session(
     db: &mut rusqlite::Connection,
     journal: &mut Journal,
@@ -319,6 +357,10 @@ fn sync_session(
             flush_isolating(journal, config, credential).map_err(|e| ("transport", e))?;
         *uploads += n;
         if let Some((_, stage, error)) = faults.into_iter().next() {
+            if needs_replace(&error) {
+                *uploads += replace_session(db, journal, config, credential, id)?;
+                return Ok(());
+            }
             return Err((stage, error));
         }
     }
@@ -345,6 +387,10 @@ fn sync_session(
             flush_isolating(journal, config, credential).map_err(|e| ("transport", e))?;
         *uploads += n;
         if let Some((_, stage, error)) = faults.into_iter().next() {
+            if needs_replace(&error) {
+                *uploads += replace_session(db, journal, config, credential, id)?;
+                return Ok(());
+            }
             return Err((stage, error));
         }
     }
@@ -380,11 +426,19 @@ pub fn sync_once(dir: &Path) -> Result<usize> {
         });
     };
     let (mut uploads, queued_faults) = flush_isolating(&mut journal, &config, &credential)?;
-    for (id, stage, error) in &queued_faults {
-        note(&mut failing, id, stage, error);
-    }
     let mut db = source::open(&config.database)?;
     let ids = source::sessions(&db)?.into_iter().collect::<BTreeSet<_>>();
+    for (id, stage, error) in queued_faults {
+        if needs_replace(&error) && ids.contains(&id) {
+            match replace_session(&mut db, &mut journal, &config, &credential, &id) {
+                Ok(n) => uploads += n,
+                Err(("transport", error)) => return Err(error),
+                Err((stage, error)) => note(&mut failing, &id, stage, &error),
+            }
+        } else {
+            note(&mut failing, &id, stage, &error);
+        }
+    }
     let mut server_errors = 0;
     for id in &ids {
         if failing.iter().any(|f| &f.session_id == id) {
@@ -420,6 +474,38 @@ pub fn sync_once(dir: &Path) -> Result<usize> {
             }
         }
     }
+    // A restored journal can look caught up locally while the cloud pointer differs.
+    // Compare pointers and replace those sessions. A network failure here is not a stall.
+    if let Ok(local) = journal.checkpoints() {
+        if !local.is_empty() {
+            let sessions: Vec<Value> = local
+                .iter()
+                .map(|(id, cursor)| json!({"session_id": id, "cursor": cursor}))
+                .collect();
+            match http::request(
+                &config.endpoint,
+                "/v1/sync/cursors",
+                Some(&credential),
+                Some(&json!({"sessions": sessions})),
+                60,
+            ) {
+                Ok(report) => {
+                    for id in report["mismatch"].as_array().cloned().unwrap_or_default() {
+                        let Some(id) = id.as_str() else { continue };
+                        if !ids.contains(id) || failing.iter().any(|f| f.session_id == id) {
+                            continue;
+                        }
+                        match replace_session(&mut db, &mut journal, &config, &credential, id) {
+                            Ok(n) => uploads += n,
+                            Err(("transport", error)) => return Err(error),
+                            Err((stage, error)) => note(&mut failing, id, stage, &error),
+                        }
+                    }
+                }
+                Err(error) => log_unavailable("cursors", &error),
+            }
+        }
+    }
     for id in journal.known()? {
         if !ids.contains(&id) {
             if journal.has_held(&id)? {
@@ -452,7 +538,9 @@ pub fn sync_once(dir: &Path) -> Result<usize> {
         &config.endpoint,
         "/v1/connector/checked",
         Some(&credential),
-        Some(&json!({"complete":health.failing.is_empty(),"skipped":health.failing.len()})),
+        Some(
+            &json!({"complete":health.failing.is_empty(),"skipped":health.failing.len(),"behind":health.failing.len(),"behind_since":health.failing.iter().map(|f| f.since).min().map(|s| s * 1000)}),
+        ),
         30,
     )?;
     if let Err(error) = publish_runtime(dir, &config, &credential) {
@@ -766,6 +854,54 @@ fn log_unavailable(channel: &str, error: &anyhow::Error) {
         .map_or(0, |d| d.as_secs());
     // No exception text: it can contain paths, SQL, headers or prompt content.
     eprintln!("bridge {channel} unavailable kind={kind} time={now}; retrying");
+}
+
+/// Compares each local projection with the cloud copy. Prints no message text.
+pub fn verify(dir: &Path) -> Result<Value> {
+    let config = load(dir)?;
+    let credential = token(&config)?;
+    let mut db = source::open(&config.database)?;
+    let ids = source::sessions(&db)?;
+    let mut checked = 0;
+    let mut mismatches = Vec::new();
+    let mut failed = Vec::new();
+    for id in &ids {
+        let Some(capture) = source::capture(&mut db, id, None)? else {
+            continue;
+        };
+        let text = source::projection_text(capture.through, &capture.state, &capture.messages);
+        let local_hash = format!("{:x}", Sha256::digest(text.as_bytes()));
+        let report = match http::request(
+            &config.endpoint,
+            "/v1/sync/verify",
+            Some(&credential),
+            Some(
+                &json!({"session_id": id, "hash": local_hash, "cursor": capture.through, "count": capture.messages.len()}),
+            ),
+            60,
+        ) {
+            Ok(report) => report,
+            Err(error) => {
+                failed.push(json!({"session_id": id, "reason": safe_reason(&error)}));
+                continue;
+            }
+        };
+        checked += 1;
+        if report["match"] != true {
+            mismatches.push(json!({
+                "session_id": id,
+                "reason": report["reason"],
+                "local_cursor": capture.through,
+                "cloud_cursor": report["cloud_cursor"],
+                "local_count": capture.messages.len(),
+                "cloud_count": report["cloud_count"],
+            }));
+        }
+        if checked % 200 == 0 {
+            eprintln!("bridge verify checked {checked}");
+        }
+    }
+    Ok(json!({"checked": checked, "mismatches": mismatches, "failed": failed}))
 }
 
 pub fn status(dir: &Path) -> Result<Value> {

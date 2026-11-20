@@ -83,6 +83,15 @@ fn upload_failures_are_classified_by_whether_the_cloud_may_have_committed() {
         assert_eq!(classify(&e(pass_level)), None);
     }
     assert_eq!(error_kind("bridge network request failed"), "network");
+    assert_eq!(
+        classify(&e("bridge HTTP 409 cursor_gap")),
+        Some(Fault::Definite)
+    );
+    assert!(needs_replace(&e("bridge HTTP 409 cursor_gap")));
+    assert!(needs_replace(&e(
+        "bridge HTTP 409 baseline_already_committed"
+    )));
+    assert!(!needs_replace(&e("bridge HTTP 409 session_deleted")));
 }
 
 #[test]
@@ -386,6 +395,64 @@ fn source_captures_consistent_watermark_and_revert_boundary_then_detects_edits()
     assert_eq!(reconciled.messages[0].text, "Edited");
     db.execute("UPDATE event_sequence SET seq=1", []).unwrap();
     assert!(source::capture(&mut db, "s", Some(2)).is_err());
+}
+
+#[test]
+fn a_replace_uploads_the_whole_projection_and_does_not_move_the_pointer_until_confirmed() {
+    let dir = tempdir().unwrap();
+    let mut db = fixture();
+    let mut journal = Journal::open(&dir.path().join("j.sqlite")).unwrap();
+    journal
+        .stage(
+            "s",
+            source::capture(&mut db, "s", None).unwrap().unwrap(),
+            true,
+        )
+        .unwrap();
+    drain(&mut journal);
+    assert_eq!(journal.checkpoint("s").unwrap().unwrap().cursor, 1);
+    journal
+        .stage_replace(
+            "s",
+            source::capture(&mut db, "s", None).unwrap().unwrap(),
+            true,
+        )
+        .unwrap();
+    let body = journal.pending().unwrap().unwrap();
+    assert_eq!(body["kind"], "replace");
+    assert_eq!(body["from"], 0);
+    assert_eq!(body["delete_ids"].as_array().unwrap().len(), 0);
+    assert!(body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|m| m["text"] == "Visible"));
+    // The old pointer stays until the cloud confirms the replacement.
+    assert_eq!(journal.checkpoint("s").unwrap().unwrap().cursor, 1);
+    assert!(journal.cached("s").unwrap().is_empty());
+    drain(&mut journal);
+    assert_eq!(journal.checkpoint("s").unwrap().unwrap().cursor, 1);
+    assert_eq!(journal.cached("s").unwrap().len(), 1);
+}
+
+#[test]
+fn projection_text_matches_the_cloud_byte_for_byte() {
+    let text = source::projection_text(
+        10,
+        &json!({"title":"T","archived":false,"deleted":false,"visible_before":null}),
+        &[Message {
+            id: "m1".into(),
+            role: "user".into(),
+            order: 1,
+            created_at: 1,
+            updated_at: 1,
+            text: "hi".into(),
+        }],
+    );
+    assert_eq!(
+        text,
+        "cursor=10\narchived=false\ndeleted=false\ntitle=T\nvisible_before=\nm1\t1\tuser\thi"
+    );
 }
 
 #[test]

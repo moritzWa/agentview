@@ -1,4 +1,4 @@
-import { digest, parseBatch, SyncError } from './projection.mjs';
+import { digest, parseBatch, projectionText, SyncError } from './projection.mjs';
 
 const key = p => [p.owner_id, p.device_id, p.database_epoch];
 const predicate = 'owner_id=$1 AND device_id=$2 AND database_epoch=$3';
@@ -44,12 +44,23 @@ export class SyncStore {
       const current = (await tx.query(`SELECT * FROM av_sessions WHERE ${sessionPredicate} FOR UPDATE`, sk)).rows[0];
       let generation = current.generation;
       const chunked = batch.upload_id !== undefined;
-      const staged = (await tx.query(`SELECT * FROM av_baselines WHERE ${sessionPredicate}`, sk)).rows[0];
+      let staged = (await tx.query(`SELECT * FROM av_baselines WHERE ${sessionPredicate}`, sk)).rows[0];
+      const replacing = batch.kind === 'replace';
       if (batch.kind === 'baseline') {
         if (current.cursor !== null) throw new SyncError('baseline_already_committed');
+      } else if (replacing) {
+        // A full replacement is how a restored journal heals. It does not require
+        // the cursors to match, and it must not hide the copy people can read.
+        if (current.state.deleted) throw new SyncError('session_deleted');
       } else {
         if (current.cursor === null || Number(current.cursor) !== batch.from) throw new SyncError('cursor_gap');
         if (current.state.deleted) throw new SyncError('session_deleted');
+      }
+      if (replacing && batch.chunk === 0 && staged && staged.upload_id !== batch.upload_id) {
+        await tx.query(`DELETE FROM av_messages WHERE ${sessionPredicate} AND generation=$5`, [...sk, staged.upload_id]);
+        await tx.query(`DELETE FROM av_staged_deletes WHERE ${sessionPredicate} AND generation=$5`, [...sk, staged.upload_id]);
+        await tx.query(`DELETE FROM av_baselines WHERE ${sessionPredicate}`, sk);
+        staged = undefined;
       }
       if (chunked) {
         const stateHash = await digest(batch.session);
@@ -76,7 +87,14 @@ export class SyncStore {
       }
       const committed = chunked ? batch.complete : true;
       if (committed) {
-        if (chunked && batch.kind==='delta') {
+        if (replacing) {
+          const previous = current.generation;
+          generation = batch.upload_id;
+          if (previous && previous !== generation) {
+            await tx.query(`DELETE FROM av_messages WHERE ${sessionPredicate} AND generation=$5`, [...sk, previous]);
+            await tx.query(`DELETE FROM av_staged_deletes WHERE ${sessionPredicate} AND generation=$5`, [...sk, previous]);
+          }
+        } else if (chunked && batch.kind==='delta') {
           const deletes=(await tx.query(`SELECT message_id FROM av_staged_deletes WHERE ${sessionPredicate} AND generation=$5`,[...sk,generation])).rows;
           for (const {message_id} of deletes) await tx.query(`DELETE FROM av_messages WHERE ${sessionPredicate} AND generation=$5 AND message_id=$6`,[...sk,current.generation,message_id]);
           await tx.query(`INSERT INTO av_messages SELECT owner_id,device_id,database_epoch,session_id,$6,message_id,message_order,role,text,created_at,updated_at FROM av_messages
@@ -96,6 +114,38 @@ export class SyncStore {
       await tx.query('INSERT INTO av_receipts VALUES ($1,$2,$3,$4,$5,$6)', [...scope, batch.batch_id, hash, JSON.stringify(receipt)]);
       return receipt;
     });
+  }
+
+  /** Cursor compare only. A mismatch is a session whose cloud pointer is not the Mac's. */
+  async cursors(principal, input) {
+    if (principal.audience !== 'sync') throw new SyncError('forbidden', 403);
+    const sessions = input?.sessions;
+    if (!Array.isArray(sessions) || sessions.length > 4000) throw new SyncError('invalid_cursors', 400);
+    const ids = [...new Set(sessions.filter(s => typeof s?.session_id === 'string' && s.session_id.length <= 200).map(s => s.session_id))];
+    const rows = ids.length ? (await this.db.query(`SELECT session_id, cursor FROM av_sessions WHERE ${predicate} AND session_id = ANY($4::text[])`, [...key(principal), ids])).rows : [];
+    const cloud = new Map(rows.map(r => [r.session_id, r.cursor === null || r.cursor === undefined ? null : Number(r.cursor)]));
+    const mismatch = [];
+    for (const s of sessions) {
+      if (typeof s?.session_id !== 'string' || !Number.isSafeInteger(s.cursor)) continue;
+      if (cloud.get(s.session_id) !== s.cursor) mismatch.push(s.session_id);
+    }
+    return {mismatch};
+  }
+
+  /** One session, hashes only. The old copy stays the one reads see until a replace commits. */
+  async verify(principal, input) {
+    if (principal.audience !== 'sync') throw new SyncError('forbidden', 403);
+    const sessionId = input?.session_id;
+    if (typeof sessionId !== 'string' || sessionId.length > 200 || typeof input?.hash !== 'string' || !/^[a-f0-9]{64}$/.test(input.hash)) throw new SyncError('invalid_verify', 400);
+    const rows = (await this.db.query(`SELECT s.cursor, s.state, m.message_id, m.message_order, m.role, m.text
+      FROM av_sessions s LEFT JOIN av_messages m ON m.owner_id=s.owner_id AND m.device_id=s.device_id AND m.database_epoch=s.database_epoch
+      AND m.session_id=s.session_id AND m.generation=s.generation
+      WHERE ${sessionPredicate} AND s.cursor IS NOT NULL AND (s.state->>'deleted')::boolean=false
+      ORDER BY m.message_order, m.message_id`, [...key(principal), sessionId])).rows;
+    if (!rows.length) return {session_id: sessionId, match: false, reason: 'missing'};
+    const state = rows[0].state, messages = rows.filter(r => r.message_id).map(r => ({id: r.message_id, order: Number(r.message_order), role: r.role, text: r.text}));
+    const cloud_hash = await digest(projectionText(Number(rows[0].cursor), state, messages));
+    return {session_id: sessionId, match: cloud_hash === input.hash, cloud_cursor: Number(rows[0].cursor), cloud_count: messages.length, reason: cloud_hash === input.hash ? 'match' : 'differs'};
   }
 
   /** No search/reader API can see incomplete baselines or undone messages. */

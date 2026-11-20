@@ -185,7 +185,13 @@ Each session fails alone: a bad session is retried with backoff (5, 15, 30, 60,
 inside its transaction (HTTP 400, 409, 413, 422) is dropped. A batch with an
 unknown outcome (HTTP 5xx, unreadable receipt) is held and retried byte for
 byte, because the cloud may have committed it and a rebuilt batch would fail
-`cursor_gap`. `agentview bridge status` shows `stuck_sessions`,
+`cursor_gap`. A restored journal, or a baseline the cloud already has, is healed by a
+`replace` upload: the new copy is written beside the old one, and reads keep
+returning the old copy until the last chunk is confirmed. Then the pointers swap.
+`agentview bridge verify` compares each local projection with the cloud copy and
+prints mismatches only, never message text. Each check-in reports `behind` and
+`behind_since`, so `mac_presence` can say how many sessions have not reached the
+cloud and for how long. `agentview bridge status` shows `stuck_sessions`,
 `held_batches_for` and the last pass duration.
 
 At 0.25 CU, 100 CU-hours covers 400 active hours per month. Five minutes awake

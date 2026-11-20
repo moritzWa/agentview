@@ -37,12 +37,16 @@ export class WakeGate {
         // Say it outright when the page may lack the newest messages, so a caller
         // retries instead of presenting a stale tail as the latest.
         const history_fresh=checkedAt!==null&&checkedAt>=now-historyAge;
+        const behind=await s.get(`behind:${p.source}`)??0,behindSince=await s.get(`behind_since:${p.source}`)??null;
+        result.sessions_behind=behind;
+        result.behind_for_ms=behind&&behindSince?Math.max(0,now-behindSince):null;
         result.history_fresh=history_fresh;
         result.history_age_ms=checkedAt===null?null:Math.max(0,Date.now()-checkedAt);
         if(!history_fresh)result.history_note=macSeen
           ?'The Mac is syncing: this may be missing the newest messages. Repeat the same call in about 5 seconds before relying on the latest messages.'
           :'The Mac has not been seen recently: history is only as current as source_checked_at.';
         if(!history_fresh&&macSeen)result.retry_after_ms=5000;
+        if(behind)result.history_note=[result.history_note,`${behind} session${behind===1?' has':'s have'} not reached the cloud.`].filter(Boolean).join(' ');
       }
       return Response.json(result);
     }
@@ -53,6 +57,8 @@ export class WakeGate {
         checked:await s.get(`checked:${source}`)??null,
         sync_attempted:await s.get(`sync_attempted:${source}`)??null,
         sync_skipped:await s.get(`sync_skipped:${source}`)??0,
+        behind:await s.get(`behind:${source}`)??0,
+        behind_since:await s.get(`behind_since:${source}`)??null,
         runtime_checked:await s.get(`runtime_checked:${source}`)??null,
       });
     }
@@ -111,7 +117,10 @@ export class WakeGate {
     }
     if(path==='/checked') {
       const now=Date.now(),complete=p.complete!==false,skipped=Number.isInteger(p.skipped)&&p.skipped>=0?p.skipped:0;
-      const put={[`last_seen:${source}`]:now,[`sync_attempted:${source}`]:now,[`sync_skipped:${source}`]:skipped};
+      const behind=Number.isInteger(p.behind)&&p.behind>=0&&p.behind<=100_000?p.behind:0;
+      const since=Number.isFinite(p.behind_since)&&p.behind_since>0?p.behind_since:null;
+      const put={[`last_seen:${source}`]:now,[`sync_attempted:${source}`]:now,[`sync_skipped:${source}`]:skipped,
+        [`behind:${source}`]:behind,[`behind_since:${source}`]:behind?(since??await s.get(`behind_since:${source}`)??now):null};
       if(complete)put[`checked:${source}`]=now;
       await s.put(put);for(const wake of this.waiters)wake();
       return Response.json({ok:true,complete});

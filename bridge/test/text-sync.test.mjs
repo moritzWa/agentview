@@ -2,7 +2,7 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { PGlite } from '@electric-sql/pglite';
-import { projectMessage, digest, SyncError } from '../sync/projection.mjs';
+import { projectMessage, digest, projectionText, SyncError } from '../sync/projection.mjs';
 import { SyncStore } from '../sync/store.mjs';
 import { privateHandler } from '../sync/http.mjs';
 import { sendPending } from '../sync/client.mjs';
@@ -203,4 +203,39 @@ test('a rebuilt batch after an unseen commit fails cursor_gap, so unknown-outcom
   assert.equal(replay.status, 200);
   assert.deepEqual(await replay.json(), receipt);
   assert.equal((await store.read(reader, session)).messages.length, 2);
+});
+
+const replace = (session, overrides = {}) => batch(session, { kind: 'replace', upload_id: `replace-${session}`, through: 40, messages: [msg('fresh', 3, 'Replacement')], ...overrides });
+
+test('a replacement stays invisible until its last chunk, then the old copy is swapped out', async () => {
+  await store.apply(writer, batch('heal', { messages: [msg('old', 1, 'Old copy')] }));
+  const first = replace('heal', { complete: false, messages: [msg('fresh', 3, 'Replacement')] });
+  assert.equal((await store.apply(writer, first)).committed, false);
+  assert.equal((await store.read(reader, 'heal')).messages[0].text, 'Old copy');
+  const done = { ...first, batch_id: 'heal-done', chunk: 1, complete: true, messages: [msg('newer', 4, 'Now current')] };
+  assert.equal((await store.apply(writer, done)).through, 40);
+  const read = await store.read(reader, 'heal');
+  assert.equal(Number(read.cursor), 40);
+  assert.deepEqual(read.messages.map(m => m.text), ['Replacement', 'Now current']);
+  assert.equal((await store.read(reader, 'heal', { query: 'Old copy' })).messages.length, 0);
+});
+
+test('a pointer mismatch is healed by replace, and a wrong delta is still refused', async () => {
+  await store.apply(writer, batch('gap'));
+  await assert.rejects(store.apply(writer, delta('gap', 4, 9)), /cursor_gap/);
+  await store.apply(writer, replace('gap', { upload_id: 'gap-new', messages: [msg('m9', 9, 'Healed')] }));
+  assert.equal((await store.read(reader, 'gap')).messages[0].text, 'Healed');
+  assert.deepEqual(await store.cursors(writer, { sessions: [{ session_id: 'gap', cursor: 40 }, { session_id: 'gap', cursor: 10 }, { session_id: 'missing', cursor: 1 }] }), { mismatch: ['gap', 'missing'] });
+});
+
+test('an abandoned replacement does not delete the copy people can read', async () => {
+  await store.apply(writer, batch('abandon', { messages: [msg('kept', 1, 'Keep me')] }));
+  await store.apply(writer, replace('abandon', { upload_id: 'half', complete: false, messages: [msg('half', 2, 'Half')] }));
+  await store.apply(writer, replace('abandon', { upload_id: 'other', messages: [msg('other', 3, 'Other')] }));
+  assert.deepEqual((await store.read(reader, 'abandon')).messages.map(m => m.text), ['Other']);
+});
+
+test('projection text matches the Mac byte for byte', () => {
+  assert.equal(projectionText(10, { title: 'T', archived: false, deleted: false, visible_before: null }, [{ id: 'm1', order: 1, role: 'user', text: 'hi' }]),
+    'cursor=10\narchived=false\ndeleted=false\ntitle=T\nvisible_before=\nm1\t1\tuser\thi');
 });

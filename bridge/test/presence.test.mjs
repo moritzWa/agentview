@@ -30,6 +30,15 @@ test('never seen is unknown, and a partial scan does not count as fresh history'
   assert.equal(partial.bridge,'online');
   assert.equal(partial.history_sync,'partial');
   assert.equal(partial.stale,true);
+  assert.equal(partial.sessions_behind,0);
+  assert.equal(partial.behind_note,null);
+});
+test('sessions behind the cloud are named with how long, and zero is not a warning',()=>{
+  const behind=macPresence(now,{last_seen:now-1_000,checked:now-60_000,behind:3,behind_since:now-20*60_000});
+  assert.equal(behind.sessions_behind,3);
+  assert.equal(behind.behind_for_ms,20*60_000);
+  assert.match(behind.behind_note,/3 sessions have not reached the cloud for 20 minutes/);
+  assert.equal(macPresence(now,{last_seen:now-1_000,behind:0}).behind_note,null);
 });
 test('a partial connector check does not stamp history fresh, and presence ignores the queue',async()=>{
   const map=new Map();
