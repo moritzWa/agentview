@@ -209,7 +209,7 @@ fn sqlite_harnesses_launch_foreground_detach_rename_and_resume_together() {
             command.arg(format!("--{provider}-bin")).arg(path);
         }
     });
-    app.wait_for("SQLite dashboard", |s| s.contains("agentview"));
+    app.wait_for("SQLite dashboard", |s| s.contains("BetterAgentView"));
     for (provider, label) in [
         ("hermes", "Hermes Agent"),
         ("mastracode", "MastraCode"),
@@ -225,7 +225,7 @@ fn sqlite_harnesses_launch_foreground_detach_rename_and_resume_together() {
         });
         app.send(SHIFT_LEFT);
         app.wait_for("owned dashboard row", |s| {
-            s.contains("agentview") && s.contains("hello from fixture") && s.contains(label)
+            s.contains("BetterAgentView") && s.contains("hello from fixture") && s.contains(label)
         });
         app.send(CTRL_R);
         app.wait_for("rename", |s| s.contains("rename session"));
@@ -251,7 +251,7 @@ fn sqlite_harnesses_launch_foreground_detach_rename_and_resume_together() {
         });
         app.send(SHIFT_LEFT);
         app.wait_for("live preview refreshed", |s| {
-            s.contains("agentview") && s.contains("continued conversation")
+            s.contains("BetterAgentView") && s.contains("continued conversation")
         });
     }
     let screen = app.screen();
@@ -1308,7 +1308,7 @@ fn harness_picker_switches_visible_backends_without_losing_the_draft() {
     });
 
     app.wait_for("isolated harness-picker startup", |screen| {
-        screen.contains("agentview") && !screen.contains("loading")
+        screen.contains("BetterAgentView") && !screen.contains("loading")
     });
     app.send(b"keep this draft");
     app.wait_for("Claude draft composer", |screen| {
@@ -1421,7 +1421,7 @@ exit 0"#,
     });
 
     app.wait_for("extended-harness startup", |screen| {
-        screen.contains("agentview") && !screen.contains("loading")
+        screen.contains("BetterAgentView") && !screen.contains("loading")
     });
     app.send(b"test every harness");
     app.send(b"\t");
@@ -1492,7 +1492,7 @@ fn terminal_harness_backgrounds_resumes_stops_then_deletes_in_a_real_pty() {
     });
 
     app.wait_for("Terminal-only dashboard startup", |screen| {
-        screen.contains("agentview") && !screen.contains("loading provider sessions")
+        screen.contains("BetterAgentView") && !screen.contains("loading provider sessions")
     });
     app.send(b"/shell");
     app.send(ENTER);
@@ -1593,7 +1593,7 @@ esac
     });
 
     app.wait_for("Cursor-only startup", |screen| {
-        screen.contains("agentview") && !screen.contains("loading provider sessions")
+        screen.contains("BetterAgentView") && !screen.contains("loading provider sessions")
     });
     app.send(b"/harness cursor");
     app.send(ENTER);
@@ -1621,7 +1621,7 @@ esac
         screen.contains("CURSOR INTERACTIVE LOGIN")
     });
     assert!(
-        !login.contains("agentview"),
+        !login.contains("BetterAgentView"),
         "Cursor login was painted over the dashboard instead of receiving an isolated screen"
     );
     app.send(SHIFT_LEFT);
@@ -1635,7 +1635,7 @@ esac
     );
     app.send(b"l");
     app.wait_for("Cursor setup resumes the exact login PTY", |screen| {
-        screen.contains("CURSOR INTERACTIVE LOGIN") && !screen.contains("agentview")
+        screen.contains("CURSOR INTERACTIVE LOGIN") && !screen.contains("BetterAgentView")
     });
     app.send(ENTER);
     app.wait_for("authenticated Cursor account model catalog", |screen| {
@@ -1664,7 +1664,7 @@ esac
     );
     app.send(ENTER);
     app.wait_for("Enter opens the Cursor native foreground", |screen| {
-        screen.contains("CURSOR NATIVE FOREGROUND") && !screen.contains("agentview")
+        screen.contains("CURSOR NATIVE FOREGROUND") && !screen.contains("BetterAgentView")
     });
     app.send(SHIFT_LEFT);
     app.wait_for("new managed Cursor row after launch", |screen| {
@@ -1734,7 +1734,7 @@ printf '%s\n' 'backgrounded · deadbeef'
     });
 
     app.wait_for("empty Claude startup", |screen| {
-        screen.contains("agentview") && !screen.contains("loading provider sessions")
+        screen.contains("BetterAgentView") && !screen.contains("loading provider sessions")
     });
     let paste_disables_before = count_bytes(&app.raw, b"\x1b[?2004l");
     app.send(b"build the foreground feature");
@@ -1743,7 +1743,7 @@ printf '%s\n' 'backgrounded · deadbeef'
         screen.contains("launching Claude")
     });
     app.wait_for("new Claude row on the dashboard", |screen| {
-        screen.contains("agentview") && screen.contains("new-claude-task")
+        screen.contains("BetterAgentView") && screen.contains("new-claude-task")
     });
     thread::sleep(Duration::from_millis(300));
     assert!(
@@ -1774,7 +1774,7 @@ printf '%s\n' 'backgrounded · deadbeef'
         "bracketed paste re-enabled after Claude Left",
     );
     let returned = app.wait_for("new Claude row selected after backgrounding", |screen| {
-        screen.contains("agentview")
+        screen.contains("BetterAgentView")
             && screen.contains("new-claude-task")
             && screen.contains("backgrounded new-claude-task")
     });
@@ -1864,7 +1864,7 @@ send({'jsonrpc':'2.0','id':request['id'],'result':{'models':[
     });
 
     app.wait_for("Copilot-only startup", |screen| {
-        screen.contains("agentview") && !screen.contains("loading provider sessions")
+        screen.contains("BetterAgentView") && !screen.contains("loading provider sessions")
     });
     app.send(b"/harness copilot");
     app.send(ENTER);
@@ -1903,7 +1903,7 @@ send({'jsonrpc':'2.0','id':request['id'],'result':{'models':[
     app.wait_for(
         "Copilot dashboard after backgrounding native session",
         |screen| {
-            screen.contains("agentview")
+            screen.contains("BetterAgentView")
                 && screen.contains("copilot account task")
                 && screen.contains("GitHub Copilot")
         },
@@ -1968,7 +1968,7 @@ while :; do sleep 1; done
     });
 
     app.wait_for("Pi-only startup", |screen| {
-        screen.contains("agentview") && !screen.contains("loading provider sessions")
+        screen.contains("BetterAgentView") && !screen.contains("loading provider sessions")
     });
     app.send(b"Pi foreground task");
     app.send(ENTER);
@@ -1977,7 +1977,7 @@ while :; do sleep 1; done
     });
     app.send(SHIFT_LEFT);
     app.wait_for("exact managed Pi row after backgrounding", |screen| {
-        screen.contains("agentview")
+        screen.contains("BetterAgentView")
             && screen.contains("Pi foreground task")
             && screen.contains("Pi")
     });
@@ -2046,7 +2046,7 @@ while :; do sleep 1; done
     });
 
     app.wait_for("Antigravity-only startup", |screen| {
-        screen.contains("agentview") && !screen.contains("loading provider sessions")
+        screen.contains("BetterAgentView") && !screen.contains("loading provider sessions")
     });
     app.send(b"/harness antigravity");
     app.send(ENTER);
@@ -2080,7 +2080,7 @@ while :; do sleep 1; done
     let return_started = Instant::now();
     app.send(SHIFT_LEFT);
     let returned = app.wait_for("owned Antigravity row after Left", |screen| {
-        screen.contains("agentview")
+        screen.contains("BetterAgentView")
             && screen.contains("antigravity account task")
             && screen.contains("Antigravity native session is backgrounded")
     });
@@ -2181,7 +2181,7 @@ while :; do sleep 1; done
     app.wait_for(
         "dashboard warning after backgrounding YOLO session",
         |screen| {
-            screen.contains("agentview")
+            screen.contains("BetterAgentView")
                 && screen.contains("⚠ YOLO MODE")
                 && screen.contains("Antigravity native session is backgrounded")
         },
@@ -2412,7 +2412,7 @@ fn real_host_auto_resolves_harnesses_models_and_bounded_history() {
     });
 
     app.wait_for("real host startup", |screen| {
-        screen.contains("agentview") && !screen.contains("loading provider sessions")
+        screen.contains("BetterAgentView") && !screen.contains("loading provider sessions")
     });
     app.send(b"read-only host draft");
     app.wait_for("real host composer", |screen| {
@@ -2535,7 +2535,7 @@ fn real_nested_pi_history_opens_and_returns_without_lookup_error() {
         "dashboard restoration after real Pi",
     );
     let returned = app.wait_for("returned agentview after Pi", |screen| {
-        screen.contains("agentview")
+        screen.contains("BetterAgentView")
     });
     assert!(returned.contains(&session_name));
     assert!(!contains_bytes(
@@ -2606,7 +2606,7 @@ fn real_claude_attach_explains_and_honors_native_background_return() {
         "dashboard restoration after Claude double-Left",
     );
     app.wait_for("returned agentview after Claude", |screen| {
-        screen.contains("agentview") && screen.contains(&session_name)
+        screen.contains("BetterAgentView") && screen.contains(&session_name)
     });
     assert!(!contains_bytes(
         &app.raw[raw_before_open..],
@@ -2631,7 +2631,7 @@ fn real_host_composer_selects_provider_model_filter_and_manual_refresh() {
         ]);
     });
     app.wait_for("real host composer startup", |screen| {
-        screen.contains("agentview") && !screen.contains("loading")
+        screen.contains("BetterAgentView") && !screen.contains("loading")
     });
 
     app.send(b"/harness pi\r");
@@ -3258,7 +3258,7 @@ fn vscode_wide_terminal_help_preserves_visual_line_breaks() {
             ]);
     });
     app.wait_for("VS Code-style terminal startup", |screen| {
-        screen.contains("agentview") && screen.contains("? for shortcuts")
+        screen.contains("BetterAgentView") && screen.contains("? for shortcuts")
     });
 
     app.send(b"?");
