@@ -420,12 +420,13 @@ printf '\r\nRECEIVED_TASK:%s' "$prompt"
         b"Run /login or /provider to get started.",
         Duration::from_secs(4),
     );
-    read_until(
-        &mut master,
-        &mut output,
-        b"RECEIVED_TASK:fix the authenticated parser",
-        Duration::from_secs(4),
-    );
+    // The task line can arrive in the same PTY read that satisfies the login
+    // banner. read_until only counts a new occurrence, so waiting again would
+    // time out looking for a second copy that never comes.
+    let task = b"RECEIVED_TASK:fix the authenticated parser";
+    if occurrence_count(&output, task) == 0 {
+        read_until(&mut master, &mut output, task, Duration::from_secs(4));
+    }
     assert!(
         !output
             .windows(b"EARLY_INPUT".len())

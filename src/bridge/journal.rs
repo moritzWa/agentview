@@ -233,19 +233,17 @@ impl Journal {
     /// rebuilt batch would start from a cursor the cloud has already passed.
     pub fn hold_pending(&mut self, session_id: &str) -> Result<()> {
         let tx = self.db.transaction()?;
-        let rows = {
-            let mut q = tx.prepare("SELECT n,body,native FROM pending ORDER BY n")?;
-            let rows = q
-                .query_map([], |r| {
-                    Ok((
-                        r.get::<_, i64>(0)?,
-                        r.get::<_, String>(1)?,
-                        r.get::<_, bool>(2)?,
-                    ))
-                })?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            rows
-        };
+        let mut q = tx.prepare("SELECT n,body,native FROM pending ORDER BY n")?;
+        let rows = q
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, bool>(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(q);
         for (n, body, native) in rows {
             let mine = serde_json::from_str::<Value>(&body)
                 .map(|v| v["session_id"] == session_id)
@@ -280,20 +278,17 @@ impl Journal {
     /// Puts a session's held batches back at the end of the upload queue, in order.
     pub fn restore_held(&mut self, session_id: &str) -> Result<()> {
         let tx = self.db.transaction()?;
-        let rows = {
-            let mut q =
-                tx.prepare("SELECT n,body,native FROM held WHERE session_id=?1 ORDER BY n")?;
-            let rows = q
-                .query_map([session_id], |r| {
-                    Ok((
-                        r.get::<_, i64>(0)?,
-                        r.get::<_, String>(1)?,
-                        r.get::<_, bool>(2)?,
-                    ))
-                })?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            rows
-        };
+        let mut q = tx.prepare("SELECT n,body,native FROM held WHERE session_id=?1 ORDER BY n")?;
+        let rows = q
+            .query_map([session_id], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, bool>(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(q);
         for (n, body, native) in rows {
             tx.execute(
                 "INSERT INTO pending(body,native) VALUES (?1,?2)",
