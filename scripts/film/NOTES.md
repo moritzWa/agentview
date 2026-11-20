@@ -168,3 +168,12 @@ This writes ignored `target/film-review/`. The durable requested player remains
 Native Voice read/send is now evidenced independently from the staged opening
 exchange. The short movie shows an excerpt, not the full wall-clock tool wait.
 Creative review remains ongoing; microphone speech recognition is not verified.
+
+## Rename to BetterAgentView
+
+The closer and the one-list line were re-recorded; the end card, diagram, plugin
+caption and speaker badge say BetterAgentView. The recorded terminal header is
+swapped with `brand_header.py`, which replaces only the first terminal row of
+each raster with the same row rendered by `betteragentview` 0.3.0. A full
+recapture changes other cells, so it is not used. The 45s cut and timing are
+unchanged. Web copy: 1080p H.264 (`-crf 20`), poster at 5.7s.
