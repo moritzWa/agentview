@@ -9,7 +9,8 @@ use std::sync::{Mutex, Once};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const CHECK_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
-const LATEST_RELEASE: &str = "https://api.github.com/repos/moritzWa/betteragentview/releases/latest";
+const LATEST_RELEASE: &str =
+    "https://api.github.com/repos/moritzWa/betteragentview/releases/latest";
 
 static LATEST: Mutex<Option<String>> = Mutex::new(None);
 static START: Once = Once::new();

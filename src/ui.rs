@@ -26,8 +26,11 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
         area,
     );
     if area.width < 32 || area.height < 8 {
-        let message = if area.width >= 18 && area.height >= 2 {
-            vec![Line::from("BetterAgentView needs"), Line::from("at least 32×8")]
+        let message = if area.width >= 21 && area.height >= 2 {
+            vec![
+                Line::from("BetterAgentView needs"),
+                Line::from("at least 32×8"),
+            ]
         } else {
             vec![Line::from("needs 32×8")]
         };
@@ -3174,7 +3177,10 @@ mod tests {
             ],
             warnings: vec![],
         });
-        assert_eq!(terminal_title(&app), "2 need input · 2 done · BetterAgentView");
+        assert_eq!(
+            terminal_title(&app),
+            "2 need input · 2 done · BetterAgentView"
+        );
         assert_eq!(
             terminal_title(&App::new(SessionSnapshot::default())),
             "BetterAgentView"
@@ -3951,6 +3957,17 @@ mod tests {
         let rendered = buffer_text(terminal.backend().buffer());
         assert!(rendered.contains("BetterAgentView needs"));
         assert!(rendered.contains("at least 32×8"));
+    }
+
+    #[test]
+    fn narrow_terminals_do_not_clip_the_longer_brand_name() {
+        let app = App::new(SessionSnapshot::default());
+        let backend = TestBackend::new(20, 7);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(rendered.contains("needs 32×8"));
+        assert!(!rendered.contains("Better"));
     }
 
     #[test]

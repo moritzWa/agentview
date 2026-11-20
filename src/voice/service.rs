@@ -1313,7 +1313,8 @@ const MIC_NOTICE: &str = "Allow the microphone in the BetterAgentView voice tab.
 /// A microphone that is exactly silent this long, with nothing heard yet, is not on.
 const DEAD_MIC_SECONDS: f64 = 20.0;
 const DEAD_MIC_NOTICE: &str = "No sound from the microphone. On a Mac, allow your terminal or the browser under System Settings, Privacy & Security, Microphone.";
-const CLICK_NOTICE: &str = "Click the BetterAgentView voice tab once so the browser lets it play sound.";
+const CLICK_NOTICE: &str =
+    "Click the BetterAgentView voice tab once so the browser lets it play sound.";
 
 fn sentence(reason: &str) -> String {
     let mut chars = reason.chars();

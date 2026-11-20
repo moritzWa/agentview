@@ -98,7 +98,7 @@ enum Commands {
         #[arg(long)]
         provider: Option<String>,
     },
-    /// Create and control only containers owned by agentview.
+    /// Create and control only containers owned by BetterAgentView.
     Docker {
         #[command(subcommand)]
         command: DockerCommand,
@@ -108,7 +108,7 @@ enum Commands {
         #[command(subcommand)]
         command: SessionCommand,
     },
-    /// Control the OpenCode server agentview runs for attached sessions.
+    /// Control the OpenCode server BetterAgentView runs for attached sessions.
     #[command(name = "opencode")]
     OpenCode {
         #[command(subcommand)]
@@ -186,7 +186,7 @@ enum SessionCommand {
         #[arg(value_name = "SESSION_ID")]
         session_id: String,
     },
-    /// Archive a bounded batch of exact agentview-owned completed Codex sessions.
+    /// Archive a bounded batch of exact BetterAgentView-owned completed Codex sessions.
     Archive {
         /// Limit candidates to sessions under this directory.
         #[arg(long, value_name = "PATH")]
@@ -203,7 +203,7 @@ enum SessionCommand {
     },
     /// Hide one exact normalized session ID locally without changing provider history.
     Hide {
-        /// Stable ID from the dashboard Peek view or `agentview --json`.
+        /// Stable ID from the dashboard Peek view or `betteragentview --json`.
         #[arg(value_name = "SESSION_ID")]
         session_id: String,
     },
@@ -212,9 +212,9 @@ enum SessionCommand {
         #[arg(value_name = "SESSION_ID")]
         session_id: String,
     },
-    /// List session IDs hidden only from agentview.
+    /// List session IDs hidden only from BetterAgentView.
     Hidden,
-    /// Set a private agentview display name without renaming the provider session.
+    /// Set a private BetterAgentView display name without renaming the provider session.
     Rename {
         /// Stable normalized session ID from Peek or JSON output.
         #[arg(value_name = "SESSION_ID")]
@@ -335,7 +335,7 @@ struct Cli {
     #[arg(long)]
     include_temp: bool,
 
-    /// Include provider sessions that were not created or managed by agentview.
+    /// Include provider sessions that were not created or managed by BetterAgentView.
     #[arg(long)]
     include_external: bool,
 
@@ -693,11 +693,11 @@ fn main() -> Result<()> {
                         if key_for(provider).is_some() {
                             "saved"
                         } else {
-                            "missing; paste it on first use, or pipe it into `agentview voice --set-key`"
+                            "missing; paste it on first use, or pipe it into `betteragentview voice --set-key`"
                         }
                     };
                     println!(
-                        "Voice Mode: press ctrl+k in agentview (or type /voice).\nUsing: {} (/voice grok or /voice openai to switch)\nOpenAI key: {}\nxAI key: {}\nVoice page: http://127.0.0.1:{}/",
+                        "Voice Mode: press ctrl+k in BetterAgentView (or type /voice).\nUsing: {} (/voice grok or /voice openai to switch)\nOpenAI key: {}\nxAI key: {}\nVoice page: http://127.0.0.1:{}/",
                         agentview::voice::config::Settings::load().chosen_provider().label(),
                         state(Provider::OpenAi),
                         state(Provider::Xai),
@@ -1829,7 +1829,9 @@ enum HarnessInstaller {
 
 fn run_harness_setup(provider: LaunchProvider, confirmed: bool, cli: &Cli) -> Result<()> {
     if provider == LaunchProvider::Terminal {
-        println!("Terminal is built into BetterAgentView; choose it with Tab or `/harness terminal`.");
+        println!(
+            "Terminal is built into BetterAgentView; choose it with Tab or `/harness terminal`."
+        );
         return Ok(());
     }
     let (label, executable, login_args, installer) = match provider {

@@ -18,6 +18,7 @@ jobs:
         with:
           node-version: "22"
       - run: node --test scripts/test-voice-input.cjs
+      - run: node --test scripts/test-site-rename.mjs
 
   quality:
     runs-on: ubuntu-latest
