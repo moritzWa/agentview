@@ -38,7 +38,8 @@ impl Journal {
           CREATE TABLE IF NOT EXISTS cache(session_id TEXT NOT NULL,message_id TEXT NOT NULL,hash TEXT NOT NULL,PRIMARY KEY(session_id,message_id));
           CREATE TABLE IF NOT EXISTS pending(n INTEGER PRIMARY KEY AUTOINCREMENT,body TEXT NOT NULL,native INTEGER NOT NULL);
           CREATE TABLE IF NOT EXISTS held(n INTEGER PRIMARY KEY,session_id TEXT NOT NULL,body TEXT NOT NULL,native INTEGER NOT NULL);
-          CREATE TABLE IF NOT EXISTS delivery(operation_id TEXT PRIMARY KEY,body TEXT NOT NULL,accepted INTEGER NOT NULL DEFAULT 0);")?;
+          CREATE TABLE IF NOT EXISTS delivery(operation_id TEXT PRIMARY KEY,body TEXT NOT NULL,accepted INTEGER NOT NULL DEFAULT 0);
+          CREATE TABLE IF NOT EXISTS start_op(operation_id TEXT PRIMARY KEY,body TEXT NOT NULL,session_id TEXT,prompt_accepted INTEGER);")?;
         Ok(Self { db })
     }
     pub fn checkpoint(&self, id: &str) -> Result<Option<Checkpoint>> {

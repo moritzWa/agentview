@@ -60,3 +60,14 @@ CREATE TABLE IF NOT EXISTS av_artifacts (
   PRIMARY KEY(owner_id,device_id,database_epoch,artifact_id)
 );
 CREATE INDEX IF NOT EXISTS av_artifacts_session ON av_artifacts(owner_id,device_id,database_epoch,session_id);
+-- A start has no session until the Mac creates one. session_id stays null until then.
+CREATE TABLE IF NOT EXISTS av_starts (
+  owner_id text NOT NULL, device_id text NOT NULL, database_epoch text NOT NULL,
+  operation_id text NOT NULL, directory text NOT NULL, text text NOT NULL,
+  payload_hash text NOT NULL, sequence bigint GENERATED ALWAYS AS IDENTITY,
+  state text NOT NULL DEFAULT 'queued', session_id text,
+  created_at bigint NOT NULL, expires_at bigint NOT NULL,
+  lease_until bigint, receipt jsonb,
+  PRIMARY KEY (owner_id,device_id,database_epoch,operation_id)
+);
+CREATE INDEX IF NOT EXISTS av_starts_pending ON av_starts(owner_id,device_id,database_epoch,state,sequence);

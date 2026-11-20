@@ -1,6 +1,7 @@
 import {digest,SyncError} from '../sync/projection.mjs';
 import {contextMessage} from './excerpt.mjs';
 import {attentionReason,buildDigest,matchesQuery,SOON_MS} from './attention.mjs';
+import {liveHealth} from './health.mjs';
 
 const scope=p=>[p.owner_id,p.device_id,p.database_epoch];
 const rank={needs_you:0,working:1,unknown:2,scheduled:3,done:4};
@@ -58,11 +59,11 @@ export async function listSessions({db,gate,principal},{status='all',view='recen
    ) msg) AS recent_messages
    FROM av_sessions s WHERE s.owner_id=$1 AND s.device_id=$2 AND s.database_epoch=$3 AND s.session_id=ANY($4::text[])`,[...scope(principal),selected.map(s=>s.session_id),userBudget,assistantBudget])).rows:[];
   const contextById=new Map(contexts.map(c=>[c.session_id,c]));
-  const sessions=slim?selected.map(r=>({session_id:r.session_id,title:r.title,project_name:r.project_name,status:r.status,reason:r.reason??null,can_message:r.can_message,attention:r.status==='needs_you'?'needs_you':r.status==='done'&&!r.attention_assessed?'review_last_reply':'not_waiting'})):selected.map(row=>{
+  const sessions=slim?selected.map(r=>({session_id:r.session_id,title:r.title,project_name:r.project_name,status:r.status,reason:r.reason??null,health:liveHealth(r.health,status_fresh),can_message:r.can_message,attention:r.status==='needs_you'?'needs_you':r.status==='done'&&!r.attention_assessed?'review_last_reply':'not_waiting'})):selected.map(row=>{
    const {user_message_id,user_created_at,...session}=row,context=contextById.get(row.session_id)??{};
    const recent_messages=(context.recent_messages??[]).map(m=>contextMessage(m,m.role==='user'?userBudget:assistantBudget));
    const last_user_message=recent_messages.findLast(m=>m.role==='user')??null,last_assistant_message=recent_messages.findLast(m=>m.role==='assistant')??null;
-   return {...session,last_user_ms:humanTime(row),recent_messages,last_user_message,last_assistant_message,
+   return {...session,health:liveHealth(row.health,status_fresh),last_user_ms:humanTime(row),recent_messages,last_user_message,last_assistant_message,
     assistant_reply_pending:Boolean(last_user_message&&(!last_assistant_message||last_assistant_message.message_order<last_user_message.message_order)),
     context_fresh:status_fresh&&session.mirrored&&(session.last_user_message_id??null)===(last_user_message?.message_id??null),
     attention:session.status==='needs_you'?'needs_you':session.status==='done'&&!session.attention_assessed?'review_last_reply':'not_waiting',

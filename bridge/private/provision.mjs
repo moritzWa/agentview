@@ -38,6 +38,7 @@ try {
     await db.query(`GRANT SELECT,INSERT,UPDATE,DELETE ON TABLE "${tablename}" TO agentvoice_runtime`);
   }
   await db.query('GRANT USAGE,SELECT ON SEQUENCE av_outbox_sequence_seq TO agentvoice_runtime');
+  await db.query('GRANT USAGE,SELECT ON SEQUENCE av_starts_sequence_seq TO agentvoice_runtime');
   const runtime=new URL(root);runtime.username='agentvoice_runtime';runtime.password=password;
   const google=JSON.parse(run('op',['item','get','AgentVoice Google OAuth','--vault','Main','--format','json']));
   const secrets={DATABASE_URL:runtime.href,GOOGLE_CLIENT_ID:google.fields.find(f=>f.id==='username').value,GOOGLE_CLIENT_SECRET:google.fields.find(f=>f.id==='password').value};

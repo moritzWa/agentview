@@ -21,6 +21,15 @@ pub(super) struct RuntimeStatus {
     top_level: bool,
     attention_assessed: bool,
     directory: Option<String>,
+    health: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    turn_started_at: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_progress_at: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_progress_kind: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    in_flight: Option<&'static str>,
 }
 #[derive(Serialize)]
 pub(super) struct Snapshot {
@@ -69,6 +78,18 @@ pub(super) fn project(session: &AgentSession) -> RuntimeStatus {
         attention_assessed: session.state == SessionState::NeedsInput,
         directory: (!session.cwd.as_os_str().is_empty())
             .then(|| session.cwd.to_string_lossy().into_owned()),
+        // Working stays unknown until the source read. A missing read is not a stall.
+        health: if reason == Some("failed") {
+            "failed"
+        } else if status == "working" || status == "unknown" {
+            "unknown"
+        } else {
+            "idle"
+        },
+        turn_started_at: None,
+        last_progress_at: None,
+        last_progress_kind: None,
+        in_flight: None,
     }
 }
 
@@ -166,6 +187,30 @@ pub(super) fn snapshot(config: &Config) -> Result<Snapshot> {
         status.last_user_message_id = latest
             .query_row([&status.session_id], |row| row.get(0))
             .optional()?;
+    }
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64);
+    let working = statuses
+        .iter()
+        .filter(|status| status.status == "working")
+        .map(|status| status.session_id.clone())
+        .collect::<Vec<_>>();
+    match super::health::progress(&db, &working, now_ms) {
+        Ok(found) => {
+            for status in &mut statuses {
+                if let Some(progress) = found.get(&status.session_id) {
+                    status.health = progress.health;
+                    status.turn_started_at = progress.turn_started_at;
+                    status.last_progress_at = progress.last_progress_at;
+                    status.last_progress_kind = progress.last_progress_kind;
+                    status.in_flight = progress.in_flight;
+                }
+            }
+        }
+        Err(_) => {
+            // Leave working sessions unknown. Do not publish a stall from a failed read.
+        }
     }
     // Full directory metadata can make a count-bounded snapshot too large.
     // Keep its serialized body safely inside the existing 850 KB transport cap.

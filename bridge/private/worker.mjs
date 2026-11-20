@@ -2,6 +2,7 @@ import { OwnerAuth, OWNER, json, html } from './auth.mjs';
 import { openDatabase } from './database.mjs';
 import { gateClient } from './gate.mjs';
 import { Outbox } from './outbox.mjs';
+import { Starts } from './starts.mjs';
 import { privateMcp } from './mcp.mjs';
 import { SyncStore } from '../sync/store.mjs';
 import { privateHandler } from '../sync/http.mjs';
@@ -63,11 +64,11 @@ export function application({database=openDatabase}={}) {
       if(!env.DATABASE_URL)throw new SyncError('not_configured',503);
       db=await database(env.DATABASE_URL);
       const auth=await new OwnerAuth(db,env,{gate}).handle(request);if(auth)return auth;
-      const store=new SyncStore(db),outbox=new Outbox(db,gate);
+      const store=new SyncStore(db),outbox=new Outbox(db,gate),starts=new Starts(db,gate);
       if(path==='/mcp') {
         const principal=await store.authenticate(token,'read');
         await gate.activity(`${principal.device_id}|${principal.database_epoch}`);
-        return await privateMcp(request,{db,store,principal,outbox,gate});
+        return await privateMcp(request,{db,store,principal,outbox,gate,starts});
       }
       if(path==='/v1/connector/lease' && request.method==='POST') {
         const principal=await store.authenticate(token,'sync'),value=await gate.inspect(await digest(token));
@@ -77,6 +78,13 @@ export function application({database=openDatabase}={}) {
       }
       if(path==='/v1/connector/ack' && request.method==='POST') {
         const principal=await store.authenticate(token,'sync');return json(await outbox.ack(principal,await request.json()));
+      }
+      if(path==='/v1/connector/start-lease' && request.method==='POST') {
+        const principal=await store.authenticate(token,'sync');
+        return json({start:await starts.lease(principal)});
+      }
+      if(path==='/v1/connector/start-ack' && request.method==='POST') {
+        const principal=await store.authenticate(token,'sync');return json(await starts.ack(principal,await request.json()));
       }
       if((path==='/v1/sync/cursors' || path==='/v1/sync/verify') && request.method==='POST') {
         const principal=await store.authenticate(token,'sync');

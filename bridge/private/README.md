@@ -191,7 +191,14 @@ returning the old copy until the last chunk is confirmed. Then the pointers swap
 `agentview bridge verify` compares each local projection with the cloud copy and
 prints mismatches only, never message text. Each check-in reports `behind` and
 `behind_since`, so `mac_presence` can say how many sessions have not reached the
-cloud and for how long. `agentview bridge status` shows `stuck_sessions`,
+cloud and for how long. `session_health` reports running, idle, potentially_stalled, or failed from the Mac's
+OpenCode database. A long tool or shell call stays running. A failed read, a bridge
+restart, or a stale snapshot is unknown, not a stall. Overview rows carry only the
+word. `start_session` queues a new OpenCode session after the same write grant and
+on-screen approval as a send. The session id is returned only after OpenCode creates
+it. A queued start is not a started session. Deployment needs the additive
+`av_starts` table and `GRANT USAGE, SELECT ON SEQUENCE av_starts_sequence_seq`.
+`agentview bridge status` shows `stuck_sessions`,
 `held_batches_for` and the last pass duration.
 
 At 0.25 CU, 100 CU-hours covers 400 active hours per month. Five minutes awake

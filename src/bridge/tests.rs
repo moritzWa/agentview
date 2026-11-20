@@ -1,3 +1,5 @@
+use super::health::{classify as health_class, progress, Facts};
+use super::start::allowed_directory;
 use super::*;
 use rusqlite::Connection;
 use source::{Capture, Message};
@@ -673,5 +675,111 @@ fn large_visible_paste_is_not_silently_dropped_or_truncated() {
     assert_eq!(
         journal.pending().unwrap().unwrap()["messages"][0]["text"],
         message.text
+    );
+}
+
+#[test]
+fn health_treats_a_long_tool_as_running_and_silence_as_unknown() {
+    let now = 1_700_000_000_000;
+    let open = Facts {
+        turn_started_at: Some(now - 3_600_000),
+        last_progress_at: Some(now - 3_600_000),
+        in_flight: Some("tool"),
+    };
+    assert_eq!(health_class("working", None, Some(&open), now), "running");
+    assert_eq!(
+        health_class("needs_you", Some("failed"), None, now),
+        "failed"
+    );
+    assert_eq!(health_class("done", None, None, now), "idle");
+    assert_eq!(health_class("working", None, None, now), "unknown");
+    let quiet = Facts {
+        turn_started_at: Some(now - 20 * 60_000),
+        last_progress_at: Some(now - 11 * 60_000),
+        in_flight: None,
+    };
+    assert_eq!(
+        health_class("working", None, Some(&quiet), now),
+        "potentially_stalled"
+    );
+    let recent = Facts {
+        turn_started_at: Some(now - 30_000),
+        last_progress_at: None,
+        in_flight: None,
+    };
+    assert_eq!(health_class("working", None, Some(&recent), now), "running");
+}
+
+#[test]
+fn progress_reads_an_open_tool_without_copying_message_text() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("source.sqlite");
+    let db = Connection::open(&path).unwrap();
+    db.execute_batch(
+        "CREATE TABLE session_v2(id TEXT, parent_id TEXT);
+         CREATE TABLE session_message(id TEXT, session_id TEXT, type TEXT, seq INTEGER, time_created INTEGER, time_updated INTEGER, data TEXT);
+         INSERT INTO session_v2 VALUES('parent', NULL), ('child', 'parent');
+         INSERT INTO session_message VALUES('u','parent','user',1,1700000000000,1700000000000,'{\"text\":\"PRIVATE\"}');
+         INSERT INTO session_message VALUES('a','child','assistant',2,1700000001000,1700000002000,'{\"time\":{},\"content\":[{\"type\":\"tool\",\"name\":\"bash\",\"state\":{\"status\":\"running\"}}]}');",
+    )
+    .unwrap();
+    let found = progress(&db, &["parent".into()], 1_700_000_030_000).unwrap();
+    let row = &found["parent"];
+    assert_eq!(row.health, "running");
+    assert_eq!(row.in_flight, Some("tool"));
+    assert!(!format!("{row:?}").contains("PRIVATE"));
+}
+
+#[test]
+fn a_start_directory_must_be_a_real_folder_under_home() {
+    let home = tempdir().unwrap();
+    let project = home.path().join("Code/agentview");
+    std::fs::create_dir_all(&project).unwrap();
+    assert_eq!(
+        allowed_directory(&project, home.path()).unwrap(),
+        project.canonicalize().unwrap()
+    );
+    assert_eq!(
+        allowed_directory(home.path(), home.path()).unwrap_err(),
+        "not_allowed"
+    );
+    let ssh = home.path().join(".ssh");
+    std::fs::create_dir_all(&ssh).unwrap();
+    assert_eq!(
+        allowed_directory(&ssh, home.path()).unwrap_err(),
+        "not_allowed"
+    );
+    let outside = tempdir().unwrap();
+    let link = home.path().join("Code/escape");
+    std::os::unix::fs::symlink(outside.path(), &link).unwrap();
+    assert_eq!(
+        allowed_directory(&link, home.path()).unwrap_err(),
+        "not_allowed"
+    );
+    assert_eq!(
+        allowed_directory(std::path::Path::new("relative"), home.path()).unwrap_err(),
+        "not_a_directory"
+    );
+}
+
+#[test]
+fn a_start_claim_is_not_launched_twice() {
+    let dir = tempdir().unwrap();
+    let journal = Journal::open(&dir.path().join("j.sqlite")).unwrap();
+    assert_eq!(
+        super::start::claim(&journal.db, "op1", "{}").unwrap(),
+        super::start::Claim::Launch
+    );
+    assert_eq!(
+        super::start::claim(&journal.db, "op1", "{}").unwrap(),
+        super::start::Claim::Uncertain
+    );
+    super::start::record(&journal.db, "op1", "ses_real", true).unwrap();
+    assert_eq!(
+        super::start::claim(&journal.db, "op1", "{}").unwrap(),
+        super::start::Claim::Resume {
+            session_id: "ses_real".into(),
+            prompt_accepted: true
+        }
     );
 }

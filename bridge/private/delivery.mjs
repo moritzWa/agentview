@@ -57,6 +57,10 @@ const ERRORS={
   message_not_found:()=>err('not_sent','Nothing was sent with that id.','Do not claim a send. Ask the owner whether to send it now.'),
   cannot_cancel_admitted_or_inflight_message:()=>err('uncertain','I could not cancel it. It may already be with the session.','Call message_status for this operation_id before saying anything else.',{sent:null}),
   receipt_conflict:()=>err('uncertain','uncertain','Call message_status for this operation_id before saying anything else.',{sent:null}),
+  invalid_directory:()=>err('not_sent','Not started. That path is not a usable directory.','Ask for a project directory, then retry once with the same operation_id.',{retry_same_operation:true}),
+  directory_not_allowed:()=>err('not_sent','Not started. That directory is not allowed.','Ask for a project folder under the home directory, not a system or credential folder.'),
+  invalid_start:()=>err('not_sent','Not started. My request was malformed.','Fix the arguments and retry once with the same operation_id.',{retry_same_operation:true}),
+  start_not_found:()=>err('not_sent','Nothing was started with that id.','Do not claim a session exists.'),
 };
 
 /** Structured body for a failed send, cancel or status call. Unknown codes are uncertain, never "not sent". */

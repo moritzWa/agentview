@@ -3,6 +3,7 @@ import {contextMessage} from './excerpt.mjs';
 import {readContext} from './context.mjs';
 import {loadInventory} from './sessions.mjs';
 import {ageText,attentionReason,finalAsk,matchesQuery,normalise} from './attention.mjs';
+import {liveHealth} from './health.mjs';
 
 const scope=p=>[p.owner_id,p.device_id,p.database_epoch];
 const FINAL_BUDGET=8000,EARLIER_BUDGET=1500,TASK_BUDGET=2000,TRANSCRIPT_MESSAGES=8,CANDIDATES=5;
@@ -62,7 +63,7 @@ export async function sessionBrief({db,gate,principal},{session_id,query}) {
     return {found:true,
       session:{session_id:row.session_id,title:row.title,directory:row.directory,project:row.project_name??null,status:row.status,
         needs_you_because:row.status==='needs_you'?attentionReason[row.reason]??attentionReason.reply:null,
-        classifier_assessed_turn:Boolean(row.attention_assessed),last_activity_ago:activity?ageText(now-activity):null,can_message:row.can_message!==false&&row.status!=='unknown',
+        health:liveHealth(row.health,statusFresh),classifier_assessed_turn:Boolean(row.attention_assessed),last_activity_ago:activity?ageText(now-activity):null,can_message:row.can_message!==false&&row.status!=='unknown',
         done_note:row.status==='done'?'Done means the agent\'s turn ended. It can still be waiting on the owner; read the final reply.':null},
       task:task&&{message_id:task.message_id,text:task.text,truncated:task.truncated},
       transcript:transcript.map(({message_id,message_order,role,text,truncated,total_characters})=>({message_id,message_order,role,text,truncated,total_characters})),

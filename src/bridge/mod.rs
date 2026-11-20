@@ -1,10 +1,12 @@
 //! Opt-in private mobile history bridge. The dashboard does not own its lifecycle.
 mod artifacts;
 mod context;
+mod health;
 mod http;
 mod journal;
 mod runtime;
 mod source;
+mod start;
 #[cfg(test)]
 mod tests;
 pub use artifacts::publish as publish_artifact;
@@ -701,6 +703,202 @@ pub fn deliver_once(dir: &Path) -> Result<bool> {
     Ok(true)
 }
 
+fn ack_start(
+    endpoint: &str,
+    credential: &str,
+    operation: &str,
+    status: &str,
+    session_id: Option<&str>,
+    reason: &str,
+) -> Result<()> {
+    http::request(
+        endpoint,
+        "/v1/connector/start-ack",
+        Some(credential),
+        Some(
+            &json!({"operation_id": operation, "status": status, "session_id": session_id, "reason": if reason.is_empty() { Value::Null } else { json!(reason) }}),
+        ),
+        30,
+    )?;
+    Ok(())
+}
+
+/// Creates at most one queued session. A local claim without an id is never launched again.
+pub fn start_once(dir: &Path) -> Result<bool> {
+    let _lock = local_lock(&dir.join("start.lock"))?;
+    let config = load(dir)?;
+    let credential = token(&config)?;
+    let journal = Journal::open(&dir.join("journal.sqlite"))?;
+    let pending = journal
+        .db
+        .query_row(
+            "SELECT operation_id, session_id, prompt_accepted FROM start_op LIMIT 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                ))
+            },
+        )
+        .optional()?;
+    if let Some((operation, session_id, accepted)) = pending {
+        let (status, reason) = if let Some(session_id) = session_id.as_deref() {
+            let status = if accepted == Some(1) {
+                "started"
+            } else {
+                "created_not_started"
+            };
+            ack_start(
+                &config.endpoint,
+                &credential,
+                &operation,
+                status,
+                Some(session_id),
+                "",
+            )?;
+            start::finish(&journal.db, &operation)?;
+            return Ok(true);
+        } else {
+            ("uncertain", "unknown")
+        };
+        ack_start(
+            &config.endpoint,
+            &credential,
+            &operation,
+            status,
+            None,
+            reason,
+        )?;
+        start::finish(&journal.db, &operation)?;
+        return Ok(true);
+    }
+    let lease = http::request(
+        &config.endpoint,
+        "/v1/connector/start-lease",
+        Some(&credential),
+        Some(&json!({})),
+        30,
+    )?;
+    if lease["start"].is_null() {
+        return Ok(false);
+    }
+    let start = lease["start"].clone();
+    let operation = start["operation_id"].as_str().context("invalid start")?;
+    let directory = start["directory"]
+        .as_str()
+        .context("invalid start directory")?;
+    let text = start["text"].as_str().context("invalid start prompt")?;
+    let home = std::env::var_os("HOME").context("HOME is not set");
+    let allowed = home
+        .as_ref()
+        .ok()
+        .and_then(|home| start::allowed_directory(Path::new(directory), Path::new(home)).ok());
+    let deny = if home.is_err() {
+        Some("server")
+    } else if allowed.is_none() {
+        Some(
+            start::allowed_directory(Path::new(directory), Path::new(home.as_ref().unwrap()))
+                .unwrap_err(),
+        )
+    } else {
+        None
+    };
+    if let Some(reason) = deny {
+        ack_start(
+            &config.endpoint,
+            &credential,
+            operation,
+            "failed",
+            None,
+            reason,
+        )?;
+        return Ok(true);
+    }
+    let canonical = allowed.context("start directory")?;
+    match start::claim(&journal.db, operation, &start.to_string())? {
+        start::Claim::Uncertain => {
+            ack_start(
+                &config.endpoint,
+                &credential,
+                operation,
+                "uncertain",
+                None,
+                "unknown",
+            )?;
+            start::finish(&journal.db, operation)?;
+            return Ok(true);
+        }
+        start::Claim::Resume {
+            session_id,
+            prompt_accepted,
+        } => {
+            let status = if prompt_accepted {
+                "started"
+            } else {
+                "created_not_started"
+            };
+            ack_start(
+                &config.endpoint,
+                &credential,
+                operation,
+                status,
+                Some(&session_id),
+                "",
+            )?;
+            start::finish(&journal.db, operation)?;
+            return Ok(true);
+        }
+        start::Claim::Launch => {}
+    }
+    let supervisor = if let Some(state) = &config.supervisor_state {
+        crate::opencode_supervisor::OpenCodeSupervisor::with_state_dir(
+            config.opencode_bin.clone(),
+            state.clone(),
+        )?
+    } else {
+        crate::opencode_supervisor::OpenCodeSupervisor::host(config.opencode_bin.clone())?
+    };
+    match supervisor.launch_reporting(text, &canonical, None) {
+        Ok(report) => {
+            start::record(
+                &journal.db,
+                operation,
+                &report.session.id,
+                report.prompt_accepted,
+            )?;
+            let status = if report.prompt_accepted {
+                "started"
+            } else {
+                "created_not_started"
+            };
+            ack_start(
+                &config.endpoint,
+                &credential,
+                operation,
+                status,
+                Some(&report.session.id),
+                "",
+            )?;
+            start::finish(&journal.db, operation)?;
+        }
+        Err(error) => {
+            eprintln!("bridge start failed reason={}", safe_reason(&error));
+            ack_start(
+                &config.endpoint,
+                &credential,
+                operation,
+                "failed",
+                None,
+                "server",
+            )?;
+            start::finish(&journal.db, operation)?;
+        }
+    }
+    Ok(true)
+}
+
 fn local_lock(path: &Path) -> Result<std::fs::File> {
     let lock = std::fs::OpenOptions::new()
         .create(true)
@@ -747,6 +945,7 @@ pub fn run(dir: &Path) -> Result<()> {
                 .as_millis() as u64;
             if poll["pending"] == true {
                 while deliver_once(&queue_dir)? {}
+                while start_once(&queue_dir)? {}
             }
             if poll["active_until"].as_u64().unwrap_or(0) > now {
                 // The sync loop publishes too. Losing that race is not a delivery
@@ -806,6 +1005,9 @@ pub fn run(dir: &Path) -> Result<()> {
                 // not strand a queued instruction indefinitely.
                 if deliver_once(dir).is_err() {
                     eprintln!("bridge queue reconciliation deferred");
+                }
+                if start_once(dir).is_err() {
+                    eprintln!("bridge start reconciliation deferred");
                 }
             }
             Err(error) => log_unavailable("sync", &error),
