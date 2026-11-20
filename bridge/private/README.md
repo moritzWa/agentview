@@ -191,9 +191,10 @@ returning the old copy until the last chunk is confirmed. Then the pointers swap
 `agentview bridge verify` compares each local projection with the cloud copy and
 prints mismatches only, never message text. Each check-in reports `behind` and
 `behind_since`, so `mac_presence` can say how many sessions have not reached the
-cloud and for how long. `list_sessions` digest names two different things. A session that needs the owner is a
-native question, approval, or failed turn. A follow-up is a done session whose last
-synced reply still states unfinished work, such as 58/60 or an explicit next step.
+cloud and for how long. `list_sessions(status=active)` returns blocked sessions and done sessions that still
+have a next step. `status=done` still returns every finished turn. `status=needs_you`
+is only the explicit blockers. A follow-up is a done session whose last synced reply
+still states unfinished work, such as 58/60 or an explicit next step.
 A closed reply ("nothing else needed") is not a follow-up. Follow-ups look at the
 last week only, and only the end of the last reply.
 `session_health` reports running, idle, potentially_stalled, or failed from the Mac's

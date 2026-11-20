@@ -205,12 +205,22 @@ test('a done session from this week appears in the overview follow-ups',async()=
   await seed('life-science','Life Science Search Benchmark',[turn(1,'user','Score the company pages.'),turn(2,'assistant','Life science search is at 58/60. Next is the harder benchmark.')]);
   const threeDays=Date.now()-3*86400_000;
   runtime={available:true,partial:false,checked_at:Date.now(),statuses:[status('life-science',{status:'done',updated_at:threeDays,last_user_ms:threeDays,last_user_message_id:'msg_1'})]};
-  const d=(await rpc('list_sessions',{status:'active'})).digest;
-  assert.equal(d.confirmed,0);
-  assert.equal(d.follow_ups[0].session_id,'life-science');
-  assert.equal(d.follow_ups[0].signal,'incomplete');
-  assert.match(d.say,/Life Science Search Benchmark \(58 of 60\)/);
-  assert.match(d.say,/may need a follow-up/);
+  await seed('closed-typo','Docs typo fix',[turn(1,'user','Fix the typo.'),turn(2,'assistant','Fixed the typo and pushed. Nothing else needed.')]);
+  runtime.statuses.push(status('closed-typo',{status:'done',updated_at:threeDays,last_user_ms:threeDays,last_user_message_id:'msg_1'}));
+  runtime.statuses.push(status('mobile-sync',{status:'needs_you',reason:'reply',updated_at:Date.now()}));
+  const active=await rpc('list_sessions',{status:'active'});
+  const row=active.sessions.find(s=>s.session_id==='life-science');
+  assert.equal(row.status,'done');assert.equal(row.attention,'follow_up');assert.match(row.next_action,/remaining 2/);
+  assert.equal(active.sessions.find(s=>s.session_id==='mobile-sync').attention,'needs_you');
+  assert.equal(active.sessions.find(s=>s.session_id==='closed-typo'),undefined);
+  assert.equal(active.digest.follow_ups[0].session_id,'life-science');
+  const done=await rpc('list_sessions',{status:'done',view:'all'});
+  assert(done.sessions.some(s=>s.session_id==='life-science'));
+  assert(done.sessions.some(s=>s.session_id==='closed-typo'&&s.attention==='not_waiting'));
+  assert.equal(done.digest,undefined);
+  const blocked=await rpc('list_sessions',{status:'needs_you'});
+  assert.equal(blocked.sessions.find(s=>s.session_id==='life-science'),undefined);
+  assert.equal(blocked.sessions.find(s=>s.session_id==='mobile-sync').attention,'needs_you');
 });
 
 test('finalAsk, matchesQuery and ageText',()=>{
