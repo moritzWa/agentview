@@ -148,6 +148,10 @@ not removed. Its final line reports the verified old-to-new version transition,
 or says that the installed version is already current. Re-running the
 installation command above is equivalent.
 
+Release builds check for a newer release once a day and show it in the dashboard
+header, such as `v0.3.4 available, run av update`. Set
+`AGENTVIEW_NO_UPDATE_CHECK=1` to turn the check off.
+
 Pin `--version` in automation; the default `latest` channel can change whenever
 a new stable release is published.
 

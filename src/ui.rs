@@ -118,9 +118,12 @@ pub fn terminal_title(app: &App) -> String {
 
 fn render_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let title = format!(
-        "agentview v{}{}",
+        "agentview v{}{}{}",
         env!("CARGO_PKG_VERSION"),
-        if app.work_only { " · Work only" } else { "" }
+        if app.work_only { " · Work only" } else { "" },
+        crate::update_check::newer_version()
+            .map(|version| format!(" · v{version} available, run av update"))
+            .unwrap_or_default()
     );
 
     let lines = if area.height <= 2 {

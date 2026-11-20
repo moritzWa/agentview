@@ -57,26 +57,22 @@ fn feature_matrix(readme: &str) -> &str {
 #[test]
 fn readme_status_badges_match_release_metadata() {
     let readme = read_readme();
-    let release_badge = format!(
-        "https://img.shields.io/badge/release-v{}-506CF7.svg",
-        env!("CARGO_PKG_VERSION")
-    );
+    // Every app change on main is released automatically, so the badge reads
+    // the latest release from GitHub instead of a hard-coded version.
+    let release_badge =
+        "https://img.shields.io/github/v/release/moritzWa/agentview?color=506CF7&label=release";
 
     assert!(
         readme.contains("https://img.shields.io/badge/tests-verified-506CF7.svg"),
         "README test badge must report the documented manual verification gate"
     );
     assert!(
-        readme.contains(&release_badge),
-        "README release badge must match the crate version"
+        readme.contains(release_badge),
+        "README release badge must show the latest published release"
     );
     assert!(
         !readme.contains("actions/workflows/ci.yml/badge.svg"),
         "README must not present hosted-runner availability as the test result"
-    );
-    assert!(
-        !readme.contains("img.shields.io/github/v/release"),
-        "README intentionally uses its version-matched static release badge"
     );
 }
 

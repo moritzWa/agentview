@@ -6,11 +6,24 @@ artifacts consumed by [`install.sh`](../install.sh).
 
 ## Release status
 
-Pushing an annotated `vMAJOR.MINOR.PATCH` tag runs
-[`release.yml`](../.github/workflows/release.yml). It builds and packages every
-target below on a native runner, then publishes one GitHub release with all
-archives and checksums. The tag must equal the `Cargo.toml` version. The manual
-procedure below is the fallback when the workflow cannot run.
+Releases are automatic. Every push to `main` that changes `src/`, `Cargo.*`,
+the installers or the packaging scripts runs
+[`auto-release.yml`](../.github/workflows/auto-release.yml). It checks that main
+compiles, tags the next patch version (`v0.3.0`, `v0.3.1`, …) and starts
+[`release.yml`](../.github/workflows/release.yml), which builds every target
+below on a native runner and publishes one GitHub release with all archives and
+checksums. Docs, site and test-only pushes do not release.
+
+The minor version comes from `Cargo.toml`; the patch number counts up from the
+last tag. To start `0.4.x`, change `Cargo.toml` to `0.4.0`. The release build
+stamps the tag's version into the binary, so `Cargo.toml` does not need a commit
+per release. Pushing a `vMAJOR.MINOR.PATCH` tag by hand still works. The manual
+procedure below is the fallback when the workflows cannot run.
+
+Release builds set `AGENTVIEW_RELEASE_BUILD`, which turns on the dashboard's
+once-a-day check for a newer release (`· v0.3.4 available, run av update` in the
+header). Local and source builds never check. `AGENTVIEW_NO_UPDATE_CHECK=1`
+turns it off.
 Release archives are built, packaged, and checksum-verified on the exact tagged commit. The adjacent `.sha256` release asset records the
 verified archive digest. Native hosted runners cover both Linux architectures,
 both macOS architectures, and Windows x64.

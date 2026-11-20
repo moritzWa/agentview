@@ -35,6 +35,7 @@ pub mod terminal;
 pub mod theme;
 pub mod turn_classifier;
 pub mod ui;
+pub mod update_check;
 pub mod usage;
 pub mod voice;
 pub mod work_view;

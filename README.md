@@ -7,7 +7,7 @@ See which one needs you. Jump in, jump back out. Works with 18 coding
 harnesses and plain shell jobs.
 
 [![Tests](https://img.shields.io/badge/tests-verified-506CF7.svg)](docs/testing.md)
-[![Release](https://img.shields.io/badge/release-v0.2.0-506CF7.svg)](https://github.com/moritzWa/agentview/releases/latest)
+[![Release](https://img.shields.io/github/v/release/moritzWa/agentview?color=506CF7&label=release)](https://github.com/moritzWa/agentview/releases/latest)
 [![License](https://img.shields.io/badge/license-MIT-506CF7.svg)](LICENSE)
 
 <a href="https://agent-view.app/film.mp4"><img src="docs/assets/film-thumbnail.jpg" alt="Play the 45-second Agent View film" width="800"></a>
