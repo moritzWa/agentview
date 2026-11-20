@@ -16,6 +16,31 @@ pub struct Message {
     pub text: String,
 }
 
+/// The bytes both sides hash. Field order is fixed so a Rust hash equals a JS hash.
+pub fn projection_text(cursor: i64, state: &Value, messages: &[Message]) -> String {
+    let visible = state
+        .get("visible_before")
+        .and_then(|v| v.as_i64())
+        .map(|n| n.to_string())
+        .unwrap_or_default();
+    let mut lines = vec![
+        format!("cursor={cursor}"),
+        format!("archived={}", state["archived"].as_bool().unwrap_or(false)),
+        format!("deleted={}", state["deleted"].as_bool().unwrap_or(false)),
+        format!("title={}", state["title"].as_str().unwrap_or("")),
+        format!("visible_before={visible}"),
+    ];
+    let mut ordered = messages.to_vec();
+    ordered.sort_by(|a, b| a.order.cmp(&b.order).then(a.id.cmp(&b.id)));
+    for message in ordered {
+        lines.push(format!(
+            "{}\t{}\t{}\t{}",
+            message.id, message.order, message.role, message.text
+        ));
+    }
+    lines.join("\n")
+}
+
 pub struct Capture {
     pub through: i64,
     pub state: Value,

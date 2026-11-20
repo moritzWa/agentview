@@ -158,6 +158,58 @@ impl Journal {
         tx.commit()?;
         Ok(true)
     }
+    /// Full current projection, uploaded beside the copy people can already read.
+    /// The local pointer moves only when the cloud confirms the last chunk.
+    pub fn stage_replace(&mut self, id: &str, capture: Capture, native: bool) -> Result<bool> {
+        if self.pending()?.is_some() {
+            bail!("drain pending history before staging");
+        }
+        let old = self.checkpoint(id)?;
+        if old.as_ref().is_some_and(|p| p.native != native) {
+            bail!("source format changed; re-pair required");
+        }
+        let upload = random_id()?;
+        let mut chunks: Vec<Vec<Message>> = vec![Vec::new()];
+        let mut bytes = 0;
+        for message in capture.messages {
+            let size = serde_json::to_vec(&message)?.len();
+            if size > 850_000 {
+                bail!("single message exceeds upload byte limit");
+            }
+            if !chunks.last().unwrap().is_empty()
+                && (bytes + size > 850_000 || chunks.last().unwrap().len() >= 400)
+            {
+                chunks.push(Vec::new());
+                bytes = 0;
+            }
+            bytes += size;
+            chunks.last_mut().unwrap().push(message);
+        }
+        let total = chunks.len();
+        let tx = self.db.transaction()?;
+        // Rebuilt from the chunks as they are confirmed, so a half-finished replace
+        // cannot leave the cache claiming messages the new copy does not have.
+        tx.execute("DELETE FROM cache WHERE session_id=?1", [id])?;
+        for (chunk, messages) in chunks.into_iter().enumerate() {
+            let body = json!({"version":1,"batch_id":random_id()?,"session_id":id,"kind":"replace","from":0,"through":capture.through,
+                "upload_id":upload,"chunk":chunk,"complete":chunk+1==total,"session":capture.state,"messages":messages,"delete_ids":[]});
+            tx.execute(
+                "INSERT INTO pending(body,native) VALUES (?1,?2)",
+                rusqlite::params![body.to_string(), native],
+            )?;
+        }
+        tx.commit()?;
+        Ok(true)
+    }
+    pub fn checkpoints(&self) -> Result<Vec<(String, i64)>> {
+        let mut q = self
+            .db
+            .prepare("SELECT session_id, cursor FROM checkpoint ORDER BY session_id")?;
+        let rows = q
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
     /// Drops batches the cloud permanently refused. The checkpoint is untouched,
     /// so nothing is marked as synced; the session is retried later.
     pub fn discard_pending(&mut self, session_id: &str) -> Result<()> {

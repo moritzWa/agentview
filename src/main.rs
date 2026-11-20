@@ -164,6 +164,8 @@ enum BridgeCommand {
     },
     /// Print connection and local journal counts without conversation text.
     Status,
+    /// Compare the local projection with the cloud copy. Prints no message text.
+    Verify,
     /// Install and start a macOS login item for the paired background service.
     Install,
     /// Stop and disable the login item, retaining pairing and cloud history.
@@ -638,6 +640,10 @@ fn main() -> Result<()> {
                     BridgeCommand::Status => println!(
                         "{}",
                         serde_json::to_string_pretty(&agentview::bridge::status(&dir)?)?
+                    ),
+                    BridgeCommand::Verify => println!(
+                        "{}",
+                        serde_json::to_string_pretty(&agentview::bridge::verify(&dir)?)?
                     ),
                     BridgeCommand::Install => agentview::bridge::install(&dir)?,
                     BridgeCommand::Stop => agentview::bridge::stop(&dir)?,

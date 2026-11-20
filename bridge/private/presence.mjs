@@ -1,3 +1,5 @@
+import {ageText} from './attention.mjs';
+
 /** Timestamps only. Never reads the outbox: a queued message is not a Mac. */
 export const IDLE_SYNC_MS=15*60_000;
 export const HEARTBEAT_ONLINE_MS=90_000;
@@ -17,6 +19,9 @@ export function macPresence(now,stamps={}) {
   // sleep, a stopped daemon, or a network loss, so it is unknown, not "no internet".
   const internet=bridge==='online'?'reachable':'unknown';
   const skipped=Number.isInteger(stamps.sync_skipped)&&stamps.sync_skipped>0?stamps.sync_skipped:0;
+  const sessions_behind=Number.isInteger(stamps.behind)&&stamps.behind>0?stamps.behind:0;
+  const behind_since=finite(stamps.behind_since);
+  const behind_for_ms=sessions_behind&&behind_since!==null?Math.max(0,now-behind_since):null;
   let history_sync='unknown';
   if(last_successful_sync_at!==null) {
     const partial=skipped>0&&last_attempt_at!==null&&last_attempt_at>last_successful_sync_at;
@@ -25,6 +30,8 @@ export function macPresence(now,stamps={}) {
   return {
     bridge,internet,history_sync,last_heartbeat_at,last_successful_sync_at,last_contact_at,
     heartbeat_age_ms,sync_age_ms,stale:history_sync!=='fresh',sync_skipped:skipped,
+    sessions_behind,behind_for_ms,
+    behind_note:sessions_behind?`${sessions_behind} session${sessions_behind===1?' has':'s have'} not reached the cloud${behind_for_ms===null?'':` for ${ageText(behind_for_ms)}`}.`:null,
     queue_acceptance_means_mac_online:false,
     cadence:{
       idle_history_sync_seconds:IDLE_SYNC_MS/1000,

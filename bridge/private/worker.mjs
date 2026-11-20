@@ -37,7 +37,7 @@ export function application({database=openDatabase}={}) {
       if(path==='/v1/connector/checked' && request.method==='POST') {
         if(!/^[A-Za-z0-9_-]{43}$/.test(token))throw new SyncError('unauthorized',401);
         const body=await request.json().catch(()=>({}));
-        await gate.checked(await digest(token),{complete:body?.complete!==false,skipped:Number(body?.skipped)||0});
+        await gate.checked(await digest(token),{complete:body?.complete!==false,skipped:Number(body?.skipped)||0,behind:Number(body?.behind)||0,behind_since:Number(body?.behind_since)||null});
         return json({ok:true}); // No Neon query. A partial scan does not stamp history fresh.
       }
       if(path==='/v1/connector/poll' && request.method==='POST') {
@@ -77,6 +77,11 @@ export function application({database=openDatabase}={}) {
       }
       if(path==='/v1/connector/ack' && request.method==='POST') {
         const principal=await store.authenticate(token,'sync');return json(await outbox.ack(principal,await request.json()));
+      }
+      if((path==='/v1/sync/cursors' || path==='/v1/sync/verify') && request.method==='POST') {
+        const principal=await store.authenticate(token,'sync');
+        const body=await request.json();
+        return json(path.endsWith('/cursors')?await store.cursors(principal,body):await store.verify(principal,body));
       }
       if(path==='/v1/artifacts' && request.method==='POST') {
         const principal=await store.authenticate(token,'sync');
