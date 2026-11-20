@@ -43,7 +43,7 @@ export async function listSessions({db,gate,principal},{status='all',view='recen
     if(ask){askIds.add(row.session_id);nextAction.set(row.session_id,ask.text);}
    }
    const actionable=new Set([...followIds,...askIds]);
-   const attentionOf=row=>row.status==='needs_you'?'needs_you':followIds.has(row.session_id)?'follow_up':row.status==='done'&&!row.attention_assessed?'review_last_reply':askIds.has(row.session_id)?'follow_up':'not_waiting';
+   const attentionOf=row=>row.status==='needs_you'?'needs_you':followIds.has(row.session_id)?'follow_up':row.status==='done'&&!row.attention_assessed&&now-humanTime(row)<=SOON_MS?'review_last_reply':askIds.has(row.session_id)?'follow_up':'not_waiting';
   let candidates=all.filter(s=>(!query||matchesQuery(s,query))&&(status==='all'||(status==='active'?busy(s)||reviewIds.has(s.session_id)||actionable.has(s.session_id):s.status===status)));
   candidates.sort(byHuman);
   const totalMatching=candidates.length;

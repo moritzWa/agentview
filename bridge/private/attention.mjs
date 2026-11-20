@@ -77,7 +77,7 @@ export function followUp(text) {
     const sentence=sentenceAt(tail,go.index);
     if(!OFFER.test(sentence)&&!CLOSED.test(sentence))return {signal:'decision',reason:clip(sentence,140),action:'Say whether to proceed.'};
   }
-  const next=/(?:next(?: step)?(?::| is)\s+\S|\b(?:still (?:need to|to do|left|open|unfinished)|not yet (?:done|finished)|remaining (?:work|step|benchmark|items)|left to (?:do|run|decide))\b)/i.exec(tail);
+  const next=/(?:next(?: step)?(?::| is)\s+\S|\b(?:still (?:need to|to do|left|open|unfinished|(?:has|have|needs?) [^.\n]{0,60}?\bto (?:fix|finish|run|decide|resolve|ship|do))|not yet (?:done|finished)|remaining (?:work|step|benchmark|items)|left to (?:do|run|decide))\b)/i.exec(tail);
   if(next) {
     const sentence=sentenceAt(tail,next.index);
     if(!OFFER.test(sentence)&&!CLOSED.test(sentence))return {signal:'next_step',reason:clip(sentence,140),action:clip(sentence,90)};
@@ -85,11 +85,24 @@ export function followUp(text) {
   return null;
 }
 
-/** Last paragraph, for a confirmed needs_you reply that has no question mark. */
+/** Chat markdown out, one line, so a spoken line never reads "**" or list dashes. */
+export const plain=t=>String(t??'').replace(/```[\s\S]*?```/g,' ').replace(/\[([^\]]*)\]\([^)]*\)/g,'$1').replace(/`([^`]*)`/g,'$1').replace(/\*\*|__/g,'').replace(/^\s*(?:#+|[-*]|\d+\.)\s+/gm,'').replace(/\s+/g,' ').trim();
+
+/** The start of a text, cut at a sentence end when one fits, else at a word. */
+export function headCut(text,max) {
+  const t=plain(text);
+  if([...t].length<=max)return t;
+  const cut=[...t].slice(0,max).join(''),end=Math.max(cut.lastIndexOf('. '),cut.lastIndexOf('? '),cut.lastIndexOf('! '));
+  if(end>=max*0.4)return cut.slice(0,end+1);
+  const space=cut.lastIndexOf(' ');
+  return (space>0?cut.slice(0,space):cut)+'…';
+}
+
+/** Last paragraph, for a confirmed needs_you reply that has no question mark. Its start carries the point, not its tail. */
 export function endOfReply(text) {
   if(typeof text!=='string')return null;
   const paragraphs=text.trim().split(/\n\s*\n/).filter(p=>p.trim());
-  return paragraphs.length?{text:clip(paragraphs.at(-1),DECISION_CHARS),source:'end_of_last_reply'}:null;
+  return paragraphs.length?{text:headCut(paragraphs.at(-1),DECISION_CHARS),source:'end_of_last_reply'}:null;
 }
 
 export function ageText(ms) {
@@ -131,7 +144,7 @@ export function buildDigest({rows,followRows=[],tails,now,counts,statusFresh,fre
     if(!kind)continue;
     const activity=realMs(row.updated_at);
     items.push({session_id:row.session_id,title:row.title,kind,urgency:urgencyOf[kind],confirmed:row.status==='needs_you',
-      decision:ask?.text??attentionReason[row.reason]??attentionReason.reply,_activity:activity??0});
+      decision:ask?plain(ask.text):attentionReason[row.reason]??attentionReason.reply,_source:ask?.source,_activity:activity??0});
   }
   items.sort((a,b)=>kindRank[a.kind]-kindRank[b.kind]||b._activity-a._activity||a.session_id.localeCompare(b.session_id));
   const seen=new Set(items.map(i=>i.session_id));
@@ -151,18 +164,20 @@ export function buildDigest({rows,followRows=[],tails,now,counts,statusFresh,fre
   const followNamed=followUps.slice(0,3).map(({_activity,_rank,...i})=>i);
   const confirmedItems=items.filter(i=>i.confirmed),uncertain=items.filter(i=>!i.confirmed);
   // Overview shows confirmed decisions first; less certain ones are named, never argued.
-  const top=confirmedItems.slice(0,MAX_TOP).map(({_activity,...i})=>i);
+  const topRaw=confirmedItems.slice(0,MAX_TOP);
+  const top=topRaw.map(({_activity,_source,...i})=>i);
   const maybe=uncertain.slice(0,LESS_CERTAIN_MAX).map(({session_id,title})=>({session_id,title}));
   const statusAge=statusObservedAt?now-statusObservedAt:null,historyAge=freshness?.source_checked_at?now-Number(freshness.source_checked_at):null;
   const caveats=[];
   if(!statusFresh)caveats.push(`Session status is not live${statusAge!==null?` (last observed ${ageText(statusAge)} ago)`:''}; say so before presenting it as current.`);
   if(freshness&&freshness.mac_seen_recently===false)caveats.push('The Mac has not been seen recently, so this may be out of date.');
   const caveat=caveats.join(' ')||null;
-  const lines=top.map(i=>`${i.title}: ${spoken[i.kind]??shorten(i.decision,90)}`);
+  const sentence=t=>/[.?!…]$/.test(t)?t:t+'.';
+  const lines=topRaw.map(i=>sentence(`${i.title}: ${spoken[i.kind]??(i._source==='end_of_last_reply'?headCut(i.decision,90):shorten(i.decision,90))}`));
   const hidden=confirmedItems.length-top.length;
   const followBit=followNamed.length?` ${followNamed.length===1?'One done session may need a follow-up':`${followNamed.length} done sessions may need a follow-up`}: ${followNamed.map(f=>`${shortTitle(f.title)} (${shortSignal(f)})`).join(', ')}.${followUps.length>followNamed.length?` ${followUps.length-followNamed.length} more.`:''}`:'';
   let say=!items.length&&!followNamed.length?'Nothing needs you right now.'
-    :`${confirmedItems.length?`${confirmedItems.length===1?'One session needs':`${confirmedItems.length} sessions need`} you. ${lines.join('. ')}.`:'Nothing is confirmed waiting on you.'}${hidden>0?` ${hidden} more.`:''}${maybe.length?` ${maybe.map(m=>m.title).join(' and ')} may also be waiting.`:''}${followBit}`;
+    :`${confirmedItems.length?`${confirmedItems.length===1?'One session needs':`${confirmedItems.length} sessions need`} you. ${lines.join(' ')}`:'Nothing is confirmed waiting on you.'}${hidden>0?` ${hidden} more.`:''}${maybe.length?` ${maybe.map(m=>m.title).join(' and ')} may also be waiting.`:''}${followBit}`;
   if(caveat&&!statusFresh)say+=` My view of your sessions is ${statusAge!==null?ageText(statusAge)+' old':'out of date'}.`;
   return {say,confirmed:confirmedItems.length,top,may_also_need_you:maybe,more_confirmed:Math.max(0,hidden),
     ...(followNamed.length?{follow_ups:followNamed,more_follow_ups:Math.max(0,followUps.length-followNamed.length),follow_up_note:'A follow-up is a next step stated at the end of a finished turn. It is not a session waiting on you, and it is read from the last synced reply, not a live review of the project.'}:{}),

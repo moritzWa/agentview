@@ -223,6 +223,37 @@ test('a done session from this week appears in the overview follow-ups',async()=
   assert.equal(blocked.sessions.find(s=>s.session_id==='mobile-sync').attention,'needs_you');
 });
 
+test('a reply with no question reads as clean sentences, not a markdown fragment',()=>{
+  const reply='Done.\n\nKarabiner confirmed **reloading** it. **Try left Cmd+U now.** Right Cmd is unchanged. '+'More detail follows here. '.repeat(20);
+  const d=buildDigest({now:Date.now(),counts:{},statusFresh:true,freshness:{mac_seen_recently:true},
+    rows:[{session_id:'k',title:'raycast clipboard',status:'needs_you',reason:'reply',updated_at:Date.now()}],tails:new Map([['k',{text:reply,assistant_last:true}]])});
+  assert(d.say.includes('raycast clipboard: Karabiner confirmed reloading it. Try left Cmd+U now.'),d.say);
+  assert(!d.say.includes('*')&&!d.say.includes('..'),d.say);
+  assert(!d.top[0].decision.includes('*'));assert(!('_source' in d.top[0]));
+  const two=buildDigest({now:Date.now(),counts:{},statusFresh:true,freshness:{mac_seen_recently:true},
+    rows:[{session_id:'a',title:'A',status:'needs_you',reason:'approval',updated_at:Date.now()},{session_id:'b',title:'B',status:'needs_you',reason:'question',updated_at:Date.now()-1e6}],tails:new Map()});
+  assert.equal(two.say,'2 sessions need you. A: approve a permission. B: answer a question.');
+});
+
+test('plain wording like "still has a CI failure to fix" is a next step, ordinary text is not',()=>{
+  const f=followUp('Deployed. Sales still has a real CI failure to fix. No server restart or global model change.');
+  assert.equal(f.signal,'next_step');assert.match(f.reason,/CI failure to fix/);
+  for(const text of ['It still works as before and needs no restart.','Everything is merged. The old tests still pass.','Sales still has a real CI failure to fix. All done.'])
+    assert.equal(followUp(text),null,text);
+});
+
+test('only a recent unreviewed finished turn is labeled for review; a week-old one is not',async()=>{
+  await seed('recent-unreviewed','Recent unreviewed',[turn(1,'user','Go'),turn(2,'assistant','Finished the pass.')]);
+  await seed('old-unreviewed','Old unreviewed',[turn(1,'user','Go'),turn(2,'assistant','Finished the pass.')]);
+  const old=Date.now()-9*86400_000;
+  runtime={available:true,partial:false,checked_at:Date.now(),statuses:[
+    status('recent-unreviewed',{status:'done',attention_assessed:false}),
+    status('old-unreviewed',{status:'done',attention_assessed:false,updated_at:old,last_user_ms:old})]};
+  const done=await rpc('list_sessions',{status:'done',view:'all'});
+  assert.equal(done.sessions.find(s=>s.session_id==='recent-unreviewed').attention,'review_last_reply');
+  assert.equal(done.sessions.find(s=>s.session_id==='old-unreviewed').attention,'not_waiting');
+});
+
 test('finalAsk, matchesQuery and ageText',()=>{
  assert.equal(finalAsk('Done. Ship it now or wait for Tuesday?').text,'Ship it now or wait for Tuesday?');
  assert.equal(finalAsk('A?\nWhich option do you prefer?').text,'Which option do you prefer?');
