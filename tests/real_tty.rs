@@ -1197,7 +1197,7 @@ fn hundreds_of_sessions_coalesce_arrow_bursts_without_output_backlog() {
     app.send(ENTER);
     app.wait_for("second bounded session page", |screen| {
         screen.contains("session-0025")
-            && screen.contains("session-0026")
+            && screen.contains("more sessions")
             && !screen.contains("session-0050")
     });
 
@@ -3309,6 +3309,30 @@ fn arrow_navigation_and_group_collapse_are_real_terminal_events() {
     app.send(ENTER);
     app.wait_for("expanded Needs input group", |screen| {
         screen.contains("approval-needed") && screen.contains("needs-environment")
+    });
+    app.exit_cleanly();
+}
+
+#[test]
+fn clicking_a_row_activates_it_like_enter() {
+    let _serial = serialize_real_tty_test();
+    let mut app = PtyApp::spawn(90, 24);
+    let screen = app.wait_for("startup", |screen| screen.contains("release-reviewer"));
+    let row = screen
+        .lines()
+        .position(|line| line.starts_with("Needs input"))
+        .expect("Needs input heading is on screen")
+        + 1;
+
+    // SGR mouse press and release on the heading, 1-based like the protocol.
+    app.send(format!("\x1b[<0;4;{row}M\x1b[<0;4;{row}m").as_bytes());
+    app.wait_for("heading collapsed by the click", |screen| {
+        screen.contains("Needs input 2") && !screen.contains("approval-needed")
+    });
+
+    app.send(format!("\x1b[<0;4;{row}M\x1b[<0;4;{row}m").as_bytes());
+    app.wait_for("heading expanded by a second click", |screen| {
+        screen.contains("approval-needed")
     });
     app.exit_cleanly();
 }

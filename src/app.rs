@@ -25,6 +25,15 @@ pub enum SelectionKey {
     ShowMore(String),
 }
 
+/// What the last draw of the session list left behind.
+#[derive(Debug, Default)]
+pub struct ListView {
+    /// First line of the list in view, counted from the top of the whole list.
+    pub scroll: usize,
+    /// Screen row and selection of every selectable row in view.
+    pub rows: Vec<(u16, SelectionKey)>,
+}
+
 pub const SESSION_PAGE_SIZE: usize = 25;
 pub const MODEL_PICKER_PAGE_SIZE: usize = 10;
 pub const MIGRATION_PICKER_PAGE_SIZE: usize = 10;
@@ -415,6 +424,10 @@ pub struct App {
     revealed_shelves: BTreeSet<String>,
     visible_limits: BTreeMap<String, usize>,
     session_page_size: usize,
+    /// Where the session list was last drawn: its scroll position, which keeps
+    /// the viewport still until the selection reaches an edge, and the rows on
+    /// screen, which mouse clicks map back to a selection.
+    list_view: RefCell<ListView>,
     group_cache: Vec<Group>,
     /// Bare OpenCode child id -> bare parent id, from the spawned-session links.
     session_parents: HashMap<String, String>,
@@ -547,6 +560,7 @@ impl App {
             revealed_shelves: BTreeSet::new(),
             visible_limits: BTreeMap::new(),
             session_page_size: SESSION_PAGE_SIZE,
+            list_view: RefCell::new(ListView::default()),
             group_cache: Vec::new(),
             session_parents: HashMap::new(),
             parent_links: Default::default(),
@@ -802,6 +816,68 @@ impl App {
             }
         }
         self.revealed_shelves = keep_open;
+    }
+
+    pub fn list_scroll(&self) -> usize {
+        self.list_view.borrow().scroll
+    }
+
+    pub fn set_list_view(&self, scroll: usize, rows: Vec<(u16, SelectionKey)>) {
+        *self.list_view.borrow_mut() = ListView { scroll, rows };
+    }
+
+    /// The list row drawn on screen row `row`, if any.
+    pub fn list_row_at(&self, row: u16) -> Option<SelectionKey> {
+        self.list_view
+            .borrow()
+            .rows
+            .iter()
+            .find(|(screen_row, _)| *screen_row == row)
+            .map(|(_, key)| key.clone())
+    }
+
+    /// Moves the selection to the row on screen row `row`. Returns whether it
+    /// is a row at all, and so whether a click there should open it. Does
+    /// nothing while an overlay owns the screen.
+    pub fn select_list_row(&mut self, row: u16) -> bool {
+        if !matches!(self.overlay, Overlay::None) {
+            return false;
+        }
+        let Some(key) = self.list_row_at(row) else {
+            return false;
+        };
+        if self.selection.as_ref() != Some(&key) {
+            self.selection = Some(key);
+            self.notice = None;
+            self.pending_removal = None;
+        }
+        true
+    }
+
+    /// Moves the selection one row without wrapping, as the mouse wheel does.
+    pub fn scroll_selection(&mut self, delta: isize) {
+        if !matches!(self.overlay, Overlay::None) {
+            return;
+        }
+        let keys = self.selectable_keys();
+        let current = self
+            .selection
+            .as_ref()
+            .and_then(|selected| keys.iter().position(|key| key == selected));
+        let next = match current {
+            Some(index) => index
+                .saturating_add_signed(delta)
+                .min(keys.len().saturating_sub(1)),
+            None if delta < 0 => keys.len().saturating_sub(1),
+            None => 0,
+        };
+        if let Some(key) = keys.get(next) {
+            if self.selection.as_ref() != Some(key) {
+                self.selection = Some(key.clone());
+                self.notice = None;
+                self.pending_removal = None;
+            }
+        }
     }
 
     /// Jump one folder up or down, keeping the row's position inside it: the

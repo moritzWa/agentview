@@ -10,6 +10,10 @@ and released versions are intended to follow Semantic Versioning.
 
 ### Changed
 
+- The session list scrolls as a pane instead of jumping a page at a time, with
+  "↑/↓ N more sessions" lines where it is cut off. The mouse works on the
+  dashboard: hover selects a row, a click opens it, the wheel scrolls. Hold
+  Shift to select text.
 - `Ctrl+G` with nothing typed ranks sessions by how often you opened them from
   the picker, weighted by recent activity, instead of by last update alone.
 - The `Ctrl+G` popup grays out the dashboard behind it.

@@ -464,6 +464,7 @@ pub fn run_dashboard(
     let mut usage_minute = 0;
     let mut last_queue_second = 0;
     let mut terminal = TerminalSession::enter()?;
+    terminal.set_mouse(true);
     let initial_size = terminal.terminal.size()?;
     app.set_session_page_size(session_page_size_for_terminal(
         initial_size.height,
@@ -1071,8 +1072,6 @@ pub fn run_dashboard(
                 if status.phase != crate::voice::Phase::Idle {
                     app.voice_hint = false;
                 }
-                terminal
-                    .set_mouse(status.phase == crate::voice::Phase::Live && status.speed.is_some());
                 app.voice = status;
                 needs_draw = true;
             }
@@ -1135,6 +1134,18 @@ pub fn run_dashboard(
                             BurstInput::Pasted(character) => Event::Paste(character.to_string()),
                         }
                     }
+                    // A click on a row opens it like Enter does, so it takes the
+                    // same path as the key.
+                    Event::Mouse(mouse) => match dashboard_mouse(&mut app, mouse) {
+                        MouseEffect::Activate => {
+                            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+                        }
+                        MouseEffect::Redraw => {
+                            needs_draw = true;
+                            Event::Mouse(mouse)
+                        }
+                        MouseEffect::None => Event::Mouse(mouse),
+                    },
                     other => other,
                 };
                 match event {
@@ -1853,6 +1864,48 @@ fn toggle_voice(app: &mut App, voice: &crate::voice::VoiceService) {
         Toggle::Ended => app.set_notice("voice call ended"),
         Toggle::NeedKey(provider) => app.start_voice_key(provider),
         Toggle::Failed(error) => app.set_notice(error),
+    }
+}
+
+enum MouseEffect {
+    None,
+    Redraw,
+    Activate,
+}
+
+/// The mouse on the dashboard: hovering a row selects it, a left click opens
+/// it, and the wheel moves the selection through the list.
+fn dashboard_mouse(app: &mut App, mouse: crossterm::event::MouseEvent) -> MouseEffect {
+    const WHEEL_ROWS: isize = 3;
+    let before = app.selection.clone();
+    let moved = |app: &App| {
+        if app.selection != before {
+            MouseEffect::Redraw
+        } else {
+            MouseEffect::None
+        }
+    };
+    match mouse.kind {
+        MouseEventKind::Moved => {
+            app.select_list_row(mouse.row);
+            moved(app)
+        }
+        MouseEventKind::Down(MouseButton::Left) => {
+            if app.select_list_row(mouse.row) {
+                MouseEffect::Activate
+            } else {
+                MouseEffect::None
+            }
+        }
+        MouseEventKind::ScrollUp => {
+            app.scroll_selection(-WHEEL_ROWS);
+            moved(app)
+        }
+        MouseEventKind::ScrollDown => {
+            app.scroll_selection(WHEEL_ROWS);
+            moved(app)
+        }
+        _ => MouseEffect::None,
     }
 }
 

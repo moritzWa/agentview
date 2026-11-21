@@ -404,6 +404,7 @@ fn queued_note(app: &App, session: &AgentSession) -> Option<String> {
 fn render_session_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let mut lines = Vec::new();
     let mut selected_line = None;
+    let mut selectable: Vec<(usize, SelectionKey)> = Vec::new();
     let selection_visible = !matches!(
         app.overlay,
         Overlay::Composer(_)
@@ -439,6 +440,7 @@ fn render_session_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
         if is_selected {
             selected_line = Some(lines.len());
         }
+        selectable.push((lines.len(), SelectionKey::Group(group.key.clone())));
         let collapsed = app.collapsed.contains(&group.key);
         let suffix = collapsed.then(|| format!(" {}", group.sessions.len()));
         let mut spans = vec![Span::raw(format!(
@@ -482,6 +484,7 @@ fn render_session_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
             if is_selected {
                 selected_line = Some(lines.len());
             }
+            selectable.push((lines.len(), SelectionKey::Session(session.id.clone())));
             lines.push(render_tree_session_row(
                 session,
                 app.view_mode,
@@ -504,6 +507,7 @@ fn render_session_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
             if is_selected {
                 selected_line = Some(lines.len());
             }
+            selectable.push((lines.len(), SelectionKey::ShowMore(group.key.clone())));
             lines.push(render_show_more_row(
                 hidden,
                 app.session_page_size(),
@@ -543,21 +547,99 @@ fn render_session_list(frame: &mut Frame<'_>, app: &App, area: Rect) {
         }
     }
 
-    // Keep the viewport page-aligned. A one-line sliding window rewrites every
-    // visible row for every arrow repeat once the selection reaches the bottom,
-    // which creates a large output backlog on SSH/tmux with long session lists.
-    // Within a page, navigation now changes only the old and new selected rows.
-    let page_height = area.height.max(1) as usize;
-    let scroll = selected_line
-        .map(|line| (line / page_height) * page_height)
-        .unwrap_or(0)
-        .min(u16::MAX as usize);
+    // The list is a pane that scrolls. The viewport stays put while the
+    // selection moves inside it, so an arrow press redraws only the old and new
+    // rows, and moves by one line when the selection reaches an edge. Rows cut
+    // off at either end are counted in a line of their own.
+    let total = lines.len();
+    let height = usize::from(area.height).max(1);
+    let (scroll, content) = list_window(total, height, selected_line, app.list_scroll());
+    let top_hidden = scroll > 0 && height >= MORE_ROWS_MIN_HEIGHT;
+    let bottom_hidden = scroll + content < total && height >= MORE_ROWS_MIN_HEIGHT;
+    let top_offset = usize::from(top_hidden);
+    let sessions_in = |range: std::ops::Range<usize>| {
+        selectable
+            .iter()
+            .filter(|(line, key)| range.contains(line) && matches!(key, SelectionKey::Session(_)))
+            .count()
+    };
+    let mut visible: Vec<Line<'static>> = Vec::with_capacity(height);
+    if top_hidden {
+        visible.push(render_more_row('↑', sessions_in(0..scroll)));
+    }
+    visible.extend(lines.into_iter().skip(scroll).take(content));
+    if bottom_hidden {
+        visible.push(render_more_row('↓', sessions_in(scroll + content..total)));
+    }
+    let rows = selectable
+        .into_iter()
+        .filter(|(line, _)| (scroll..scroll + content).contains(line))
+        .map(|(line, key)| {
+            let row = area.y.saturating_add((line - scroll + top_offset) as u16);
+            (row, key)
+        })
+        .collect();
+    app.set_list_view(scroll, rows);
     frame.render_widget(
-        Paragraph::new(lines)
-            .style(Style::default().bg(palette().bg).fg(palette().fg))
-            .scroll((scroll as u16, 0)),
+        Paragraph::new(visible).style(Style::default().bg(palette().bg).fg(palette().fg)),
         area,
     );
+}
+
+/// Shortest list area that spends rows on "more" lines.
+const MORE_ROWS_MIN_HEIGHT: usize = 3;
+
+/// The first line of a list of `total` lines to show in `height` rows, and how
+/// many lines fit there once the rows that count what is cut off at the top
+/// and bottom are set aside. `previous` is where the list was scrolled before,
+/// which it keeps unless the selected line would leave the view.
+fn list_window(
+    total: usize,
+    height: usize,
+    selected: Option<usize>,
+    previous: usize,
+) -> (usize, usize) {
+    if total <= height {
+        return (0, total);
+    }
+    if height < MORE_ROWS_MIN_HEIGHT {
+        let scroll = selected
+            .map(|line| line.saturating_sub(height - 1))
+            .unwrap_or(previous)
+            .min(total - height);
+        return (scroll, height);
+    }
+    let content = |scroll: usize| {
+        let available = height - usize::from(scroll > 0);
+        available - usize::from(scroll + available < total)
+    };
+    let last = total - (height - 1);
+    let mut scroll = previous.min(last);
+    if let Some(line) = selected {
+        if line < scroll {
+            // One line of what lies above, usually the folder heading.
+            scroll = line.saturating_sub(1);
+        }
+        while line >= scroll + content(scroll) && scroll < last {
+            scroll += 1;
+        }
+        if scroll == 1 && line < content(0) {
+            scroll = 0;
+        }
+    }
+    (scroll, content(scroll))
+}
+
+fn render_more_row(arrow: char, sessions: usize) -> Line<'static> {
+    let text = match sessions {
+        0 => "more".to_owned(),
+        1 => "1 more session".to_owned(),
+        count => format!("{count} more sessions"),
+    };
+    Line::from(vec![
+        Span::styled(format!("  {arrow} "), Style::default().fg(palette().accent)),
+        Span::styled(text, Style::default().fg(palette().dim)),
+    ])
 }
 
 fn render_show_more_row(hidden: usize, page_size: usize, selected: bool) -> Line<'static> {
@@ -3347,6 +3429,85 @@ mod tests {
         terminal.draw(|frame| render(frame, &app)).unwrap();
         let selected_control = buffer_text(terminal.backend().buffer());
         assert!(selected_control.contains("enter to show more"));
+    }
+
+    #[test]
+    fn list_window_scrolls_one_line_at_a_time_and_reserves_the_more_rows() {
+        // Everything fits: no scrolling, no "more" rows.
+        assert_eq!(list_window(10, 10, Some(9), 0), (0, 10));
+        // Cut off below: the last row of the pane is the "more" row.
+        assert_eq!(list_window(30, 10, Some(0), 0), (0, 9));
+        // The selection stays where it is while it is inside the view.
+        assert_eq!(list_window(30, 10, Some(8), 0), (0, 9));
+        // Past the edge it moves one line, not a page.
+        assert_eq!(list_window(30, 10, Some(9), 0), (2, 8));
+        assert_eq!(list_window(30, 10, Some(10), 2), (3, 8));
+        // Scrolling back up keeps one line of context above.
+        assert_eq!(list_window(30, 10, Some(10), 15), (9, 8));
+        // The last page has no bottom row and shows the final line.
+        let (scroll, content) = list_window(30, 10, Some(29), 0);
+        assert_eq!(scroll + content, 30);
+        assert_eq!(content, 9);
+        // A list that shrank pulls the stale scroll back.
+        assert_eq!(list_window(12, 10, None, 40), (3, 9));
+        // Too little room for "more" rows: a plain window.
+        assert_eq!(list_window(30, 2, Some(10), 0), (9, 2));
+    }
+
+    #[test]
+    fn long_lists_scroll_like_a_pane_with_more_counts_and_clickable_rows() {
+        let sessions = (0..60)
+            .map(|index| session(&format!("session-{index:02}"), SessionState::Working))
+            .collect();
+        let mut app = App::new(SessionSnapshot {
+            sessions,
+            warnings: vec![],
+        });
+        app.set_session_page_size(25);
+        let mut terminal = Terminal::new(TestBackend::new(100, 12)).unwrap();
+        let area = ratatui::layout::Rect::new(0, 0, 100, 12);
+        let draw = |terminal: &mut Terminal<TestBackend>, app: &App| {
+            terminal
+                .draw(|frame| render_session_list(frame, app, area))
+                .unwrap();
+            buffer_text(terminal.backend().buffer())
+        };
+
+        app.selection = Some(SelectionKey::Session("session-00".into()));
+        let top = draw(&mut terminal, &app);
+        assert!(top.contains("session-00"), "{top}");
+        assert!(top.contains("↓ 15 more sessions"), "{top}");
+        assert!(!top.contains('↑'), "{top}");
+        assert_eq!(
+            app.list_row_at(1),
+            Some(SelectionKey::Session("session-00".into()))
+        );
+        assert_eq!(app.list_row_at(11), None);
+
+        // Moving down inside the view does not scroll.
+        app.selection = Some(SelectionKey::Session("session-05".into()));
+        draw(&mut terminal, &app);
+        assert_eq!(app.list_scroll(), 0);
+
+        // Past the bottom it moves a line at a time and counts both ends.
+        app.selection = Some(SelectionKey::Session("session-10".into()));
+        let middle = draw(&mut terminal, &app);
+        assert!(middle.contains("session-10"), "{middle}");
+        assert!(middle.contains('↑') && middle.contains('↓'), "{middle}");
+        assert!(!middle.contains("session-00"), "{middle}");
+        assert!(app.list_scroll() > 0 && app.list_scroll() < 11, "{middle}");
+
+        // Clicking the drawn row selects that session.
+        let row = (0..12u16)
+            .find(|row| app.list_row_at(*row) == Some(SelectionKey::Session("session-10".into())))
+            .expect("selected row is on screen");
+        app.selection = None;
+        assert!(app.select_list_row(row));
+        assert_eq!(
+            app.selection,
+            Some(SelectionKey::Session("session-10".into()))
+        );
+        assert!(!app.select_list_row(0));
     }
 
     #[test]
