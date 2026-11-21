@@ -1877,7 +1877,9 @@ send({'jsonrpc':'2.0','id':request['id'],'result':{'models':[
             // which also mentions native setup while a model load settles.
             && screen.contains("enter/l native setup")
     });
-    app.send(b"l");
+    // Enter activates the advertised login action without going through the
+    // printable-key paste heuristic, whose timing varies on busy CI runners.
+    app.send(ENTER);
     app.wait_for("Copilot native login prompt", |screen| {
         screen.contains("COPILOT INTERACTIVE LOGIN")
     });
