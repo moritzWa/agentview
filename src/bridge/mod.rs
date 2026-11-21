@@ -552,7 +552,11 @@ pub fn sync_once(dir: &Path) -> Result<usize> {
 }
 
 fn publish_runtime(dir: &Path, config: &Config, credential: &str) -> Result<()> {
-    let _lock = local_lock(&dir.join("runtime.lock"))?;
+    // The poll thread and the sync loop both publish. If the other one is mid-publish,
+    // its result is the one the phone needs, so this call has nothing to add.
+    let Some(_lock) = try_local_lock(&dir.join("runtime.lock"))? else {
+        return Ok(());
+    };
     let stamp = dir.join("runtime-checked.json");
     if std::fs::metadata(&stamp)
         .and_then(|m| m.modified())
@@ -562,7 +566,16 @@ fn publish_runtime(dir: &Path, config: &Config, credential: &str) -> Result<()> 
     {
         return Ok(());
     }
-    let snapshot = runtime::snapshot(config)?;
+    let started = std::time::Instant::now();
+    // One quick retry: a native read can fail for a moment while OpenCode writes.
+    let snapshot = match runtime::snapshot(config) {
+        Ok(snapshot) => snapshot,
+        Err(first) => {
+            log_unavailable("runtime", &first);
+            std::thread::sleep(Duration::from_secs(2));
+            runtime::snapshot(config)?
+        }
+    };
     http::request(
         &config.endpoint,
         "/v1/connector/runtime",
@@ -571,6 +584,13 @@ fn publish_runtime(dir: &Path, config: &Config, credential: &str) -> Result<()> 
         35,
     )?;
     crate::fs_util::write_private_json(&stamp, &json!({"checked":true}))?;
+    if started.elapsed() > Duration::from_secs(3) {
+        eprintln!(
+            "bridge runtime slow ms={} time={}",
+            started.elapsed().as_millis(),
+            now_secs()
+        );
+    }
     Ok(())
 }
 
@@ -899,6 +919,35 @@ pub fn start_once(dir: &Path) -> Result<bool> {
     Ok(true)
 }
 
+fn is_busy(error: &anyhow::Error) -> bool {
+    error.to_string().contains("already running")
+}
+
+/// `None` when another thread or process holds the lock. That is the job being
+/// done already, not a failure, so callers skip quietly instead of logging an
+/// outage and backing off.
+fn try_local_lock(path: &Path) -> Result<Option<std::fs::File>> {
+    match local_lock(path) {
+        Ok(lock) => Ok(Some(lock)),
+        Err(error) if is_busy(&error) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn deliver_unless_busy(dir: &Path) -> Result<bool> {
+    match deliver_once(dir) {
+        Err(error) if is_busy(&error) => Ok(false),
+        other => other,
+    }
+}
+
+fn start_unless_busy(dir: &Path) -> Result<bool> {
+    match start_once(dir) {
+        Err(error) if is_busy(&error) => Ok(false),
+        other => other,
+    }
+}
+
 fn local_lock(path: &Path) -> Result<std::fs::File> {
     let lock = std::fs::OpenOptions::new()
         .create(true)
@@ -943,18 +992,21 @@ pub fn run(dir: &Path) -> Result<()> {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)?
                 .as_millis() as u64;
-            if poll["pending"] == true {
-                while deliver_once(&queue_dir)? {}
-                while start_once(&queue_dir)? {}
-            }
+            // Delivery and the session-state publish are independent. A failed
+            // delivery must not leave the phone reading a stale state.
+            let delivery = (|| -> Result<()> {
+                if poll["pending"] == true {
+                    while deliver_unless_busy(&queue_dir)? {}
+                    while start_unless_busy(&queue_dir)? {}
+                }
+                Ok(())
+            })();
             if poll["active_until"].as_u64().unwrap_or(0) > now {
-                // The sync loop publishes too. Losing that race is not a delivery
-                // failure and must not stop this thread from polling for 10 s.
                 if let Err(error) = publish_runtime(&queue_dir, &config, &credential) {
                     log_unavailable("runtime", &error);
                 }
             }
-            Ok(())
+            delivery
         })();
         if let Err(error) = result {
             log_unavailable("delivery", &error);
@@ -1003,10 +1055,10 @@ pub fn run(dir: &Path) -> Result<()> {
                 // Reconcile Postgres at the same cadence that already wakes it
                 // for history. A crash between commit and wake signaling must
                 // not strand a queued instruction indefinitely.
-                if deliver_once(dir).is_err() {
+                if deliver_unless_busy(dir).is_err() {
                     eprintln!("bridge queue reconciliation deferred");
                 }
-                if start_once(dir).is_err() {
+                if start_unless_busy(dir).is_err() {
                     eprintln!("bridge start reconciliation deferred");
                 }
             }
@@ -1044,34 +1096,70 @@ fn error_kind(message: &str) -> &'static str {
         "credential"
     } else if message.contains("network") {
         "network"
+    } else if message.contains("timed out") {
+        "timeout"
+    } else if message.contains("database is locked") || message.contains("table is locked") {
+        "source_locked"
+    } else if message.contains("unsupported OpenCode source schema") {
+        "source_schema"
     } else {
         "local_or_native"
     }
 }
 
+/// Which step of the session-state snapshot failed. Only these fixed names are printed.
+fn runtime_stage(chain: &str) -> Option<&'static str> {
+    [
+        "supervisor",
+        "server_check",
+        "discover",
+        "registries",
+        "source_open",
+        "last_user",
+    ]
+    .into_iter()
+    .find(|stage| chain.contains(&format!("runtime snapshot: {stage}")))
+}
+
 fn log_unavailable(channel: &str, error: &anyhow::Error) {
-    let kind = error_kind(&error.to_string());
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
-    // No exception text: it can contain paths, SQL, headers or prompt content.
-    eprintln!("bridge {channel} unavailable kind={kind} time={now}; retrying");
+    // The whole cause chain decides the kind. Only the kind and a fixed stage name
+    // are printed: the text can contain paths, SQL, headers or prompt content.
+    let chain = format!("{error:#}");
+    let kind = error_kind(&chain);
+    let stage = runtime_stage(&chain).map_or(String::new(), |stage| format!(" stage={stage}"));
+    eprintln!(
+        "bridge {channel} unavailable kind={kind}{stage} time={}; retrying",
+        now_secs()
+    );
 }
 
 /// Compares each local projection with the cloud copy. Prints no message text.
 pub fn verify(dir: &Path) -> Result<Value> {
     let config = load(dir)?;
     let credential = token(&config)?;
+    let journal = Journal::open(&dir.join("journal.sqlite"))?;
     let mut db = source::open(&config.database)?;
     let ids = source::sessions(&db)?;
     let mut checked = 0;
+    let mut matched = 0;
+    let mut moved = 0;
     let mut mismatches = Vec::new();
     let mut failed = Vec::new();
     for id in &ids {
         let Some(capture) = source::capture(&mut db, id, None)? else {
             continue;
         };
-        let text = source::projection_text(capture.through, &capture.state, &capture.messages);
+        let checkpoint = journal.checkpoint(id)?;
+        // A session that changed after the last sync pass is waiting for the next
+        // pass. It is not a mismatch, and comparing it would only add noise.
+        if checkpoint
+            .as_ref()
+            .is_some_and(|p| p.observed != capture.through)
+        {
+            moved += 1;
+            continue;
+        }
+        let text = source::projection_text(&capture.state, &capture.messages);
         let local_hash = format!("{:x}", md5::Md5::digest(text.as_bytes()));
         let report = match http::request(
             &config.endpoint,
@@ -1089,11 +1177,18 @@ pub fn verify(dir: &Path) -> Result<Value> {
             }
         };
         checked += 1;
-        if report["match"] != true {
+        // Same text but a different pointer is still a problem: the next delta would
+        // be refused. A moved watermark with no upload is not.
+        let pointer_differs = checkpoint
+            .as_ref()
+            .is_some_and(|p| report["cloud_cursor"].as_i64() != Some(p.cursor));
+        if report["match"] == true && !pointer_differs {
+            matched += 1;
+        } else {
             mismatches.push(json!({
                 "session_id": id,
-                "reason": report["reason"],
-                "local_cursor": capture.through,
+                "reason": if report["match"] == true { json!("pointer") } else { report["reason"].clone() },
+                "local_checkpoint": checkpoint.as_ref().map(|p| p.cursor),
                 "cloud_cursor": report["cloud_cursor"],
                 "local_count": capture.messages.len(),
                 "cloud_count": report["cloud_count"],
@@ -1103,7 +1198,13 @@ pub fn verify(dir: &Path) -> Result<Value> {
             eprintln!("bridge verify checked {checked}");
         }
     }
-    Ok(json!({"checked": checked, "mismatches": mismatches, "failed": failed}))
+    Ok(json!({
+        "checked": checked,
+        "matched": matched,
+        "moved_since_last_sync": moved,
+        "mismatches": mismatches,
+        "failed": failed,
+    }))
 }
 
 pub fn status(dir: &Path) -> Result<Value> {

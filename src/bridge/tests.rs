@@ -440,7 +440,6 @@ fn a_replace_uploads_the_whole_projection_and_does_not_move_the_pointer_until_co
 #[test]
 fn projection_text_matches_the_cloud_byte_for_byte() {
     let text = source::projection_text(
-        10,
         &json!({"title":"T","archived":false,"deleted":false,"visible_before":null}),
         &[Message {
             id: "m1".into(),
@@ -453,8 +452,47 @@ fn projection_text_matches_the_cloud_byte_for_byte() {
     );
     assert_eq!(
         text,
-        "cursor=10\narchived=false\ndeleted=false\ntitle=T\nvisible_before=\nm1\t1\tuser\thi"
+        "archived=false\ndeleted=false\ntitle=T\nvisible_before=\nm1\t1\tuser\thi"
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_busy_lock_is_skipped_quietly_and_failures_name_their_stage() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("x.lock");
+    let held = local_lock(&path).unwrap();
+    assert!(try_local_lock(&path).unwrap().is_none());
+    drop(held);
+    assert!(try_local_lock(&path).unwrap().is_some());
+    let error =
+        anyhow::anyhow!("OpenCode database query timed out").context("runtime snapshot: discover");
+    let chain = format!("{error:#}");
+    assert_eq!(error_kind(&chain), "timeout");
+    assert_eq!(runtime_stage(&chain), Some("discover"));
+    assert_eq!(runtime_stage("something else"), None);
+    assert_eq!(error_kind("database is locked"), "source_locked");
+    assert_eq!(error_kind("bridge network request failed"), "network");
+    assert_eq!(error_kind("bridge operation already running"), "busy");
+}
+
+#[test]
+fn the_projection_hash_ignores_the_cursor_and_notices_any_text_change() {
+    let state = json!({"title":"T","archived":false,"deleted":false,"visible_before":null});
+    let message = |text: &str| Message {
+        id: "m1".into(),
+        role: "user".into(),
+        order: 1,
+        created_at: 1,
+        updated_at: 1,
+        text: text.into(),
+    };
+    let same = source::projection_text(&state, &[message("hi")]);
+    assert_eq!(same, source::projection_text(&state, &[message("hi")]));
+    assert_ne!(same, source::projection_text(&state, &[message("hi!")]));
+    let mut archived = state.clone();
+    archived["archived"] = json!(true);
+    assert_ne!(same, source::projection_text(&archived, &[message("hi")]));
 }
 
 #[test]

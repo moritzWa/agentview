@@ -238,14 +238,25 @@ test('an abandoned replacement does not delete the copy people can read', async 
 
 test('verify hashes the same bytes as the Mac, including a session with messages', async () => {
   await store.apply(writer, batch('verify-me', { messages: [msg('m1', 1, 'hi')], through: 10 }));
-  const hash = createHash('md5').update(projectionText(10, state, [{ id: 'm1', order: 1, role: 'assistant', text: 'hi' }])).digest('hex');
+  const hash = createHash('md5').update(projectionText(state, [{ id: 'm1', order: 1, role: 'assistant', text: 'hi' }])).digest('hex');
   const result = await store.verify(writer, { session_id: 'verify-me', hash });
   assert.equal(result.match, true, JSON.stringify(result));
   assert.equal(result.cloud_count, 1);
   assert.equal((await store.verify(writer, { session_id: 'missing-verify', hash })).reason, 'missing');
 });
 
+test('verify compares text, so a cursor that moved on invisible events is not a mismatch', async () => {
+  await store.apply(writer, batch('verify-moved', { messages: [msg('m1', 1, 'same text')], through: 10 }));
+  await store.apply(writer, delta('verify-moved', 10, 25, { messages: [] }));
+  const hash = createHash('md5').update(projectionText(state, [{ id: 'm1', order: 1, role: 'assistant', text: 'same text' }])).digest('hex');
+  const result = await store.verify(writer, { session_id: 'verify-moved', hash });
+  assert.equal(result.match, true, JSON.stringify(result));
+  assert.equal(result.cloud_cursor, 25);
+  const changed = createHash('md5').update(projectionText(state, [{ id: 'm1', order: 1, role: 'assistant', text: 'other text' }])).digest('hex');
+  assert.equal((await store.verify(writer, { session_id: 'verify-moved', hash: changed })).reason, 'differs');
+});
+
 test('projection text matches the Mac byte for byte', () => {
-  assert.equal(projectionText(10, { title: 'T', archived: false, deleted: false, visible_before: null }, [{ id: 'm1', order: 1, role: 'user', text: 'hi' }]),
-    'cursor=10\narchived=false\ndeleted=false\ntitle=T\nvisible_before=\nm1\t1\tuser\thi');
+  assert.equal(projectionText({ title: 'T', archived: false, deleted: false, visible_before: null }, [{ id: 'm1', order: 1, role: 'user', text: 'hi' }]),
+    'archived=false\ndeleted=false\ntitle=T\nvisible_before=\nm1\t1\tuser\thi');
 });

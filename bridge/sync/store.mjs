@@ -140,7 +140,7 @@ export class SyncStore {
     const sk = [...key(principal), sessionId];
     const row = (await this.db.query(`SELECT s.cursor,
       (SELECT count(*) FROM av_messages m WHERE m.owner_id=s.owner_id AND m.device_id=s.device_id AND m.database_epoch=s.database_epoch AND m.session_id=s.session_id AND m.generation=s.generation) AS n,
-      md5('cursor=' || s.cursor::text || E'\\n' || 'archived=' || COALESCE(s.state->>'archived','false') || E'\\n' || 'deleted=' || COALESCE(s.state->>'deleted','false') || E'\\n' || 'title=' || COALESCE(s.state->>'title','') || E'\\n' || 'visible_before=' || COALESCE(s.state->>'visible_before','') || COALESCE(E'\\n' || (
+      md5('archived=' || COALESCE(s.state->>'archived','false') || E'\\n' || 'deleted=' || COALESCE(s.state->>'deleted','false') || E'\\n' || 'title=' || COALESCE(s.state->>'title','') || E'\\n' || 'visible_before=' || COALESCE(s.state->>'visible_before','') || COALESCE(E'\\n' || (
         SELECT string_agg(m.message_id || E'\\t' || m.message_order::text || E'\\t' || m.role || E'\\t' || m.text, E'\\n' ORDER BY m.message_order, m.message_id)
         FROM av_messages m WHERE m.owner_id=s.owner_id AND m.device_id=s.device_id AND m.database_epoch=s.database_epoch AND m.session_id=s.session_id AND m.generation=s.generation
       ), '')) AS hash

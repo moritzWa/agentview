@@ -73,9 +73,9 @@ export function parseBatch(value) {
 }
 
 /** Same bytes on the Mac and in the Worker. A verify mismatch means the copies differ. */
-export function projectionText(cursor, state, messages) {
+export function projectionText(state, messages) {
+  // No cursor: it moves on events that change no visible text. The Mac compares pointers itself.
   const head = [
-    `cursor=${cursor}`,
     `archived=${Boolean(state?.archived)}`,
     `deleted=${Boolean(state?.deleted)}`,
     `title=${state?.title ?? ''}`,

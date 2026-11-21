@@ -3,7 +3,7 @@ use crate::adapters::{DiscoveryRequest, OpenCodeController, OpenCodeSource, Sess
 use crate::control::ProviderController;
 use crate::domain::{AgentSession, SessionSnapshot, SessionState};
 use crate::opencode_supervisor::OpenCodeSupervisor;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use rusqlite::OptionalExtension;
 use serde::Serialize;
 use std::sync::Arc;
@@ -95,11 +95,17 @@ pub(super) fn project(session: &AgentSession) -> RuntimeStatus {
 
 pub(super) fn snapshot(config: &Config) -> Result<Snapshot> {
     let supervisor = Arc::new(if let Some(state) = &config.supervisor_state {
-        OpenCodeSupervisor::with_state_dir(config.opencode_bin.clone(), state.clone())?
+        OpenCodeSupervisor::with_state_dir(config.opencode_bin.clone(), state.clone())
+            .context("runtime snapshot: supervisor")?
     } else {
-        OpenCodeSupervisor::host(config.opencode_bin.clone())?
+        OpenCodeSupervisor::host(config.opencode_bin.clone())
+            .context("runtime snapshot: supervisor")?
     });
-    if supervisor.live_server_pid()?.is_none() {
+    if supervisor
+        .live_server_pid()
+        .context("runtime snapshot: server_check")?
+        .is_none()
+    {
         return Ok(Snapshot {
             available: false,
             partial: false,
@@ -111,13 +117,15 @@ pub(super) fn snapshot(config: &Config) -> Result<Snapshot> {
     // question, failed-turn, child-agent and background-work states. Do not ask
     // ChatGPT to infer these from the conversation copy.
     let source = OpenCodeSource::managed(config.opencode_bin.clone(), supervisor.clone());
-    let discovery = source.discover_with_warnings(&DiscoveryRequest {
-        include_completed: true,
-        include_interactive: true,
-        include_external: true,
-        history_limit: 5000,
-        ..DiscoveryRequest::default()
-    })?;
+    let discovery = source
+        .discover_with_warnings(&DiscoveryRequest {
+            include_completed: true,
+            include_interactive: true,
+            include_external: true,
+            history_limit: 5000,
+            ..DiscoveryRequest::default()
+        })
+        .context("runtime snapshot: discover")?;
     let mut discovery = SessionSnapshot {
         sessions: discovery.sessions,
         warnings: discovery.warnings,
@@ -131,17 +139,27 @@ pub(super) fn snapshot(config: &Config) -> Result<Snapshot> {
         Default::default()
     };
     let parents = if config.supervisor_state.is_none() {
-        Some(crate::session_tree::ParentLinks::load_default()?)
+        Some(
+            crate::session_tree::ParentLinks::load_default()
+                .context("runtime snapshot: registries")?,
+        )
     } else {
         None
     };
     let paused = if config.supervisor_state.is_none() {
-        Some(crate::paused::PausedSessions::load_default()?.paused())
+        Some(
+            crate::paused::PausedSessions::load_default()
+                .context("runtime snapshot: registries")?
+                .paused(),
+        )
     } else {
         None
     };
     let hidden = if config.supervisor_state.is_none() {
-        Some(crate::hidden::HiddenSessions::load_default()?)
+        Some(
+            crate::hidden::HiddenSessions::load_default()
+                .context("runtime snapshot: registries")?,
+        )
     } else {
         None
     };
@@ -181,12 +199,13 @@ pub(super) fn snapshot(config: &Config) -> Result<Snapshot> {
     // Keep the durable wake snapshot small; never drop attention states merely
     // to make room for old completed history. Search still covers all history.
     statuses.truncate(1000);
-    let db = super::source::open(&config.database)?;
-    let mut latest=db.prepare("SELECT m.id FROM session_message m JOIN session_v2 s ON s.id=m.session_id WHERE s.id=?1 AND m.type='user' AND m.seq<COALESCE((SELECT b.seq FROM session_message b WHERE b.session_id=s.id AND b.id=json_extract(s.revert,'$.messageID')),9007199254740991) ORDER BY m.seq DESC LIMIT 1")?;
+    let db = super::source::open(&config.database).context("runtime snapshot: source_open")?;
+    let mut latest=db.prepare("SELECT m.id FROM session_message m JOIN session_v2 s ON s.id=m.session_id WHERE s.id=?1 AND m.type='user' AND m.seq<COALESCE((SELECT b.seq FROM session_message b WHERE b.session_id=s.id AND b.id=json_extract(s.revert,'$.messageID')),9007199254740991) ORDER BY m.seq DESC LIMIT 1").context("runtime snapshot: last_user")?;
     for status in &mut statuses {
         status.last_user_message_id = latest
             .query_row([&status.session_id], |row| row.get(0))
-            .optional()?;
+            .optional()
+            .context("runtime snapshot: last_user")?;
     }
     let now_ms = std::time::SystemTime::now()
         .duration_since(UNIX_EPOCH)

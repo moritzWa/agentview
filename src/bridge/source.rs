@@ -17,14 +17,16 @@ pub struct Message {
 }
 
 /// The bytes both sides hash. Field order is fixed so a Rust hash equals a JS hash.
-pub fn projection_text(cursor: i64, state: &Value, messages: &[Message]) -> String {
+/// The sync cursor is left out on purpose: it moves on events that change no visible
+/// text, so two identical copies can sit at different cursors. Pointers are compared
+/// separately.
+pub fn projection_text(state: &Value, messages: &[Message]) -> String {
     let visible = state
         .get("visible_before")
         .and_then(|v| v.as_i64())
         .map(|n| n.to_string())
         .unwrap_or_default();
     let mut lines = vec![
-        format!("cursor={cursor}"),
         format!("archived={}", state["archived"].as_bool().unwrap_or(false)),
         format!("deleted={}", state["deleted"].as_bool().unwrap_or(false)),
         format!("title={}", state["title"].as_str().unwrap_or("")),
