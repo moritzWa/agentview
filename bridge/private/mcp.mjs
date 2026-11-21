@@ -77,7 +77,7 @@ export async function privateMcp(request,{db,store,principal,outbox,gate,starts}
   register('list_sessions','Use this for overview questions such as "what needs my attention?". Call it with status="active" for "what needs me?". That returns blocked sessions and done sessions that still have a next step. status="done" still returns every finished turn, including ones with nothing left to do. status="needs_you" is only the explicit blockers. A follow-up is not a blocker. Say digest.say. Do not read out the sessions array. health is one word; call session_health for timing. When the owner names one session, call session_brief instead. detail=true adds each session\'s last messages. query matches title or folder, ignoring punctuation. Pass next_after verbatim; view="all" is exhaustive. Done means a turn ended, not that nothing is pending.',{status:z.enum(['all','active','needs_you','working','done','scheduled','unknown']).default('all'),view:z.enum(['recent','all']).default('recent'),query:z.string().max(100).default(''),after:z.string().max(200).default(''),limit:z.number().int().min(1).max(50).default(14),detail:z.boolean().default(false)},args=>listSessions({db,gate,principal},args));
   register('session_health','Read-only health for one session. health is running, idle, potentially_stalled, failed, or unknown. A long tool or shell call is running, not stalled. failed is only a confirmed native turn failure. If health_live is false, say you do not know; do not call it stalled or failed. Does not send or start anything.',{session_id:id},async({session_id})=>{
     const source=`${principal.device_id}|${principal.database_epoch}`;
-    const freshness=await gate.activity(source,true,'runtime',{max_wait:4000});
+    const freshness=await gate.activity(source,true,'runtime',{max_wait:8000});
     const runtime=await gate.runtime(source);
     const statusFresh=Boolean(runtime.available&&!runtime.partial&&freshness.mac_seen_recently&&runtime.checked_at>Date.now()-30_000);
     const status=runtime.statuses?.find(s=>s.session_id===session_id);
@@ -166,7 +166,7 @@ export async function privateMcp(request,{db,store,principal,outbox,gate,starts}
     return {...startView(receipt,presence),...receipt,session_id:startView(receipt,presence).session_id};
   },mutating,true);
   register('start_status','Check whether OpenCode actually created the session for this operation. Queued is not started. session_id is present only after creation. started means the task was accepted, not that the work is finished.',{operation_id:id},async({operation_id})=>{
-    const freshness=await gate.activity(`${principal.device_id}|${principal.database_epoch}`,true,'runtime',{max_wait:4000});
+    const freshness=await gate.activity(`${principal.device_id}|${principal.database_epoch}`,true,'runtime',{max_wait:8000});
     const receipt=await startsApi.status(principal,operation_id);
     return {...startView(receipt,freshness),...receipt,session_id:startView(receipt,freshness).session_id};
   },safeRead,true);

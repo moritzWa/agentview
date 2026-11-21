@@ -14,7 +14,7 @@ export async function listSessions({db,gate,principal},{status='all',view='recen
  const started=Date.now();
  // Native status decides what needs the owner, so wait for that (briefly) and only
  // report how old the synced text is. Waiting for both made every call sit through a sync cycle.
- const freshness=await gate.activity(source,true,'runtime',{max_wait:4000}),runtime=await gate.runtime(source),waited=Date.now()-started;
+ const freshness=await gate.activity(source,true,'runtime',{max_wait:8000}),runtime=await gate.runtime(source),waited=Date.now()-started;
  const status_fresh=Boolean(runtime.available&&!runtime.partial&&freshness.mac_seen_recently&&runtime.checked_at>Date.now()-30_000);
  const sourceInfo={kind:'paired_opencode_sessions',device_id:principal.device_id};
  if(!runtime.available)return {sessions:[],next_after:null,total_matching:null,counts:null,source:sourceInfo,...freshness,status_observed_at:runtime.checked_at,status_fresh:false,partial:true,
