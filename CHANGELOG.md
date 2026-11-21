@@ -12,6 +12,7 @@ and released versions are intended to follow Semantic Versioning.
 
 - `Ctrl+G` with nothing typed ranks sessions by how often you opened them from
   the picker, weighted by recent activity, instead of by last update alone.
+- The `Ctrl+G` popup grays out the dashboard behind it.
 
 ### Fixed
 
