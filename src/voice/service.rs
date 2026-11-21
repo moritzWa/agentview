@@ -1309,11 +1309,12 @@ impl PageSink for Sink {
 /// How long the page may wait for the microphone before the person is told why.
 const MIC_PROMPT_WAIT: Duration = Duration::from_secs(6);
 const MIC_WAIT_NOTICE: &str = "Waiting for the microphone: macOS asks once. Allow it for your terminal (or the browser) in the dialog or in System Settings, Privacy & Security, Microphone.";
-const MIC_NOTICE: &str = "Allow the microphone in the Agent View voice tab.";
+const MIC_NOTICE: &str = "Allow the microphone in the BetterAgentView voice tab.";
 /// A microphone that is exactly silent this long, with nothing heard yet, is not on.
 const DEAD_MIC_SECONDS: f64 = 20.0;
 const DEAD_MIC_NOTICE: &str = "No sound from the microphone. On a Mac, allow your terminal or the browser under System Settings, Privacy & Security, Microphone.";
-const CLICK_NOTICE: &str = "Click the Agent View voice tab once so the browser lets it play sound.";
+const CLICK_NOTICE: &str =
+    "Click the BetterAgentView voice tab once so the browser lets it play sound.";
 
 fn sentence(reason: &str) -> String {
     let mut chars = reason.chars();
@@ -2338,7 +2339,7 @@ mod tests {
             .status()
             .notice
             .unwrap()
-            .contains("Click the Agent View voice tab"));
+            .contains("Click the BetterAgentView voice tab"));
         say(&rig, id, json!({"type": "audio", "on": true}));
         assert_eq!(rig.service.status().notice, None);
     }

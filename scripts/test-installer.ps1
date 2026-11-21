@@ -16,7 +16,10 @@ try {
     if (-not (Test-Path -LiteralPath $canonical)) { throw "canonical executable was not installed" }
     if (-not (Test-Path -LiteralPath $alias)) { throw "av shorthand was not installed" }
     if ((& $canonical --version | Out-String).Trim() -ne "agentview $version") { throw "canonical executable version mismatch" }
-    if ((& $alias --version | Out-String).Trim() -ne "agentview $version") { throw "av shorthand version mismatch" }
+    if ((& $alias --version | Out-String).Trim() -ne "betteragentview $version") { throw "av shorthand version mismatch" }
+    $publicCommand = Join-Path $install "betteragentview.exe"
+    if (-not (Test-Path -LiteralPath $publicCommand)) { throw "betteragentview command was not installed" }
+    if ((& $publicCommand --version | Out-String).Trim() -ne "betteragentview $version") { throw "public command version mismatch" }
 
     $collisionInstall = Join-Path $temporary "collision"
     New-Item -ItemType Directory -Path $collisionInstall -Force | Out-Null

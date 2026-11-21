@@ -99,10 +99,9 @@ fn merge(parts: &[Facts]) -> Facts {
     for facts in parts {
         out.turn_started_at = max_ms(out.turn_started_at, facts.turn_started_at);
         out.last_progress_at = max_ms(out.last_progress_at, facts.last_progress_at);
-        if facts.in_flight == Some("tool") || out.in_flight.is_none() {
-            if facts.in_flight.is_some() {
-                out.in_flight = facts.in_flight;
-            }
+        if (facts.in_flight == Some("tool") || out.in_flight.is_none()) && facts.in_flight.is_some()
+        {
+            out.in_flight = facts.in_flight;
         }
     }
     out

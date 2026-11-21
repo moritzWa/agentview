@@ -95,7 +95,7 @@ pub fn diagnose(
 }
 
 pub fn render_text(report: &DoctorReport) -> String {
-    let mut output = String::from("agentview doctor\n\n");
+    let mut output = String::from("BetterAgentView doctor\n\n");
     for check in &report.checks {
         let marker = match check.status {
             CheckStatus::Ok => "ok",

@@ -60,7 +60,7 @@ fn readme_status_badges_match_release_metadata() {
     // Every app change on main is released automatically, so the badge reads
     // the latest release from GitHub instead of a hard-coded version.
     let release_badge =
-        "https://img.shields.io/github/v/release/moritzWa/agentview?color=506CF7&label=release";
+        "https://img.shields.io/github/v/release/moritzWa/betteragentview?color=506CF7&label=release";
 
     assert!(
         readme.contains("https://img.shields.io/badge/tests-verified-506CF7.svg"),
@@ -106,7 +106,7 @@ fn readme_collapses_the_windows_install_command() {
     let details = disclosure_containing(&readme, "Windows PowerShell");
 
     assert!(details.contains(
-        "irm https://raw.githubusercontent.com/moritzWa/agentview/main/install.ps1 | iex"
+        "irm https://raw.githubusercontent.com/moritzWa/betteragentview/main/install.ps1 | iex"
     ));
     assert!(!readme.contains("## Quick start"));
 }

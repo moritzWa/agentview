@@ -33,5 +33,7 @@ fn notification_command_routes_the_exact_id_and_reports_no_dashboard() {
     drop(socket);
     let output = run();
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("no running Agent View dashboard"));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("no running BetterAgentView dashboard")
+    );
 }

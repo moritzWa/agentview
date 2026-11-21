@@ -1,32 +1,32 @@
 <div align="center">
 
-<h1><img src="docs/assets/logo.svg" alt="agentview logo" width="32" height="40" align="absmiddle"> agentview</h1>
+<h1><img src="docs/assets/logo.svg" alt="BetterAgentView logo" width="32" height="40" align="absmiddle"> BetterAgentView</h1>
 
 **All your coding agents. One terminal.**<br>
 See which one needs you. Jump in, jump back out. Works with 18 coding
 harnesses and plain shell jobs.
 
 [![Tests](https://img.shields.io/badge/tests-verified-506CF7.svg)](docs/testing.md)
-[![Release](https://img.shields.io/github/v/release/moritzWa/agentview?color=506CF7&label=release)](https://github.com/moritzWa/agentview/releases/latest)
+[![Release](https://img.shields.io/github/v/release/moritzWa/betteragentview?color=506CF7&label=release)](https://github.com/moritzWa/betteragentview/releases/latest)
 [![License](https://img.shields.io/badge/license-MIT-506CF7.svg)](LICENSE)
 
-<a href="https://agent-view.app/film.mp4"><img src="docs/assets/film-thumbnail.jpg" alt="Play the 45-second Agent View film" width="800"></a>
+<a href="https://betteragentview.com/film.mp4"><img src="docs/assets/film-thumbnail.jpg" alt="Play the 45-second BetterAgentView film" width="800"></a>
 
-<img src="docs/assets/demo.gif" alt="agentview demo in light mode: usage limits in the header, OpenCode sub-sessions indented under the session that started them, searching 500 past sessions by message text with Ctrl+G, and picking a model grouped by provider" width="800">
+<img src="docs/assets/demo.gif" alt="BetterAgentView demo in light mode: usage limits in the header, OpenCode sub-sessions indented under the session that started them, searching 500 past sessions by message text with Ctrl+G, and picking a model grouped by provider" width="800">
 
 </div>
 
 ## Install
 
 ```console
-curl -fsSL https://raw.githubusercontent.com/moritzWa/agentview/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/moritzWa/betteragentview/main/install.sh | bash
 ```
 
 <details>
 <summary>Windows PowerShell</summary>
 
 ```powershell
-irm https://raw.githubusercontent.com/moritzWa/agentview/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/moritzWa/betteragentview/main/install.ps1 | iex
 ```
 
 </details>
@@ -35,12 +35,14 @@ irm https://raw.githubusercontent.com/moritzWa/agentview/main/install.ps1 | iex
 <summary>Build from source</summary>
 
 ```console
-cargo install --locked --git https://github.com/moritzWa/agentview
+cargo install --locked --git https://github.com/moritzWa/betteragentview
 ```
 
 </details>
 
-Run `agentview`, or the shorter `av` command the installer adds. Type a task,
+Run `betteragentview`, or the shorter `av` command the installer adds. The old
+`agentview` command, configuration paths and environment variables still work.
+Type a task,
 press `Tab` to pick a harness and `Shift+Tab` to pick a model. `Shift+Tab` also
 works from the session list before you type.
 `Ctrl+B` keeps the model and switches who serves it, for example OpenCode's
@@ -50,7 +52,7 @@ remembered across restarts.
 ## Why
 
 Five agents means five terminal tabs, and the one waiting on you is in the tab
-you aren't looking at. agentview lists every session from every harness in one
+you aren't looking at. BetterAgentView lists every session from every harness in one
 place, with the ones that need you on top. Selecting a row opens the harness's
 own interface.
 
@@ -99,7 +101,7 @@ own interface.
   the launch folder's OpenCode config or plugin rules. Explicit model picks override them.
 - **Fast with big histories.** Refreshes run in the background, so typing and
   arrows never wait on a harness. Where a harness's own CLI is slow to start,
-  agentview reads its data directly instead: an OpenCode refresh over a 17 GB
+  betteragentview reads its data directly instead: an OpenCode refresh over a 17 GB
   history takes about 0.1 s, and Cursor about 3 ms.
 - **Light and dark themes** that follow the terminal and the OS. Force one with
   `--theme`.
@@ -111,13 +113,13 @@ own interface.
   installed, a panel above the input lists the builds and test runs that are
   running or waiting, with how long each has been at it and when the queue
   should clear. A session whose own run is stuck in line says
-  `#1 in line for cargo test`. agentview only reads the queue.
+  `#1 in line for cargo test`. betteragentview only reads the queue.
 - **Talk to your sessions** with `Ctrl+K` or `Cmd+K`, from the list or inside a
   session. Ask which ones need you, hear what one last said, tell it what to
   do, or start a new one, with your hands in the dishwasher. It knows which
   session you are looking at. Voice runs on OpenAI's GPT-Live or xAI's Grok
   (`/voice grok` switches; Grok's speed has clickable `−`/`+`) through a hidden
-  browser agentview starts for the call, for OpenCode sessions. See
+  browser betteragentview starts for the call, for OpenCode sessions. See
   [Voice Mode](docs/voice.md).
 - **`Ctrl+X` twice** stops and hides or deletes a session, no dialog.
 - **`Ctrl+Z` undoes a hide** and brings the session back (in Ghostty, map `Cmd+Z` to it).
@@ -129,19 +131,19 @@ own interface.
 
 ### Refresh time by harness
 
-agentview is fast because it skips each harness's CLI wherever it can and
+betteragentview is fast because it skips each harness's CLI wherever it can and
 reads the data itself: OpenCode's SQLite database directly instead of starting
 `opencode db` for every query, and which Cursor chats are open straight from
 macOS instead of running `lsof`.
 
-| Harness | Time per refresh | How agentview reads it |
+| Harness | Time per refresh | How betteragentview reads it |
 | --- | ---: | --- |
 | OpenCode | ~130 ms | Its SQLite database, read-only (going through `opencode db` took ~460 ms) |
 | Claude Code | ~180 ms | `claude agents --json` |
 | OpenAI Codex | ~80 ms | Codex's App Server |
 | Cursor | ~3 ms | Its chat files, plus macOS for which chats are open (`lsof` took ~80 ms) |
 | Devin | ~6 ms | Its SQLite database, read-only |
-| Pi, Antigravity, Terminal | under 1 ms | Session files and agentview's own records |
+| Pi, Antigravity, Terminal | under 1 ms | Session files and betteragentview's own records |
 
 Median over 30 s of one-second refreshes on an Apple M5 Pro with a 17 GB
 OpenCode history, measured with [`AGENTVIEW_PERF_LOG`](docs/cli.md#timing-log).
@@ -155,10 +157,10 @@ Harnesses are read in parallel, and none of it runs on the input thread.
    {"roots":["/Users/alex/Code/company-app","/Users/alex/Code/company-site"]}
    ```
 
-2. Restart Agent View after adding or changing the config. Subfolders and linked
+2. Restart BetterAgentView after adding or changing the config. Subfolders and linked
    Git worktrees count as work too. Personal sessions disappear from the overview,
    session search and restore picker while work-only browsing is on.
-3. Bind `agentview view toggle` to a **global shortcut** to switch without focusing
+3. Bind `betteragentview view toggle` to a **global shortcut** to switch without focusing
    your terminal. The shortcut isn't built in. See the
    [macOS setup with Karabiner-Elements](docs/work-view.md#global-shortcut-on-macos).
 
@@ -172,7 +174,7 @@ previous chat or overview. Other apps and browser windows stay unchanged.
 | Move through sessions | `↑` / `↓` |
 | Jump between folders | `Cmd+↑` / `↓` in kitty, or in Ghostty with `keybind = cmd+up=unbind` and `keybind = cmd+down=unbind` |
 | Open the selected session | `Enter` or `→` |
-| Return to agentview | `Shift+←`, or `←` twice at an empty prompt (once in Claude Code and OpenCode). In an OpenCode prompt with a draft, Shift+←/→ selects text; [map a key to `F13`](docs/cli.md#a-dedicated-key-to-return-to-the-dashboard) to return from anywhere |
+| Return to betteragentview | `Shift+←`, or `←` twice at an empty prompt (once in Claude Code and OpenCode). In an OpenCode prompt with a draft, Shift+←/→ selects text; [map a key to `F13`](docs/cli.md#a-dedicated-key-to-return-to-the-dashboard) to return from anywhere |
 | Bring back a past session | `Ctrl+G` or `/hidden` |
 | Rename / filter | `Ctrl+R` / `Ctrl+F` |
 | New line in a task | `Shift+Enter`, `Ctrl+J`, or `\` then `Enter` |
@@ -184,7 +186,7 @@ for unattended runs.
 
 ## Harnesses
 
-agentview brings 18 local coding harnesses plus Terminal into one dashboard: [Claude Code](https://github.com/anthropics/claude-code), [OpenAI Codex](https://github.com/openai/codex), [Pi](https://pi.dev), [OpenCode](https://github.com/anomalyco/opencode), [Cursor](https://cursor.com/cli), [GitHub Copilot](https://github.com/github/copilot-cli), [Antigravity](https://developers.google.com/antigravity), [Mistral Vibe](https://github.com/mistralai/mistral-vibe), [Muse Code](https://dev.meta.ai/), [Qwen Code](https://github.com/QwenLM/qwen-code), [Kimi Code](https://github.com/MoonshotAI/kimi-cli), [Oh My Pi](https://github.com/can1357/oh-my-pi), [Grok](https://github.com/xai-org/grok-build), [Kilo Code](https://github.com/Kilo-Org/kilocode), [OpenHands](https://github.com/OpenHands/OpenHands-CLI), [Hermes Agent](https://github.com/NousResearch/hermes-agent), [MastraCode](https://github.com/mastra-ai/mastra/tree/main/mastracode), [Devin](https://github.com/CognitionAI/devin-cli), [Terminal](docs/cli.md).
+betteragentview brings 18 local coding harnesses plus Terminal into one dashboard: [Claude Code](https://github.com/anthropics/claude-code), [OpenAI Codex](https://github.com/openai/codex), [Pi](https://pi.dev), [OpenCode](https://github.com/anomalyco/opencode), [Cursor](https://cursor.com/cli), [GitHub Copilot](https://github.com/github/copilot-cli), [Antigravity](https://developers.google.com/antigravity), [Mistral Vibe](https://github.com/mistralai/mistral-vibe), [Muse Code](https://dev.meta.ai/), [Qwen Code](https://github.com/QwenLM/qwen-code), [Kimi Code](https://github.com/MoonshotAI/kimi-cli), [Oh My Pi](https://github.com/can1357/oh-my-pi), [Grok](https://github.com/xai-org/grok-build), [Kilo Code](https://github.com/Kilo-Org/kilocode), [OpenHands](https://github.com/OpenHands/OpenHands-CLI), [Hermes Agent](https://github.com/NousResearch/hermes-agent), [MastraCode](https://github.com/mastra-ai/mastra/tree/main/mastracode), [Devin](https://github.com/CognitionAI/devin-cli), [Terminal](docs/cli.md).
 
 ### Compare feature support by harness
 
@@ -219,7 +221,7 @@ harness's own interface.
 Versions, auth, and per-harness caveats are in the
 [provider notes](docs/exploration/README.md).
 
-agentview pairs well with OpenCode. My
+betteragentview pairs well with OpenCode. My
 [OpenCode setup](https://gist.github.com/moritzWa/9c0eb6f5d36a238714a40b900fde09ce)
 adds Cursor models, background shells, worktree tools, and long-running turns
 that survive Cursor dropping out.

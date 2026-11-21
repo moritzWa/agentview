@@ -395,7 +395,7 @@ pub fn project(
 }
 
 const TEXT_LIMIT: usize = 800_000;
-const TRUNCATED: &str = "\n[Agent View omitted the rest of this message: too large to sync]";
+const TRUNCATED: &str = "\n[BetterAgentView omitted the rest of this message: too large to sync]";
 
 /// The cloud rejects NUL characters and oversized text. A single such message
 /// must not stall its session forever, so make it fit and say so visibly.
@@ -492,7 +492,7 @@ fn validate_event(kind: &str) -> Result<()> {
         .strip_prefix("session.")
         .context("unknown event aggregate")?;
     if version == 0 || version > 2 || !known.contains(&short) {
-        bail!("unsupported source event; update Agent View");
+        bail!("unsupported source event; update BetterAgentView");
     }
     Ok(())
 }

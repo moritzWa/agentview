@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Agent View voice</title>
+<title>BetterAgentView voice</title>
 <style>
   :root { color-scheme: light; --blue:#506CF7; --line:#e2e2e2; --mute:#666; }
   * { box-sizing: border-box; }
@@ -26,8 +26,8 @@
 </style>
 </head>
 <body>
-<header><h1>Agent View voice</h1><span id="state">connecting to agentview</span></header>
-<main id="log"><p class="note" id="hint">Pin this tab. Press <b>Ctrl+K</b> in agentview to start a call. The first time, click <b>Enable microphone</b>.</p></main>
+<header><h1>BetterAgentView voice</h1><span id="state">connecting to BetterAgentView</span></header>
+<main id="log"><p class="note" id="hint">Pin this tab. Press <b>Ctrl+K</b> in BetterAgentView to start a call. The first time, click <b>Enable microphone</b>.</p></main>
 <footer>
   <button id="enable" class="primary">Enable microphone</button>
   <button id="mute" disabled>Mute</button>
@@ -399,9 +399,9 @@ function sendXai(event) {
 function caption(event) {
   const type = event.type;
   if (type === "session.input_transcript.delta") { voiceLine = null; youLine ||= say("You", ""); youLine.textContent += event.delta; }
-  else if (type === "session.output_transcript.delta") { youLine = null; voiceLine ||= say("Agent View", ""); voiceLine.textContent += event.delta; }
+  else if (type === "session.output_transcript.delta") { youLine = null; voiceLine ||= say("BetterAgentView", ""); voiceLine.textContent += event.delta; }
   else if (type === "conversation.item.input_audio_transcription.completed") { voiceLine = null; youLine = say("You", event.transcript || ""); youLine = null; }
-  else if (type === "response.output_audio_transcript.delta") { youLine = null; voiceLine ||= say("Agent View", ""); voiceLine.textContent += event.delta; }
+  else if (type === "response.output_audio_transcript.delta") { youLine = null; voiceLine ||= say("BetterAgentView", ""); voiceLine.textContent += event.delta; }
   else if (type === "response.done") { voiceLine = null; }
 }
 
@@ -438,13 +438,13 @@ function connect() {
     else if (msg.type === "send" && dc?.readyState === "open") dc.send(JSON.stringify(msg.event));
     else if (msg.type === "mute") { muted = !!msg.on; applyMute(); }
     else if (msg.type === "silence") silence();
-    else if (msg.type === "end") end(msg.reason || "ended by agentview");
-    else if (msg.type === "retire") { retired = true; setState("not needed: agentview runs the voice in the background now. Close this tab.", "bad"); $("enable").hidden = true; }
+    else if (msg.type === "end") end(msg.reason || "ended by BetterAgentView");
+    else if (msg.type === "retire") { retired = true; setState("not needed: BetterAgentView runs the voice in the background now. Close this tab.", "bad"); $("enable").hidden = true; }
   };
   ws.onclose = () => {
-    end("agentview went away");
+    end("BetterAgentView went away");
     if (retired) return;
-    setState("waiting for agentview", "bad");
+    setState("waiting for BetterAgentView", "bad");
     setTimeout(connect, 2000);
   };
 }

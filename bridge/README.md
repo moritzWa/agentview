@@ -10,8 +10,8 @@ The production connector and login daemon are Rust code in `src/bridge`.
 - [Text-only sync protocol](sync/README.md)
 - [Recorded deployment verification](test/e2e/VERIFIED.md)
 
-This is separate from Agent View's built-in OpenAI/Grok voice mode. ChatGPT
-mobile Live voice uses the connected AgentVoice MCP app, not Agent View's audio
+This is separate from BetterAgentView's built-in OpenAI/Grok voice mode. ChatGPT
+mobile Live voice uses the connected AgentVoice MCP app, not BetterAgentView's audio
 engine. The legacy VoiceCode app and public synthetic MCP probe remain in
 [voizecode](https://github.com/moritzWa/voizecode).
 

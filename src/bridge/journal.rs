@@ -26,7 +26,7 @@ impl Journal {
             |r| r.get(0),
         )?;
         if (count > 0 || app != 0) && app != 0x41564252 {
-            bail!("not an Agent View bridge journal");
+            bail!("not a BetterAgentView bridge journal");
         }
         #[cfg(unix)]
         {

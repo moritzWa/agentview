@@ -1,6 +1,6 @@
 # Contributing
 
-agentview welcomes focused pull requests with matching tests and
+betteragentview welcomes focused pull requests with matching tests and
 documentation. Use GitHub issues for reproducible bugs and scoped proposals.
 
 ## Before changing code

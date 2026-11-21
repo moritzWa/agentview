@@ -1,18 +1,18 @@
 # Control and ownership model
 
 The dashboard separates **visibility** from **authority**. Its default inventory
-contains only sessions agentview created or explicitly manages. The
+contains only sessions betteragentview created or explicitly manages. The
 `--include-external` flag adds provider-wide history for review, but finding an
 external session is never permission to interrupt or delete it.
 
 ## Local visibility controls are not provider mutations
 
 When an idle selected row does not carry exact Delete capability, `ctrl+x`
-hides it only from agentview. An active row without Interrupt authority
+hides it only from betteragentview. An active row without Interrupt authority
 requires an explicit hide confirmation because hiding will not stop it. The normalized ID is
 stored in the private `hidden-sessions.json` registry and removed from later
 dashboard and JSON snapshots. Provider history, conversation state, and live
-processes remain unchanged. `agentview sessions hidden` audits that local
+processes remain unchanged. `betteragentview sessions hidden` audits that local
 list; `sessions unhide SESSION_ID` removes the suppression without recreating
 or resuming anything.
 
@@ -26,7 +26,7 @@ The same presentation/mutation distinction applies to names. `ctrl+r` writes a
 private alias keyed by the normalized session ID in `session-aliases.json`;
 `sessions rename SESSION_ID NAME` provides the same local operation from the
 CLI. It never calls a provider rename surface. If the native harness changes
-its own title, discovery treats that as the canonical provider name. agentview shows
+its own title, discovery treats that as the canonical provider name. betteragentview shows
 it whenever no local alias exists; while an alias exists, the alias wins.
 Submitting an empty `ctrl+r` editor or running `sessions reset-name SESSION_ID`
 removes the override and refreshes the latest provider title. `sessions
@@ -39,7 +39,7 @@ aliases` audits all overrides.
 | Discover | `claude agents --json` | Owning App Server `thread/list` | Same read surface | Provider protocol through exact container ID |
 | Inspect | `claude logs`, reconstructed as a terminal screen | `thread/read(includeTurns: true)`, bounded for display | Summary only | Claude logs; Codex summary |
 | Open | `claude attach` | `codex --remote … resume` against the owning server | `codex resume` | Interactive `docker exec` to the provider CLI |
-| Launch | Claude allocates the ID through `--background`; agentview resolves its exact full UUID, records it, then opens full-screen `claude attach` | `thread/start`, then `turn/start` | Disabled | Disabled for observe-only containers |
+| Launch | Claude allocates the ID through `--background`; betteragentview resolves its exact full UUID, records it, then opens full-screen `claude attach` | `thread/start`, then `turn/start` | Disabled | Disabled for observe-only containers |
 | Interrupt | `claude stop`, exact provider-listed active host background sessions only | `turn/interrupt`, owned active turns only | Disabled | Disabled for observe-only containers |
 | Inline reply or provider request | Not exposed by the supported non-TTY CLI | Idle `turn/start`; working `turn/steer`; exact one-shot command decisions, safe denials, and non-secret structured input | Native TUI only | Disabled |
 | Archive or delete | No supported Claude command | Idle owned threads only | Disabled | Disabled |
@@ -49,19 +49,19 @@ runs the provider's native interactive client behind a private pseudo-terminal.
 The screen is cleared first, so a Codex or other provider transcript starts at
 the top instead of appending below the previous shell contents. Enter or Right
 opens the selected row directly. Plain Left/Right arrows first reach the
-provider. If the cursor does not move, agentview displays a 1.6-second return hint;
+provider. If the cursor does not move, betteragentview displays a 1.6-second return hint;
 repeat the same arrow to restore the dashboard and leave the managed backend
 alive. The provider frontend is not stopped: it keeps running on its private
 pseudo-terminal until an explicit Ctrl+X or dashboard exit. Shift+Left/Right
 performs the same return immediately. Enter or Right on the same dashboard row
 reattaches that exact frontend and shows the screen it has produced since. Left also returns from
-agentview's inline Peek without starting a provider CLI.
+betteragentview's inline Peek without starting a provider CLI.
 
-Authentication is a terminal handoff, not an agentview credential store. The model
+Authentication is a terminal handoff, not an betteragentview credential store. The model
 picker, `/login`, or `/setup` may run a provider's own login/setup UI after suspending the
 dashboard. Every handoff has a provider-keyed private PTY; the native return
 gesture backgrounds it as a Terminal row and Enter/Right resumes the same
-screen. agentview
+screen. betteragentview
 neither reads the resulting token nor persists
 answers; it only retries the provider-native model catalog after the command
 returns. Providers revalidate an exact selected model at launch.
@@ -71,7 +71,7 @@ returns. Providers revalidate an exact selected model at launch.
 The default remains each harness's normal approval and sandbox policy. The
 top-level `--yolo` flag is an explicit launch policy for people who knowingly
 want the harness's own unattended or permission-bypass mode. It never changes
-which sessions agentview owns, and it is never inferred from an environment variable,
+which sessions betteragentview owns, and it is never inferred from an environment variable,
 saved session, configuration file, or provider state.
 
 The verified mappings are Claude Code
@@ -81,31 +81,31 @@ The verified mappings are Claude Code
 Linux managed sessions, Antigravity `--dangerously-skip-permissions`, Muse Code
 `--yolo`, Mistral Vibe `--auto-approve`, Qwen Code `--yolo`, Kimi Code
 `--yolo`, Oh My Pi `--yolo`, Grok `--yolo`, Kilo Code `--yolo`, and OpenHands
-`--always-approve`. agentview refuses every other harness before launch. In
+`--always-approve`. betteragentview refuses every other harness before launch. In
 particular, Pi's project-trust `--approve` option is not treated as a permission
 bypass, and OpenCode's top-level YOLO mode is not claimed because its attach
 client does not accept that flag.
 
-The dashboard and task composer keep a visible warning for the entire agentview
+The dashboard and task composer keep a visible warning for the entire betteragentview
 process. A provider-native PTY prints the same warning on first entry and keeps
 it in the terminal title when first entered or resumed. Persisted Claude,
 Codex, and Cursor ownership
 records remember which agentview-created sessions need that native warning after a
 dashboard restart. Existing sessions retain the policy with which they were
-created; starting agentview with `--yolo` does not retrofit them.
+created; starting betteragentview with `--yolo` does not retrofit them.
 
-Missing-harness setup is a separate explicit mutation. `agentview setup
+Missing-harness setup is a separate explicit mutation. `betteragentview setup
 HARNESS` names the official source and requires a terminal confirmation (or
 literal `--yes`). Downloaded shell installers are staged in a private temporary
 file rather than streamed directly to a shell. Setup installs a CLI; it grants
 no session ownership or control authority.
 
 The Terminal launch target is a convenience controller, not an agent protocol.
-Its prompt becomes only a bounded display name and agentview starts the user's shell
+Its prompt becomes only a bounded display name and betteragentview starts the user's shell
 without evaluating that name. Its `/shell` picker resolves only installed
 allowlisted executable names. Missing allowlisted shells can be selected as an
 explicit install action, which runs one detected native package manager as an
-argument array after agentview hands over the terminal; the display name and filter
+argument array after betteragentview hands over the terminal; the display name and filter
 text never enter that command. Its authority is the exact process-local PTY
 entry created by this dashboard. Ctrl+X stops that entry; only its completed
 record gains Delete. Normal dashboard shutdown stops all retained Terminal and
@@ -113,9 +113,9 @@ provider-login frontends, so this is not a durable terminal multiplexer.
 
 ## Claude ownership registry
 
-`claude --background` returns an eight-character session ID. agentview deliberately
+`claude --background` returns an eight-character session ID. betteragentview deliberately
 does not combine `--background` with `--session-id`: current Claude releases
-own the background ID and warn that the supplied ID would be ignored. agentview
+own the background ID and warn that the supplied ID would be ignored. betteragentview
 captures the returned prefix, resolves the exact full UUID from `claude agents
 --json --all`, and records that UUID with its provider and runtime in:
 
@@ -130,7 +130,7 @@ or, when `XDG_STATE_HOME` is unset:
 ```
 
 The file is written atomically with user-only permissions on Unix and records
-which sessions agentview launched. Only a matching owned record may
+which sessions betteragentview launched. Only a matching owned record may
 advertise Ctrl+X. Interrupt still does not trust that record or a stale row as
 current authority: immediately before stopping, the controller reruns `claude
 agents --json` and requires the exact full UUID, host runtime, background kind,
@@ -144,7 +144,7 @@ to stop or remove a Docker container.
 
 Host Codex discovery and launch share one reconnectable App Server listening on
 a Unix socket. The server is detached from the dashboard and remains running
-after `agentview` exits. A later dashboard connects through
+after `betteragentview` exits. A later dashboard connects through
 the App Server's WebSocket protocol over its private Unix socket and reloads
 the exact thread and active-turn IDs it created. State lives in:
 
@@ -191,14 +191,14 @@ The active-turn record is released only by the matching terminal
 A briefly stale idle `thread/read` after `turn/start` is presented as owned
 working state, preserving Ctrl+X until Codex resolves the turn. Deletion first
 archives the exact idle thread. If Codex 0.147 wedges without a response or
-exact deletion notification, agentview restarts the owner only when every recorded
+exact deletion notification, betteragentview restarts the owner only when every recorded
 turn is idle, completes the same ID through an isolated App Server, and restores
 all other ownership records. Active work makes this recovery a refusal.
 Ordinary discovery holds a shared private recovery lock; the bounded
 stop/delete/restart sequence holds it exclusively, so a second dashboard waits
 instead of starting or attaching to an intermediate owner.
 
-`agentview sessions archive` uses the same boundary in bulk. It discovers
+`betteragentview sessions archive` uses the same boundary in bulk. It discovers
 only ordinary non-archived host Codex threads, enriches them through the owning
 supervisor, selects only completed rows carrying the exact Archive capability,
 and defaults to a read-only plan. `--cwd`, `--older-than-days`, and the bounded
@@ -211,7 +211,7 @@ Codex keeps pending server callbacks inside the owning App Server, not in a
 dashboard connection. On reconnect, `thread/resume` first restores the exact
 owned active thread and then replays unresolved requests with their original
 IDs. `thread/list`, `thread/read`, and initialization alone do not replay them.
-agentview therefore never reconstructs a request from rollout history.
+betteragentview therefore never reconstructs a request from rollout history.
 It keeps prompts and partially collected answers only in memory, clears a
 request on `serverRequest/resolved`, and leaves a sent response in a resolving
 state until that notification arrives.
@@ -287,13 +287,13 @@ exit before Delete is granted. The JSONL header ID and canonical path under the
 private managed session root are revalidated immediately before removal.
 Persisted files in that managed root remain owned/default-visible even after a
 supervisor restart; unrelated Pi history still requires `--include-external`.
-When upgrading an older daemon without per-session stop, agentview may shut down that
+When upgrading an older daemon without per-session stop, betteragentview may shut down that
 verified daemon only if no other active Pi session would be affected.
 
 ## OpenCode ownership boundary
 
 OpenCode's CLI history and export commands are read-only discovery surfaces.
-On Linux, agentview additionally launches one durable `opencode serve`
+On Linux, betteragentview additionally launches one durable `opencode serve`
 process bound to an ephemeral `127.0.0.1` port with a random Basic-auth secret.
 It stores the server identity and only the canonical session IDs it created in:
 
@@ -349,7 +349,7 @@ the recorded prompts, not the assistant's replies.
 
 Liveness comes from the process, not the files. Cursor drops a PID marker in
 `~/.local/share/cursor-agent/versions/<version>/.running/` for each CLI it
-starts; agentview verifies each PID is alive, then asks which chat's `store.db` that
+starts; betteragentview verifies each PID is alive, then asks which chat's `store.db` that
 process holds open (`/proc/<pid>/fd` on Linux, `lsof -p` elsewhere). Chats
 without a holder are *closed* history. When the holder is the very CLI process
 this dashboard opened and is keeping in the background, its state is read from
@@ -393,20 +393,20 @@ never signals a PID merely because it appears in the registry.
 | Permission/archive/delete | Disabled | Disabled |
 
 Managed Cursor reply, interrupt, and rediscovery currently require Linux. A
-chat agentview launched there is listed once, by the managed source; the history
+chat betteragentview launched there is listed once, by the managed source; the history
 source skips IDs the supervisor owns. Starting a new chat from the harness list
-works on every platform. Elsewhere, agentview runs `create-chat`, records the exact
+works on every platform. Elsewhere, betteragentview runs `create-chat`, records the exact
 returned ID in a private `cursor-owned.json`, and opens that ID with the prompt
 in Cursor's interface. The history source lists recorded IDs even without
 `--include-external`, as native-open/inspect rows; the prompt must not start
-with `-`, since `cursor-agent` would parse it as an option. agentview
+with `-`, since `cursor-agent` would parse it as an option. betteragentview
 does not scrape the provider's picker or infer ownership from a chat ID.
 
 ## GitHub Copilot ownership boundary
 
 Copilot's official ACP exposes persisted sessions through `session/list`, but
 listing a session does not grant control. Those records are observe/native-open
-only. agentview persists the exact IDs it creates so their rows survive a restart,
+only. betteragentview persists the exact IDs it creates so their rows survive a restart,
 but managed authority still belongs to the exact ACP control connection
 retained by the current dashboard process. The registry is visibility and
 provenance, not a serialized permission request or live-connection lease.
@@ -422,7 +422,7 @@ provenance, not a serialized permission request or live-connection lease.
 | Archive/delete | Disabled | Disabled |
 
 The release/resume/load handoff never overlaps two clients. ACP `session/close`
-is optional: when absent, agentview may close its retained ACP process only if every
+is optional: when absent, betteragentview may close its retained ACP process only if every
 connection-owned Copilot task is idle, releasing those idle rows too. An active
 prompt or permission on any other row refuses the handoff. A backgrounded native
 frontend leaves inline authority released until that exact frontend exits and
@@ -437,7 +437,7 @@ automatically.
 ## Oh My Pi, Grok, Kilo Code, and OpenHands ownership
 
 These native harnesses expose durable session identities and native resume
-commands. agentview observes their bounded native inventories but never adopts an
+commands. betteragentview observes their bounded native inventories but never adopts an
 existing record as managed. A foreground launch snapshots the inventory first,
 then records ownership only when exactly one new ID appears in the requested
 workspace. The private registry stores no credentials or transcript bodies.
@@ -459,9 +459,9 @@ for the exact commands and state roots.
 
 ## Managed Docker ownership
 
-`agentview docker create` accepts only a digest-pinned image and creates a
+`betteragentview docker create` accepts only a digest-pinned image and creates a
 stopped, non-root, `--init`, capability-dropped container with
-`no-new-privileges`, a PID limit, explicit bind mounts, and agentview
+`no-new-privileges`, a PID limit, explicit bind mounts, and betteragentview
 labels. A cryptographically random instance ID is written both to the label and
 to a private external registry. The registry directory/file modes are `0700`
 and `0600`, are current-user-owned, and updates are serialized with a file lock
@@ -488,7 +488,7 @@ state.
   transcript files. Press Enter to attach and reply through Claude itself.
 - File-change acceptance, permission grants, MCP form/URL acceptance, secret
   structured input, and unknown request types remain native-only.
-- There is not yet a `agentview` status/stop command for the detached Codex
+- There is not yet a `betteragentview` status/stop command for the detached Codex
   server. Logs append without rotation. Stale sockets and unverified PIDs are
   intentionally left untouched.
 - Durable Codex supervision supports Linux and macOS. Linux verifies `/proc`

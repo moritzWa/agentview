@@ -3,7 +3,7 @@
 version = 3
 
 [[package]]
-name = "agentview"
+name = "betteragentview"
 version = "0.3.0"
 dependencies = [
  "anyhow",

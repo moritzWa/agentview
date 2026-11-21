@@ -1,14 +1,19 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "agentview",
+  "main": "site-worker.js",
   "compatibility_date": "2026-10-01",
   "observability": {
     "enabled": true
   },
   "assets": {
-    "directory": "site"
+    "directory": "site",
+    "binding": "ASSETS",
+    "run_worker_first": true
   },
   "routes": [
+    { "pattern": "betteragentview.com", "custom_domain": true },
+    { "pattern": "www.betteragentview.com", "custom_domain": true },
     { "pattern": "agent-view.app", "custom_domain": true },
     { "pattern": "www.agent-view.app", "custom_domain": true }
   ]

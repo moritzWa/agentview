@@ -17,7 +17,7 @@ already established private channel and ask for a secure transfer method.
 
 Include only the minimum initially necessary:
 
-- affected commit and `agentview --version` output (the `av` shorthand
+- affected commit and `betteragentview --version` output (the `av` shorthand
   reports the same canonical identity);
 - operating system, terminal context, and provider/runtime versions;
 - whether the issue crosses visibility/authority or exact-target boundaries;
@@ -47,7 +47,7 @@ include:
   transcripts.
 
 Docker daemon access and authenticated Claude/Codex CLIs are already powerful
-local capabilities. agentview does not sandbox those external tools. Its
+local capabilities. betteragentview does not sandbox those external tools. Its
 responsibility is to avoid silently broadening their authority, adopting
 unowned resources, leaking their data, or targeting an identity that was not
 revalidated.

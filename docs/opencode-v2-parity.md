@@ -9,12 +9,12 @@ not install a binary or restart the shared server.
 - Stock V2 contracts inspected: OpenCode `origin/dev` at
   `594af423e8676b8458d6ef125ddde6766afad392`.
 - Targeted TUI extensions come from the migration core stream. Stock V2 does
-  not advertise these capabilities, so agentview uses separate frontends.
+  not advertise these capabilities, so betteragentview uses separate frontends.
 
 ## Isolated configuration
 
 Use a separate empty profile for tests. Keep every XDG directory and the
-database separate from V1. The profile must stay the same for agentview, the
+database separate from V1. The profile must stay the same for betteragentview, the
 server, and attached TUIs.
 
 ```sh
@@ -51,7 +51,7 @@ a competing server. Keep the candidate's service config and XDG paths when
 restarting a discovered service, so its CLI can renew the registration and reuse
 its saved password.
 
-Without a registration, agentview starts its own authenticated loopback server.
+Without a registration, betteragentview starts its own authenticated loopback server.
 Its private record is under `$XDG_STATE_HOME/agentview/opencode`. Secrets travel
 in child environment variables and HTTP Basic authentication, not attach argv.
 
@@ -125,7 +125,7 @@ does not broadcast a command to unrelated TUIs.
   Streaming edits, message removal, and V1-to-V2 migration refresh the index.
   This is a storage-format preference, not arbitration between live servers.
   Keep duplicate V1/V2 IDs under V1 authority until a quiescent final handoff.
-- Hide and close retain the existing agentview lifecycle. Read-only discovery
+- Hide and close retain the existing betteragentview lifecycle. Read-only discovery
   and FTS queries never migrate or modify the provider database.
 
 ## Frozen-snapshot ownership handoff
@@ -137,7 +137,7 @@ clean V2 store, and validate the resulting messages. An old rehearsal clone is
 not an incremental migration target: the V1 migrator records completion and V2
 public import rejects existing IDs.
 
-The target must already be running. Point agentview at its verified private
+The target must already be running. Point betteragentview at its verified private
 service registration and a new supervisor state directory. Handoff import does
 not start, stop, restart, or prompt the server. The first manifest requires an
 empty supervisor ownership map. Keep the target fenced from other writers
@@ -283,7 +283,7 @@ Recorded checks:
   asynchronous model-help probes without overwriting background-launch state.
   Responsiveness, exact inventory/row checks, and terminal-restoration assertions
   remain enforced. Original tracking:
-  [Restore the failing baseline CI checks](https://github.com/moritzWa/agentview/issues/32).
+  [Restore the failing baseline CI checks](https://github.com/moritzWa/betteragentview/issues/32).
 - [x] Compiled stock V2: actual database discovery and FTS search; private
   service registration discovery; restart with renewed registration PID;
   authenticated reconnect; and shutdown. The real test uses a fresh temporary

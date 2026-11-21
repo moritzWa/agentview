@@ -74,7 +74,7 @@ printf '%s\n' '#!/bin/sh' 'printf '\''agentview 9.8.7\n'\''' > "$AGENTVIEW_INSTA
             stdout.lines().last(),
             Some(
                 format!(
-                    "Updated agentview from {} to 9.8.7.",
+                    "Updated BetterAgentView from {} to 9.8.7.",
                     env!("CARGO_PKG_VERSION")
                 )
                 .as_str()
@@ -133,7 +133,7 @@ fn update_reports_when_the_installed_version_is_already_current() {
         stdout.lines().last(),
         Some(
             format!(
-                "agentview is already up to date at {}.",
+                "BetterAgentView is already up to date at {}.",
                 env!("CARGO_PKG_VERSION")
             )
             .as_str()

@@ -97,6 +97,7 @@ STEPS = [
     ("Space", ["space"], "close peek", 0.8),
     ("Ctrl+G", ["ctrl", "G"], f"search {PAST_SESSION_COUNT} past sessions", 1.6),
     ('Type "idempotency"', None, None, 2.6),
+    ("Escape", ["esc"], "clear", 0.6),
     ("Escape", ["esc"], "close", 0.8),
     ('Type "add rate limiting to the checkout API"', None, None, 1.0),
     ("Shift+Tab", ["shift", "tab"], "choose model", 3.2),

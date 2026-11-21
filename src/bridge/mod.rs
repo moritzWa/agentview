@@ -130,7 +130,7 @@ pub fn pair(
         "/pair/start",
         None,
         Some(
-            &json!({"device_id":device_id,"database_epoch":epoch,"label":std::env::var("USER").unwrap_or_else(|_|"Mac".into())+" Agent View"}),
+            &json!({"device_id":device_id,"database_epoch":epoch,"label":std::env::var("USER").unwrap_or_else(|_|"Mac".into())+" BetterAgentView"}),
         ),
         30,
     )?;
@@ -810,22 +810,10 @@ pub fn start_once(dir: &Path) -> Result<bool> {
         .as_str()
         .context("invalid start directory")?;
     let text = start["text"].as_str().context("invalid start prompt")?;
-    let home = std::env::var_os("HOME").context("HOME is not set");
-    let allowed = home
-        .as_ref()
-        .ok()
-        .and_then(|home| start::allowed_directory(Path::new(directory), Path::new(home)).ok());
-    let deny = if home.is_err() {
-        Some("server")
-    } else if allowed.is_none() {
-        Some(
-            start::allowed_directory(Path::new(directory), Path::new(home.as_ref().unwrap()))
-                .unwrap_err(),
-        )
-    } else {
-        None
-    };
-    if let Some(reason) = deny {
+    let allowed = std::env::var_os("HOME")
+        .ok_or("server")
+        .and_then(|home| start::allowed_directory(Path::new(directory), Path::new(&home)));
+    if let Err(reason) = &allowed {
         ack_start(
             &config.endpoint,
             &credential,
@@ -836,7 +824,7 @@ pub fn start_once(dir: &Path) -> Result<bool> {
         )?;
         return Ok(true);
     }
-    let canonical = allowed.context("start directory")?;
+    let canonical = allowed.map_err(|reason| anyhow::anyhow!("start directory: {reason}"))?;
     match start::claim(&journal.db, operation, &start.to_string())? {
         start::Claim::Uncertain => {
             ack_start(
@@ -1078,7 +1066,7 @@ fn notify_stuck() {
     let _ = std::process::Command::new("osascript")
         .args([
             "-e",
-            "display notification \"Phone sync has not completed for 30+ minutes. Run: agentview bridge status\" with title \"Agent View bridge\"",
+            "display notification \"Phone sync has not completed for 30+ minutes. Run: agentview bridge status\" with title \"BetterAgentView bridge\"",
         ])
         .status();
 }

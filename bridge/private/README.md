@@ -225,7 +225,7 @@ node test/e2e/tool-contracts.mjs
 ```
 
 The second command is an operator harness for the prepared Cua macOS VM. It
-requires the disposable `vm_environment.py` service, the test Agent View binary
+requires the disposable `vm_environment.py` service, the test BetterAgentView binary
 and the signed-in browser forwarded on port 19949. It uses synthetic sessions
 and a deterministic local model. No paid model credential is needed.
 The third command tests the deployed cloud tool contracts with a disposable,

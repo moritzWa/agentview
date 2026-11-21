@@ -5,20 +5,20 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>How to run multiple Claude Code agents at once</title>
 <meta name="description" content="How to run multiple Claude Code agents at once. Agent view, claude-squad, Conductor, cmux and Paradev, and where each is the better pick.">
-<link rel="canonical" href="https://agent-view.app/blog/agentview-vs-claude-squad-conductor-cmux/">
+<link rel="canonical" href="https://betteragentview.com/blog/agentview-vs-claude-squad-conductor-cmux/">
 <meta property="og:title" content="How to run multiple Claude Code agents at once">
 <meta property="og:description" content="How to run multiple Claude Code agents at once. Agent view, claude-squad, Conductor, cmux and Paradev, and where each is the better pick.">
 <meta property="og:type" content="article">
-<meta property="og:url" content="https://agent-view.app/blog/agentview-vs-claude-squad-conductor-cmux/">
-<meta property="og:image" content="https://agent-view.app/og.png">
+<meta property="og:url" content="https://betteragentview.com/blog/agentview-vs-claude-squad-conductor-cmux/">
+<meta property="og:image" content="https://betteragentview.com/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta property="article:published_time" content="2026-11-13">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:image" content="https://agent-view.app/og.png">
+<meta name="twitter:image" content="https://betteragentview.com/og.png">
 <link rel="icon" href="/favicon.svg">
 <link rel="stylesheet" href="/blog/style.css">
-<script type="application/ld+json">{"@context":"https://schema.org","@type":"BlogPosting","headline":"How to run multiple Claude Code agents at once","datePublished":"2026-11-13","author":{"@type":"Person","name":"Moritz Wallawitsch"},"mainEntityOfPage":"https://agent-view.app/blog/agentview-vs-claude-squad-conductor-cmux/"}</script>
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"BlogPosting","headline":"How to run multiple Claude Code agents at once","datePublished":"2026-11-13","author":{"@type":"Person","name":"Moritz Wallawitsch"},"mainEntityOfPage":"https://betteragentview.com/blog/agentview-vs-claude-squad-conductor-cmux/"}</script>
 </head>
 <body>
 <div class="page wide">
@@ -27,8 +27,8 @@
   <a class="brand" href="/"><img src="/favicon.svg" alt="">agentview</a>
   <nav>
     <a href="/blog/">Blog</a>
-    <a href="https://github.com/moritzWa/agentview/blob/main/docs/cli.md">Docs</a>
-    <a href="https://github.com/moritzWa/agentview">GitHub</a>
+    <a href="https://github.com/moritzWa/betteragentview/blob/main/docs/cli.md">Docs</a>
+    <a href="https://github.com/moritzWa/betteragentview">GitHub</a>
   </nav>
 </header>
 
@@ -40,7 +40,7 @@
 
 <p class="lede">Ten tools for running more than two coding agents, what each one is built for, and when to pick it over the others.</p>
 
-<p>I build agentview, so read this with that in mind. I checked every claim below against the tool's own repo, docs or pricing page on 13 November 2026. Where I could not confirm something, the table says so.</p>
+<p>I build BetterAgentView, so read this with that in mind. I checked every claim below against the tool's own repo, docs or pricing page on 13 November 2026. Where I could not confirm something, the table says so.</p>
 
 <h2>What you need at ten agents</h2>
 
@@ -206,19 +206,19 @@
 <p>Pick this for full control and any agent. <code>git worktree</code> gives each agent its own checkout, and tmux or Zellij holds the sessions. Nothing here knows what an agent is, so you write your own status and notifications. <a href="https://github.com/max-sixty/worktrunk">Worktrunk</a> is a small CLI that adds worktree commands built for agents. Claude Code also has <code>claude --worktree</code>, which creates one for you (<a href="https://code.claude.com/docs/en/worktrees">docs</a>).</p>
 
 <h3>agentview</h3>
-<p>Pick it if you use more than one harness and want one list. It reads the sessions your harnesses already keep, so you do not change how you work. Rows are grouped by what needs you, and Enter opens the harness's own screen. Two features go beyond the list. <kbd>Ctrl+K</kbd> starts a <a href="https://github.com/moritzWa/agentview/blob/main/docs/voice.md">voice call</a> across your sessions, and it shows the <a href="https://github.com/moritzWa/agent-bouncer">agent-bouncer</a> queue above the input, so you can see which sessions are stuck behind a full machine.</p>
-<p>The header also shows rate-limit windows and reset times for Claude and Codex. If you keep a second Claude subscription in a <code>~/.claude-*</code> profile, it gets its own row next to the first. On macOS, agentview reads those logins from the Keychain.</p>
+<p>Pick it if you use more than one harness and want one list. It reads the sessions your harnesses already keep, so you do not change how you work. Rows are grouped by what needs you, and Enter opens the harness's own screen. Two features go beyond the list. <kbd>Ctrl+K</kbd> starts a <a href="https://github.com/moritzWa/betteragentview/blob/main/docs/voice.md">voice call</a> across your sessions, and it shows the <a href="https://github.com/moritzWa/agent-bouncer">agent-bouncer</a> queue above the input, so you can see which sessions are stuck behind a full machine.</p>
+<p>The header also shows rate-limit windows and reset times for Claude and Codex. If you keep a second Claude subscription in a <code>~/.claude-*</code> profile, it gets its own row next to the first. On macOS, BetterAgentView reads those logins from the Keychain.</p>
 <p>Where it is weaker:</p>
 <ul>
   <li>It does not create worktrees, review diffs or open pull requests. Pair it with one of the tools above for that.</li>
   <li>Voice works with OpenCode sessions only.</li>
-  <li>Replying and approving from the list depends on the harness. For Claude Code rows, you still reply in Claude's own screen. The <a href="https://github.com/moritzWa/agentview#compare-feature-support-by-harness">README</a> has the full table.</li>
-  <li>Rows are not labelled by Claude account. Claude sessions come from the one config directory agentview runs under, so a second account shows up in the usage header only.</li>
+  <li>Replying and approving from the list depends on the harness. For Claude Code rows, you still reply in Claude's own screen. The <a href="https://github.com/moritzWa/betteragentview#compare-feature-support-by-harness">README</a> has the full table.</li>
+  <li>Rows are not labelled by Claude account. Claude sessions come from the one config directory BetterAgentView runs under, so a second account shows up in the usage header only.</li>
   <li>It is terminal only.</li>
 </ul>
 
 <h2>Voice is no longer rare</h2>
-<p>Codex and Cursor both have a voice call that hands work to their own agents. Claude Code and Conductor have dictation. agentview's call is different in one way: it spans sessions from your whole list, searches your history, and starts sessions in other folders. It is also narrower: it only reaches OpenCode sessions today.</p>
+<p>Codex and Cursor both have a voice call that hands work to their own agents. Claude Code and Conductor have dictation. BetterAgentView's call is different in one way: it spans sessions from your whole list, searches your history, and starts sessions in other folders. It is also narrower: it only reaches OpenCode sessions today.</p>
 
 <h2>Resource control is almost empty</h2>
 <p>cmux and Paradev show CPU and memory per workspace. Three tools go further. Claude Code's agent view stops idle sessions when memory is low. The Codex app caps how many spawned-agent threads one session can open. Xum (formerly Mux, by Coder) sets a CPU and memory limit for all local agent commands, but only on Linux, through cgroup v2 (<a href="https://xum.cdr.dev/config/agent-resource-limits.md">docs</a>).</p>
@@ -241,14 +241,14 @@
   <li>Prices change often. Check each pricing page before you buy.</li>
 </ul>
 
-<p>If I got something wrong, <a href="https://github.com/moritzWa/agentview/issues">open an issue</a> and I will fix it.</p>
+<p>If I got something wrong, <a href="https://github.com/moritzWa/betteragentview/issues">open an issue</a> and I will fix it.</p>
 
 </div>
 </article>
 
 <footer>
   <span>MIT License · <a href="/blog/">Blog</a></span>
-  <a href="https://github.com/moritzWa/agentview">github.com/moritzWa/agentview</a>
+  <a href="https://github.com/moritzWa/betteragentview">github.com/moritzWa/betteragentview</a>
 </footer>
 
 </div>

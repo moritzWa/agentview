@@ -3531,7 +3531,7 @@ impl App {
             "/hidden" | "/restore" => return AppAction::BrowseHidden,
             "/migrate" => self.start_migration(),
             "/usage" if self.usage.is_empty() => self.set_notice(
-                "no subscription usage yet; agentview reads Claude Code and Codex logins",
+                "no subscription usage yet; BetterAgentView reads Claude Code and Codex logins",
             ),
             "/usage" => {
                 self.notice = None;

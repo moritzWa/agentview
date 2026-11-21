@@ -4,21 +4,21 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Running ten coding agents without freezing your machine</title>
-<meta name="description" content="Ten agents that each start a build or a test run can use up your RAM. agent-bouncer lets in only the jobs the machine has room for, and agentview shows the line.">
-<link rel="canonical" href="https://agent-view.app/blog/running-ten-agents-without-freezing-your-machine/">
+<meta name="description" content="Ten agents that each start a build or a test run can use up your RAM. agent-bouncer lets in only the jobs the machine has room for, and BetterAgentView shows the line.">
+<link rel="canonical" href="https://betteragentview.com/blog/running-ten-agents-without-freezing-your-machine/">
 <meta property="og:title" content="Running ten coding agents without freezing your machine">
-<meta property="og:description" content="agent-bouncer lets in only the heavy jobs the machine has room for. The rest wait in line, and agentview shows the line.">
+<meta property="og:description" content="agent-bouncer lets in only the heavy jobs the machine has room for. The rest wait in line, and BetterAgentView shows the line.">
 <meta property="og:type" content="article">
-<meta property="og:url" content="https://agent-view.app/blog/running-ten-agents-without-freezing-your-machine/">
-<meta property="og:image" content="https://agent-view.app/og.png">
+<meta property="og:url" content="https://betteragentview.com/blog/running-ten-agents-without-freezing-your-machine/">
+<meta property="og:image" content="https://betteragentview.com/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta property="article:published_time" content="2026-11-13">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:image" content="https://agent-view.app/og.png">
+<meta name="twitter:image" content="https://betteragentview.com/og.png">
 <link rel="icon" href="/favicon.svg">
 <link rel="stylesheet" href="/blog/style.css">
-<script type="application/ld+json">{"@context":"https://schema.org","@type":"BlogPosting","headline":"Running ten coding agents without freezing your machine","datePublished":"2026-11-13","author":{"@type":"Person","name":"Moritz Wallawitsch"},"mainEntityOfPage":"https://agent-view.app/blog/running-ten-agents-without-freezing-your-machine/"}</script>
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"BlogPosting","headline":"Running ten coding agents without freezing your machine","datePublished":"2026-11-13","author":{"@type":"Person","name":"Moritz Wallawitsch"},"mainEntityOfPage":"https://betteragentview.com/blog/running-ten-agents-without-freezing-your-machine/"}</script>
 </head>
 <body>
 <div class="page">
@@ -27,8 +27,8 @@
   <a class="brand" href="/"><img src="/favicon.svg" alt="">agentview</a>
   <nav>
     <a href="/blog/">Blog</a>
-    <a href="https://github.com/moritzWa/agentview/blob/main/docs/cli.md">Docs</a>
-    <a href="https://github.com/moritzWa/agentview">GitHub</a>
+    <a href="https://github.com/moritzWa/betteragentview/blob/main/docs/cli.md">Docs</a>
+    <a href="https://github.com/moritzWa/betteragentview">GitHub</a>
   </nav>
 </header>
 
@@ -75,16 +75,16 @@ waiting
 
 <h2>Seeing the line in agentview</h2>
 
-<p>A queue you cannot see is hard to trust. When agent-bouncer is installed, agentview reads <code>agent-bouncer status --json</code> every couple of seconds and shows a panel above the input. It lists the running and waiting jobs, how long each has been at it, and when the queue should clear. A session whose own run is stuck in line says so on its row, for example <code>#1 in line for lint + typecheck · all slots in use</code>.</p>
+<p>A queue you cannot see is hard to trust. When agent-bouncer is installed, BetterAgentView reads <code>agent-bouncer status --json</code> every couple of seconds and shows a panel above the input. It lists the running and waiting jobs, how long each has been at it, and when the queue should clear. A session whose own run is stuck in line says so on its row, for example <code>#1 in line for lint + typecheck · all slots in use</code>.</p>
 
 <figure>
-  <video autoplay muted loop playsinline preload="metadata" poster="/demo-poster.png" width="1280" height="720" aria-label="agentview with four heavy jobs in the agent-bouncer queue, two running and two waiting, while a voice call answers a session">
+  <video autoplay muted loop playsinline preload="metadata" poster="/demo-poster.png" width="1280" height="720" aria-label="BetterAgentView with four heavy jobs in the agent-bouncer queue, two running and two waiting, while a voice call answers a session">
     <source src="/demo.mp4" type="video/mp4">
   </video>
   <figcaption>The queue panel above the input. Two jobs run and two wait. Rows for sessions stuck in line say which place they hold. The footer shows a scripted voice call. The sessions and jobs are made up.</figcaption>
 </figure>
 
-<p>agentview only reads the queue. It never starts, stops or reorders jobs.</p>
+<p>BetterAgentView only reads the queue. It never starts, stops or reorders jobs.</p>
 
 <h2>Set it up</h2>
 
@@ -111,7 +111,7 @@ waiting
 
 <footer>
   <span>MIT License · <a href="/blog/">Blog</a></span>
-  <a href="https://github.com/moritzWa/agentview">github.com/moritzWa/agentview</a>
+  <a href="https://github.com/moritzWa/betteragentview">github.com/moritzWa/betteragentview</a>
 </footer>
 
 </div>

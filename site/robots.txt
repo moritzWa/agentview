@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://agent-view.app/sitemap.xml
+Sitemap: https://betteragentview.com/sitemap.xml

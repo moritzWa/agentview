@@ -238,7 +238,7 @@ mod tests {
     fn serves_the_page_to_its_own_host_only() {
         let port = serve(0, Arc::new(Recorder::default())).unwrap();
         let page = get(port, "/", &format!("127.0.0.1:{port}"));
-        assert!(page.starts_with("HTTP/1.1 200") && page.contains("Agent View voice"));
+        assert!(page.starts_with("HTTP/1.1 200") && page.contains("BetterAgentView voice"));
         assert!(get(port, "/", "evil.example:80").starts_with("HTTP/1.1 403"));
         assert!(get(port, "/nope", &format!("localhost:{port}")).starts_with("HTTP/1.1 404"));
     }

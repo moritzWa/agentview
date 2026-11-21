@@ -47,7 +47,7 @@ jobs:
           export version
           # Only the first `version =` line, which is the package's own.
           perl -0pi -e 's/^version = "[^"]*"/version = "$ENV{version}"/m' Cargo.toml
-          perl -0pi -e 's/(name = "agentview"\r?\nversion = )"[^"]*"/$1"$ENV{version}"/' Cargo.lock
+          perl -0pi -e 's/(name = "betteragentview"\r?\nversion = )"[^"]*"/$1"$ENV{version}"/' Cargo.lock
           grep -m1 '^version' Cargo.toml
       - run: cargo build --release --locked --target ${{ matrix.target }}
         env:
@@ -88,4 +88,4 @@ jobs:
             --repo "${GITHUB_REPOSITORY}" \
             --verify-tag \
             --generate-notes \
-            --title "agentview ${RELEASE_TAG}"
+            --title "BetterAgentView ${RELEASE_TAG}"

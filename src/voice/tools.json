@@ -178,7 +178,7 @@
   {
     "type": "function",
     "name": "close_session",
-    "description": "Close a session: stop what it is doing and remove it from Agent View, the developer's list of sessions in focus. Its history is kept and search_history can still find it. Use when the developer says close, kill, remove, get rid of, clean up or dismiss a session.",
+    "description": "Close a session: stop what it is doing and remove it from BetterAgentView, the developer's list of sessions in focus. Its history is kept and search_history can still find it. Use when the developer says close, kill, remove, get rid of, clean up or dismiss a session.",
     "parameters": {
       "type": "object",
       "properties": {

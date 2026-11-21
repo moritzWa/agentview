@@ -1,18 +1,28 @@
 [package]
-name = "agentview"
+name = "betteragentview"
 version = "0.3.0"
 edition = "2021"
+default-run = "betteragentview"
 rust-version = "1.75"
-description = "Open terminal dashboard for supervising multiple coding-agent CLIs"
+description = "BetterAgentView: one terminal dashboard for all your coding agents"
 license = "MIT"
-repository = "https://github.com/moritzWa/agentview"
+repository = "https://github.com/moritzWa/betteragentview"
 readme = "README.md"
-keywords = ["agents", "agentview", "tui", "terminal", "dashboard"]
+keywords = ["agents", "betteragentview", "tui", "terminal", "dashboard"]
 categories = ["command-line-utilities", "development-tools"]
+
+# Preserve the Rust API name for downstream integrations and existing tests.
+[lib]
+name = "agentview"
 
 [[bin]]
 name = "agentview"
 path = "src/main.rs"
+
+[[bin]]
+name = "betteragentview"
+path = "src/bin/betteragentview.rs"
+test = false
 
 [dependencies]
 # Exact versions keep the project buildable with the documented Rust 1.75 MSRV.
