@@ -89,6 +89,7 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
     } else if app.overlay == Overlay::ModelPicker {
         render_model_picker(frame, app, area);
     } else if app.overlay == Overlay::HiddenPicker {
+        fade_background(frame, area);
         render_hidden_picker(frame, app, area);
     } else if app.overlay == Overlay::DirectoryPicker {
         render_directory_picker(frame, app, area);
@@ -96,6 +97,46 @@ pub fn render(frame: &mut Frame<'_>, app: &App) {
         render_migration_target_picker(frame, app, area);
     } else if app.overlay == Overlay::Usage {
         render_usage_popup(frame, app, area);
+    }
+}
+
+/// Share of the way each color moves toward the background when a popup
+/// grays out the dashboard behind it.
+const FADE: f32 = 0.6;
+
+/// Gray out what is already drawn, so a popup stands out from the dashboard.
+/// Text and highlights move toward the background color; the popup is drawn
+/// over the result.
+fn fade_background(frame: &mut Frame<'_>, area: Rect) {
+    let background = palette().bg;
+    let foreground = palette().fg;
+    let toward = |color: Color, default: Color| {
+        let (red, green, blue) = fade_rgb(color, default);
+        let (back_red, back_green, back_blue) = fade_rgb(background, background);
+        let mix = |from: u8, to: u8| (from as f32 + (to as f32 - from as f32) * FADE).round() as u8;
+        Color::Rgb(
+            mix(red, back_red),
+            mix(green, back_green),
+            mix(blue, back_blue),
+        )
+    };
+    let buffer = frame.buffer_mut();
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            let cell = buffer.get_mut(x, y);
+            cell.fg = toward(cell.fg, foreground);
+            cell.bg = toward(cell.bg, background);
+        }
+    }
+}
+
+fn fade_rgb(color: Color, default: Color) -> (u8, u8, u8) {
+    match color {
+        Color::Rgb(red, green, blue) => (red, green, blue),
+        Color::White => (255, 255, 255),
+        Color::Black => (0, 0, 0),
+        Color::Reset => fade_rgb(default, Color::Rgb(128, 128, 128)),
+        _ => (128, 128, 128),
     }
 }
 
@@ -3900,6 +3941,42 @@ mod tests {
             "the find field should not label itself search: {rendered}"
         );
         assert!(rendered.contains("esc clear"), "{rendered}");
+    }
+
+    #[test]
+    fn find_session_popup_grays_out_the_dashboard_behind_it() {
+        use crate::theme::ColorScheme;
+        for scheme in [ColorScheme::Light, ColorScheme::Dark] {
+            let mut app = App::new(SessionSnapshot::default());
+            app.color_scheme = scheme;
+            let draw = |app: &App| {
+                let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+                terminal.draw(|frame| render(frame, app)).unwrap();
+                terminal.backend().buffer().clone()
+            };
+            let before = draw(&app);
+            app.open_restore_picker(vec![crate::hidden::HiddenSessionRecord {
+                id: "opencode:host:abc".into(),
+                provider: Some(Provider::OpenCode),
+                name: Some("archie".into()),
+                hidden_at_ms: 1,
+            }]);
+            let after = draw(&app);
+            // The brand name in the header sits outside the popup.
+            let (before_cell, after_cell) = (before.get(1, 0), after.get(1, 0));
+            assert_eq!(before_cell.symbol(), after_cell.symbol());
+            let background = crate::theme::Palette::for_scheme(scheme).bg;
+            let gap = |color: Color| match (color, background) {
+                (Color::Rgb(red, ..), Color::Rgb(back, ..)) => red.abs_diff(back),
+                _ => panic!("expected RGB colors"),
+            };
+            assert!(
+                gap(after_cell.fg) < gap(before_cell.fg),
+                "{scheme:?}: {:?} should sit closer to the background than {:?}",
+                after_cell.fg,
+                before_cell.fg
+            );
+        }
     }
 
     #[test]
