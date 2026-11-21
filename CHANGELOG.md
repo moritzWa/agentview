@@ -8,6 +8,11 @@ and released versions are intended to follow Semantic Versioning.
 
 ## [Unreleased]
 
+### Changed
+
+- `Ctrl+G` with nothing typed ranks sessions by how often you opened them from
+  the picker, weighted by recent activity, instead of by last update alone.
+
 ### Fixed
 
 - Reminder rows share the same name, status and preview columns as other rows.

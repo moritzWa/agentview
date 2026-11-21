@@ -67,7 +67,9 @@ own interface.
 - **Bring back any past session** without leaving the dashboard. `Ctrl+G`
   searches older and hidden sessions by name, harness, folder, or ID, even
   while you're typing a task, and `Enter` puts the session back in the list.
-  No new terminal, `cd`, or `--resume` needed.
+  No new terminal, `cd`, or `--resume` needed. With nothing typed, the list
+  puts the sessions you open most often first, fading those you haven't
+  touched in days.
 - **Fast message search across Claude Code, Codex, and OpenCode.** `Ctrl+G`
   searches conversation text through local SQLite FTS5 indices, including
   partial words and matching snippets. `Enter` resumes the exact session,

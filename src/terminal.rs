@@ -416,6 +416,11 @@ pub fn run_dashboard(
     if let Some(view_mode) = last_view.view_mode() {
         app.set_view_mode(view_mode);
     }
+    if control.provider_io_enabled() {
+        if let Ok(opens) = crate::search_opens::SearchOpens::load_default() {
+            app.set_search_opens(opens);
+        }
+    }
     // Until the saved row is found (or the user moves), the cursor is the
     // default first row, which must not overwrite the saved one.
     let mut restore_selection = last_view.session_id();

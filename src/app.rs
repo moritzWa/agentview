@@ -389,6 +389,10 @@ pub struct App {
     /// Sessions the list already shows. The picker offers them only when
     /// their message text matches, and choosing one selects its row.
     open_candidates: Vec<HiddenSessionRecord>,
+    /// Opens from the picker; when set, the default view ranks by them.
+    search_opens: Option<crate::search_opens::SearchOpens>,
+    /// The time the picker ranks against, fixed while it is open.
+    picker_now_ms: u64,
     pub restorable_loading: bool,
     /// Whether the picker still waits for the message text it searches.
     pub restorable_text_loading: bool,
@@ -519,6 +523,8 @@ impl App {
             transcripts_lower: BTreeMap::new(),
             hidden_ids: BTreeSet::new(),
             open_candidates: Vec::new(),
+            search_opens: None,
+            picker_now_ms: 0,
             restorable_loading: false,
             restorable_text_loading: false,
             history_indices: Vec::new(),
@@ -2969,6 +2975,7 @@ impl App {
             !self.history_indices.is_empty() && !self.history_index_ready;
         self.hidden_filter.clear();
         self.hidden_selection = 0;
+        self.picker_now_ms = now_ms();
         self.notice = None;
         self.hidden_picker_from_composer =
             self.overlay == Overlay::Composer(ComposerMode::NewSession);
@@ -3144,8 +3151,29 @@ impl App {
         // A session where the words sit together outranks one that only
         // mentions each word somewhere. Equal distances keep list order.
         by_text.sort_by_key(|(record, _)| self.text_distance(&record.id, &needle));
+        if needle.is_empty() {
+            if let Some(opens) = &self.search_opens {
+                let now_ms = self.picker_now_ms;
+                let score = |record: &HiddenSessionRecord| {
+                    opens.score(&record.id, self.picker_activity_ms(record), now_ms)
+                };
+                by_label.sort_by(|(left, _), (right, _)| score(right).total_cmp(&score(left)));
+            }
+        }
         by_label.extend(by_text);
         by_label.into_iter().map(|(record, _)| record).collect()
+    }
+
+    pub fn set_search_opens(&mut self, opens: crate::search_opens::SearchOpens) {
+        self.search_opens = Some(opens);
+    }
+
+    /// When the session last saw activity: its provider update time, else
+    /// the time it was hidden.
+    fn picker_activity_ms(&self, record: &HiddenSessionRecord) -> u64 {
+        self.restorable
+            .get(&record.id)
+            .map_or(record.hidden_at_ms, |session| session.updated_at_ms)
     }
 
     /// The working directory of a picker row, when it is known.
@@ -3270,6 +3298,11 @@ impl App {
             return AppAction::None;
         };
         let session_id = record.id.clone();
+        if let Some(opens) = &mut self.search_opens {
+            if let Err(error) = opens.record(&session_id, now_ms()) {
+                crate::perf_log::event("search_opens_save_failed", format_args!("{error:#}"));
+            }
+        }
         let hidden = self.hidden_ids.contains(&session_id);
         let open = self.is_open_choice(&session_id);
         let restorable = self.restorable.remove(&session_id);
@@ -3297,6 +3330,12 @@ impl App {
             None => AppAction::Unhide { session_id },
         }
     }
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as u64)
 }
 
 /// Keep printable text, tabs, and line breaks from a paste. `\r\n` and bare
@@ -5093,6 +5132,81 @@ mod tests {
             app.selection,
             Some(SelectionKey::Session("opencode:host:ses_open".into()))
         );
+    }
+
+    #[test]
+    fn restore_picker_default_view_ranks_by_opens_and_recency() {
+        let day = 86_400_000;
+        let now = now_ms();
+        let directory = crate::test_support::tempfile::tempdir().unwrap();
+        let path = directory.path().join("search-opens.json");
+        let mut opens = crate::search_opens::SearchOpens::load(path.clone());
+        for _ in 0..4 {
+            opens.record("claude:host:favorite", now - day).unwrap();
+        }
+        for _ in 0..10 {
+            opens.record("claude:host:stale", now - 40 * day).unwrap();
+        }
+        let mut app = app_with(Vec::new());
+        app.set_search_opens(opens);
+        app.open_restore_picker(vec![
+            hidden("claude:host:newest", "Newest", Provider::Claude, now - 1000),
+            hidden(
+                "claude:host:favorite",
+                "Favorite",
+                Provider::Claude,
+                now - day,
+            ),
+            hidden(
+                "claude:host:stale",
+                "Stale",
+                Provider::Claude,
+                now - 30 * day,
+            ),
+            hidden(
+                "claude:host:plain",
+                "Plain",
+                Provider::Claude,
+                now - 2 * day,
+            ),
+        ]);
+        let order = app
+            .hidden_choices()
+            .iter()
+            .map(|record| record.id.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            order,
+            [
+                "claude:host:favorite",
+                "claude:host:newest",
+                "claude:host:plain",
+                "claude:host:stale"
+            ]
+        );
+
+        app.hidden_selection = 3;
+        assert_eq!(
+            app.activate(),
+            AppAction::Unhide {
+                session_id: "claude:host:stale".into()
+            }
+        );
+        let saved = crate::search_opens::SearchOpens::load(path);
+        assert!(
+            saved.score("claude:host:stale", now, now) > saved.score("claude:host:never", now, now),
+            "opening a session from the picker is counted"
+        );
+    }
+
+    #[test]
+    fn restore_picker_default_view_keeps_its_order_without_open_counts() {
+        let mut app = app_with(Vec::new());
+        app.open_restore_picker(vec![
+            hidden("claude:host:old", "Old", Provider::Claude, 10),
+            hidden("claude:host:new", "New", Provider::Claude, 20),
+        ]);
+        assert_eq!(app.hidden_choices()[0].id, "claude:host:new");
     }
 
     #[test]
